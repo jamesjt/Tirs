@@ -1,0 +1,48 @@
+LINK = 1PmJJyAkVSei4bHHWRLBqO8zWOPLJkx3pBvrIHDiqzos!DomainFocused
+cardsize=6.35,8.89
+
+htmlimage = , tapIcon, "Icons/tapClear2.png",0.3,0.3,BPM
+htmlimage = , FireIcon, "Icons/FireMana.png",0.4,0.4,P
+htmlimage = , WaterIcon, "Icons/WaterMana.png",0.4,0.4,PB
+htmlimage = , AirIcon, "Icons/AirMana.png",0.4,0.4,P
+htmlimage = , EarthIcon, "Icons/EarthMana.png",0.4,0.4,P
+htmlimage = , MajorAction, "Icons/MajorAction2.png",0.4,0.4,P
+htmlimage = , MinorAction, "Icons/MinorAction2.png",0.4,0.4,P
+VISUAL=, 10, 10
+IMAGE=,images\bg3stats.png,{400/643}%,{1/-9}%,100%,100%,0,T
+;Card Art
+IMAGE="1-{(Image)}",[Image],{10300/643}%,{124/9}%,{45000/643}%,45%
+;[NAME]Font
+FONT=Times New Roman,14,TNB,#100C08
+;FEY HAVENS
+TEXT="1-{(Name)}",[Name],{5100/643}%,{11/3}%,{54900/643}%,{83/9}%,CENTER,CENTER
+;[CLASSES]Font
+FONT=Arial,8,T,#FFFFFF
+;Font- DEFENSE
+FONT=Arial,8,T,#000000
+;Text - Attack
+TEXT="1-{(Attack)}",[Attack],{23100/643}%,{842/9}%,{3200/643}%,{37/9}%
+;Text - Recover
+TEXT="1-{(Recover)}",[Recover],{50200/643}%,{844/9}%,{3500/643}%,{37/9}%
+;Text - Life
+TEXT="1-{(Life)}",[Life],{34300/643}%,{842/9}%,{2700/643}%,{37/9}%
+;Font - MODEL RULES
+FONT=Book Antiqua,8,T,#000000
+HTMLFONT=FontName,Arial,6,E,#000000
+;SPECIAL RULES
+HTMLTEXT="1-{(SPECIAL RULES)}",[SPECIAL RULES],{5900/643}%,{541/9}%,{53300/643}%,{208/9}%,#FFFFFF,0,T
+;Active Ability
+HTMLTEXT="1-{(Active Ability)}",[Active Ability],{6300/643}%,{724/9}%,{53300/643}%,{35/3}%,#FFFFFF,0,T
+FONT=Arial,14,TNB,#F5F5F5
+IMAGE=,D:\Projects\nandeck\Icons\CastCostMidBG.png,{50500/643}%,{119/9}%,{11100/643}%,7%,0,T
+;Cast Action
+HTMLTEXT="1-{(Cast Action)}",[Cast Action],{53100/643}%,{130/9}%,{4500/643}%,5%,#FFFFFF,0,T
+IMAGE=,D:\Projects\nandeck\Icons\CastCostMidBG.png,{50500/643}%,{182/9}%,{11100/643}%,{58/9}%,0,T
+;Card Cost 1
+HTMLTEXT="1-{(Cast Cost 1)}",[Cast Cost 1],{52900/643}%,{190/9}%,{4500/643}%,5%,#FFFFFF,0,T
+ENDVISUAL
+if = length([Attack]) > 20
+TEXT="1-{(SPECIAL RULES)}",[SPECIAL RULES],{5900/643}%,{541/9}%,{53300/643}%,{208/9}%,CENTER,CENTER
+ELSE
+ENDIF
+display=Ram.png

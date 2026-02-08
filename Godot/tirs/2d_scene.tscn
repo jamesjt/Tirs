@@ -1,0 +1,36 @@
+[gd_scene load_steps=7 format=3 uid="uid://inkwyq38377d"]
+
+[ext_resource type="Script" path="res://2D/Scripts/HexGrid.gd" id="1_dcviu"]
+[ext_resource type="Script" path="res://2D/Scripts/HexTile.gd" id="2_aobd6"]
+[ext_resource type="Script" path="res://2D/Scripts/Unit.gd" id="3_01y7v"]
+[ext_resource type="Script" path="res://2D/Scripts/TurnManager.gd" id="4_7ch5n"]
+[ext_resource type="Script" path="res://tile_map_layer.gd" id="5_ongho"]
+
+[sub_resource type="TileSet" id="TileSet_iybve"]
+
+[node name="2D Scene" type="Node2D"]
+
+[node name="HexGrid" type="Node2D" parent="."]
+script = ExtResource("1_dcviu")
+
+[node name="HexTile" type="Node2D" parent="HexGrid"]
+script = ExtResource("2_aobd6")
+
+[node name="Units" type="Node2D" parent="."]
+
+[node name="Unit" type="Node2D" parent="Units"]
+script = ExtResource("3_01y7v")
+
+[node name="TurnManager" type="Node" parent="."]
+script = ExtResource("4_7ch5n")
+
+[node name="Objectives" type="Node2D" parent="."]
+
+[node name="Objective" type="Node2D" parent="Objectives"]
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="TileMapLayer" type="TileMapLayer" parent="."]
+scale = Vector2(20, 20)
+tile_set = SubResource("TileSet_iybve")
+script = ExtResource("5_ongho")

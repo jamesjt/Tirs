@@ -1,0 +1,47 @@
+LINK = 17lSSg1vt-m9sM9kfVxL0Noxy-mGClb8RfzedWf5aDlk!RedRidge
+htmlimage = , manaIcon, "images/Icons/mana4.png",0.2,0.2,BPM
+htmlimage = , oneRound, "images/Icons/oneRound.png",0.2,0.2,BPM
+htmlimage = , oneGame, "images/Icons/oneGame.png",0.2,0.2,BPM
+VISUAL=, 10, 10
+RECTANGLE=,0%,0%,100%,100%,#000000
+;ArtBackground-Image
+IMAGE="1-{(IMAGE)}",[IMAGE],{29/6}%,{77/9}%,90.5%,{317/9}%,0,P
+;Text- SPECIAL RULES
+TEXT="1-{(SPECIAL RULE 1)}",[SPECIAL RULE 1],{26/3}%,{184/3}%,{251/3}%,{197/9}%,CENTER,WORDWRAP
+;CardBackground-Image
+IMAGE=,images\cardfront6.png,0%,{1/-9}%,100.5%,100%,0,T
+;[NAME]Font
+FONT=Arial,12,TN,#FFFFFF
+;FEY HAVENS
+TEXT="1-{(UNITS)}",[UNITS],{125/6}%,{23/9}%,{179/3}%,{58/9}%,CENTER
+;[CLASSES]Font
+FONT=Arial,8,T,#FFFFFF
+;Font- DEFENSE
+FONT=Arial,9,T,#000000
+;Text - MOVEMENT
+TEXT="1-{(MOVE)}",[MOVE],{241/6}%,{133/3}%,7.5%,{49/9}%
+;Text - ARMOR
+TEXT="1-{(ARMOR)}",[ARMOR],24.5%,{397/9}%,7.5%,{17/3}%
+;Text - HEALTH
+TEXT="1-{(HEALTH)}",[HEALTH],8.5%,{397/9}%,{47/6}%,{52/9}%
+;Text - RNG
+TEXT="1-{(RNG)}",[RNG],{169/3}%,{397/9}%,5.5%,{17/3}%
+;Text- DMG
+TEXT="1-{(DMG)}",[DMG],{509/6}%,{394/9}%,7%,{55/9}%
+;Text - Type
+TEXT="1-{(Atk Type)}",[Atk Type],{214/3}%,44%,{22/3}%,{53/9}%
+;Font - MODEL RULES
+FONT=Arial,5,T,#000000
+;Rules-HTMLFont
+HTMLFONT=RulesFont,Arial,5,,#000000,CENTER
+;Rules-HTMLText
+HTMLTEXT="1-{(Concat Rules)}",[Concat Rules],7.5%,{145/3}%,{509/6}%,{404/9}%,#FFFFFF,0,T,100,RulesFont,RulesFont
+;Cost-Image
+IMAGE=,D:\Projects\nandeck\images\Icons\Cost.png,{16/3}%,{41/9}%,{23/3}%,{43/9}%,0,T
+;Cost-Text
+TEXT="1-{(COST)}",[COST],{35/6}%,{13/3}%,{41/6}%,{16/3}%
+ENDVISUAL
+if = length([DMG]) > 20
+ELSE
+ENDIF
+display=RedRidge.png

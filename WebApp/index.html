@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tirs of Traea</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav id="top-nav">
+    <span class="nav-title">Tirs of Traea</span>
+  </nav>
+
+  <canvas id="gameCanvas"></canvas>
+
+  <div id="status-bar">Loading...</div>
+
+  <!-- Phase panels — only one visible at a time -->
+  <div id="panel-faction-p1" class="phase-panel side-panel side-left hidden"></div>
+  <div id="panel-faction-p2" class="phase-panel side-panel side-right hidden"></div>
+  <div id="panel-roster" class="phase-panel side-panel hidden"></div>
+  <div id="panel-terrain" class="phase-panel side-panel hidden"></div>
+  <div id="panel-deploy" class="phase-panel side-panel hidden"></div>
+  <div id="panel-battle" class="phase-panel side-panel hidden"></div>
+  <div id="panel-gameover" class="phase-panel center-panel hidden"></div>
+
+  <!-- Unit hover card -->
+  <div id="unit-card" class="unit-card hidden"></div>
+
+  <!-- PapaParse for CORS-safe Google Sheets CSV fetching -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+
+  <!-- Load order matters: board first (no deps), then units, game, ui -->
+  <script src="board.js"></script>
+  <script src="units.js"></script>
+  <script src="game.js"></script>
+  <script src="ui.js"></script>
+</body>
+</html>

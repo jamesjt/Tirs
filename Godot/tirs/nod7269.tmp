@@ -1,0 +1,8 @@
+[gd_scene load_steps=2 format=3 uid="uid://bytrvauplckj"]
+
+[ext_resource type="Script" path="res://GameManager.gd" id="1_forbm"]
+
+[node name="Node" type="Node"]
+script = ExtResource("1_forbm")
+
+[node name="Camera3D" type="Camera3D" parent="."]

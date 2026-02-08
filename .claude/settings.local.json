@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.google.com)",
+      "WebFetch(domain:doc-0s-44-sheets.googleusercontent.com)",
+      "Bash(dir:*)",
+      "Bash(curl:*)",
+      "Bash(del \"D:\\\\Projects\\\\Traea\\\\Tirs\\\\WebApp\\\\main.js\")",
+      "Bash(node --check:*)"
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+[gd_scene load_steps=3 format=3 uid="uid://bfdn77okqo4bg"]
+
+[ext_resource type="Script" path="res://HexTile.gd" id="1_lv2em"]
+
+[sub_resource type="CylinderShape3D" id="CylinderShape3D_dscxy"]
+height = 0.2
+radius = 1.0
+
+[node name="HexTile" type="Node3D"]
+script = ExtResource("1_lv2em")
+
+[node name="CSGCylinder3D" type="CSGCylinder3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.1, 0)
+radius = 1.0
+height = 0.2
+sides = 6
+
+[node name="StaticBody3D" type="StaticBody3D" parent="CSGCylinder3D"]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="CSGCylinder3D/StaticBody3D"]
+shape = SubResource("CylinderShape3D_dscxy")
