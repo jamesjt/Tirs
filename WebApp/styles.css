@@ -182,6 +182,30 @@ p { font-size: 13px; margin: 4px 0; }
   border-radius: 50%;
 }
 
+/* ── Roster sticky header ────────────────────────────────────── */
+
+.roster-sticky-header {
+  position: sticky;
+  top: -20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  margin: -16px -16px 12px -16px;
+  background: rgba(0, 0, 0, 0.85);
+  border-bottom: 1px solid #ffd700;
+  font-size: 14px;
+  font-weight: 600;
+  color: #ccc;
+  z-index: 10;
+}
+
+.roster-sticky-header .points-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: #ffd700;
+}
+
 /* ── Unit list buttons ───────────────────────────────────────── */
 
 .unit-list {
@@ -290,6 +314,51 @@ p { font-size: 13px; margin: 4px 0; }
   background: rgba(255,215,0,0.3);
 }
 
+/* ── Roster card areas ───────────────────────────────────────── */
+
+.roster-area {
+  position: fixed;
+  top: 48px;
+  bottom: 60px;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 10px;
+  overflow-y: auto;
+  z-index: 10;
+  pointer-events: none;  /* Don't block clicks when empty */
+}
+
+.roster-area.roster-left {
+  left: 0;
+}
+
+.roster-area.roster-right {
+  right: 0;
+}
+
+.roster-area .roster-card {
+  position: static;
+  flex-shrink: 0;
+  cursor: default;
+  pointer-events: auto;
+}
+
+.roster-area .roster-card.player-1 {
+  box-shadow: 0 4px 24px rgba(0,0,0,0.7), 0 0 0 2px #2A9D8F;
+}
+
+.roster-area .roster-card.player-2 {
+  box-shadow: 0 4px 24px rgba(0,0,0,0.7), 0 0 0 2px #D4872C;
+}
+
+/* Hide roster areas when empty or not in roster phase */
+.roster-area:empty {
+  display: none;
+}
+
 /* ── Unit hover card (Magic-card style) ──────────────────────── */
 
 .unit-card {
@@ -307,17 +376,20 @@ p { font-size: 13px; margin: 4px 0; }
 
 .unit-card .card-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
   padding: 6px 10px;
   background: linear-gradient(90deg, rgba(139,115,64,0.4), rgba(139,115,64,0.15));
   border-bottom: 1px solid #8B7340;
+  position: relative;
 }
 
 .unit-card .card-name {
   font-weight: 700;
   font-size: 13px;
   color: #fff;
+  flex: 1;
+  text-align: center;
+  padding-right: 24px; /* Balance the cost on left */
 }
 
 .unit-card .card-cost {
@@ -343,13 +415,12 @@ p { font-size: 13px; margin: 4px 0; }
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  border-bottom: 1px solid #8B7340;
 }
 
 .unit-card .card-image img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .unit-card .card-image .no-image {
@@ -363,40 +434,93 @@ p { font-size: 13px; margin: 4px 0; }
   font-size: 11px;
   color: #bba76a;
   font-style: italic;
-  background: linear-gradient(90deg, rgba(139,115,64,0.2), transparent);
+  text-align: center;
+  background: linear-gradient(90deg, rgba(139,115,64,0.2), transparent, rgba(139,115,64,0.2));
   border-bottom: 1px solid rgba(139,115,64,0.3);
 }
 
 .unit-card .card-stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1px;
-  padding: 6px 8px;
-  background: rgba(0,0,0,0.2);
+  display: flex;
+  justify-content: space-around;
+  padding: 6px 4px;
+  background: rgba(0,0,0,0.3);
   border-bottom: 1px solid rgba(139,115,64,0.3);
 }
 
 .unit-card .stat {
-  text-align: center;
-  padding: 2px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  position: relative;
 }
 
-.unit-card .stat-label {
-  font-size: 9px;
-  color: #888;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+.unit-card .stat::before {
+  position: absolute;
+  font-size: 28px;
+  line-height: 1;
+  opacity: 0.9;
 }
 
 .unit-card .stat-value {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
-  color: #e0e0e0;
+  color: #fff;
+  position: relative;
+  z-index: 1;
+  text-shadow:
+    -1px -1px 0 #000,
+    1px -1px 0 #000,
+    -1px 1px 0 #000,
+    1px 1px 0 #000;
 }
 
-.unit-card .stat-value.health { color: #e55; }
-.unit-card .stat-value.armor { color: #8ab; }
-.unit-card .stat-value.move { color: #8d8; }
+/* Heart - HP */
+.unit-card .stat-hp::before {
+  content: '';
+  width: 28px;
+  height: 26px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 26'%3E%3Cpath d='M14 24 C14 24 2 16 2 8 C2 4 5 1 9 1 C11.5 1 14 3 14 5 C14 3 16.5 1 19 1 C23 1 26 4 26 8 C26 16 14 24 14 24 Z' fill='none' stroke='%23cccccc' stroke-width='1'/%3E%3C/svg%3E") center/contain no-repeat;
+}
+
+/* Armor - vest/chestplate outline */
+.unit-card .stat-armor::before {
+  content: '';
+  width: 24px;
+  height: 28px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 28'%3E%3Cpath d='M12 2 L6 4 L4 8 L4 18 L8 24 L12 26 L16 24 L20 18 L20 8 L18 4 Z' fill='none' stroke='%23cccccc' stroke-width='2'/%3E%3Cpath d='M9 4 L12 6 L15 4' fill='none' stroke='%23cccccc' stroke-width='2'/%3E%3C/svg%3E") center/contain no-repeat;
+}
+
+/* Hexagon - Move */
+.unit-card .stat-move::before {
+  content: '⬡';
+  color: #ccc;
+  font-size: 32px;
+}
+
+/* Fat Arrow - Attack Range */
+.unit-card .stat-atk-range::before {
+  content: '';
+  width: 30px;
+  height: 24px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 24'%3E%3Cpath d='M2 8 L18 8 L18 2 L28 12 L18 22 L18 16 L2 16 Z' fill='none' stroke='%23cccccc' stroke-width='2'/%3E%3C/svg%3E") center/contain no-repeat;
+}
+
+/* Target - Attack Type */
+.unit-card .stat-atk-type::before {
+  content: '◎';
+  color: #ccc;
+  font-size: 32px;
+}
+
+/* Starburst - Damage */
+.unit-card .stat-damage::before {
+  content: '';
+  width: 28px;
+  height: 28px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'%3E%3Cpath d='M14 1 L16 10 L24 6 L18 12 L27 14 L18 16 L24 22 L16 18 L14 27 L12 18 L4 22 L10 16 L1 14 L10 12 L4 6 L12 10 Z' fill='none' stroke='%23cccccc' stroke-width='1.5'/%3E%3C/svg%3E") center/contain no-repeat;
+}
 
 .unit-card .card-rules {
   padding: 8px 10px;

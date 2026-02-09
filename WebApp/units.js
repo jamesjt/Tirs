@@ -4,6 +4,13 @@
 
 const Units = (() => {
   const SHEET_ID = '17lSSg1vt-m9sM9kfVxL0Noxy-mGClb8RfzedWf5aDlk';
+  const MAX_RETRIES = 2;
+  const RETRY_DELAY_MS = 1000;
+
+  // Loading state
+  let loadingState = 'idle';  // 'idle' | 'loading' | 'success' | 'error'
+  let loadingError = null;
+  let onStateChange = null;   // callback for UI updates
 
   // Dynamic data — populated from spreadsheet
   let activeFactions = [];           // e.g. ['Syli', 'Red Ridge', ...]
@@ -15,15 +22,28 @@ const Units = (() => {
 
   // ── PapaParse sheet fetcher ─────────────────────────────────
 
-  function fetchSheet(sheetName, useHeader) {
+  function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async function fetchSheet(sheetName, useHeader, retries = 0) {
+    const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+
     return new Promise((resolve, reject) => {
-      const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
       Papa.parse(url, {
         download: true,
         header: !!useHeader,
         skipEmptyLines: true,
         complete: results => resolve(results.data),
-        error: err => reject(err),
+        error: async err => {
+          if (retries < MAX_RETRIES) {
+            console.log(`Retrying ${sheetName} (attempt ${retries + 2}/${MAX_RETRIES + 1})...`);
+            await delay(RETRY_DELAY_MS);
+            resolve(fetchSheet(sheetName, useHeader, retries + 1));
+          } else {
+            reject(err);
+          }
+        },
       });
     });
   }
@@ -96,10 +116,27 @@ const Units = (() => {
 
   // ── Fetch everything ────────────────────────────────────────
 
+  function setLoadingState(newState, error = null) {
+    loadingState = newState;
+    loadingError = error;
+    if (onStateChange) onStateChange(loadingState, loadingError);
+  }
+
   async function fetchAll() {
-    await Promise.all([fetchActiveFactions(), fetchTerrainMap()]);
-    await Promise.all(activeFactions.map(f => fetchFaction(f)));
-    console.log('All faction data loaded:', Object.keys(catalog).map(k => `${k}: ${catalog[k].length} units`));
+    setLoadingState('loading');
+    try {
+      await Promise.all([fetchActiveFactions(), fetchTerrainMap()]);
+      if (activeFactions.length === 0) {
+        throw new Error('No active factions found. Check your internet connection.');
+      }
+      await Promise.all(activeFactions.map(f => fetchFaction(f)));
+      console.log('All faction data loaded:', Object.keys(catalog).map(k => `${k}: ${catalog[k].length} units`));
+      setLoadingState('success');
+    } catch (err) {
+      console.error('Failed to load game data:', err);
+      setLoadingState('error', err.message || 'Failed to load game data');
+      throw err;
+    }
   }
 
   // ── Normalise sheet columns to a clean unit template ────────
@@ -155,6 +192,9 @@ const Units = (() => {
     get terrainRules() { return terrainRules; },
     get factionTerrain() { return factionTerrain; },
     get catalog() { return catalog; },
+    get loadingState() { return loadingState; },
+    get loadingError() { return loadingError; },
+    setStateChangeCallback(cb) { onStateChange = cb; },
     fetchAll,
     fetchFaction,
   };

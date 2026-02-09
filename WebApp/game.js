@@ -30,6 +30,8 @@ const Game = (() => {
         1: { faction: null, roster: [], terrainPlacements: 0 },
         2: { faction: null, roster: [], terrainPlacements: 0 },
       },
+      confirmedRosters: new Set(),   // player numbers who confirmed roster
+      deployedUnits: new Set(),      // "player-index" keys for deployed roster units
 
       units: [],                // deployed Unit objects
       terrain: new Map(),       // "q,r" -> { surface }
@@ -51,18 +53,18 @@ const Game = (() => {
     state = freshState();
     // Initialise terrain map for all hexes
     for (const hex of Board.hexes) {
-      state.terrain.set(`${hex.q},${hex.r}`, { surface: null });
+      state.terrain.set(Board.coordKey(hex.q, hex.r), { surface: null });
     }
     // Initialise objective control
     for (const obj of Board.OBJECTIVES) {
-      state.objectiveControl[`${obj.q},${obj.r}`] = 0;
+      state.objectiveControl[Board.coordKey(obj.q, obj.r)] = 0;
     }
   }
 
   // ── Unit factory ──────────────────────────────────────────────
 
   function createUnit(template, player, q, r) {
-    return {
+    const unit = {
       name:       template.name,
       cost:       template.cost,
       health:     template.health,
@@ -78,6 +80,46 @@ const Game = (() => {
       r,
       activated:  false,
     };
+    // Parse abilities from special text
+    unit.abilities = parseAbilities(unit.special);
+    return unit;
+  }
+
+  // ── Special Abilities ────────────────────────────────────────────
+
+  /** Known ability keywords and their effects. */
+  const ABILITY_KEYWORDS = {
+    'tough':      { effect: 'reduce_damage', value: 1 },
+    'swift':      { effect: 'extra_move', value: 1 },
+    'deadly':     { effect: 'extra_damage', value: 1 },
+    'pierce':     { effect: 'ignore_armor', value: true },
+    'ranged':     { effect: 'no_melee_penalty', value: true },
+    'flying':     { effect: 'ignore_terrain', value: true },
+  };
+
+  /** Parse ability keywords from special rules text. */
+  function parseAbilities(specialText) {
+    if (!specialText) return [];
+    const text = specialText.toLowerCase();
+    const abilities = [];
+    for (const [keyword, data] of Object.entries(ABILITY_KEYWORDS)) {
+      if (text.includes(keyword)) {
+        abilities.push({ keyword, ...data });
+      }
+    }
+    return abilities;
+  }
+
+  /** Check if a unit has a specific ability. */
+  function hasAbility(unit, keyword) {
+    return unit.abilities && unit.abilities.some(a => a.keyword === keyword);
+  }
+
+  /** Get the value of an ability, or default if not present. */
+  function getAbilityValue(unit, keyword, defaultVal = 0) {
+    if (!unit.abilities) return defaultVal;
+    const ability = unit.abilities.find(a => a.keyword === keyword);
+    return ability ? ability.value : defaultVal;
   }
 
   // ── Phase: Faction Select ─────────────────────────────────────
@@ -119,8 +161,8 @@ const Game = (() => {
   }
 
   function confirmRoster(player) {
-    state.players[player]._rosterConfirmed = true;
-    if (state.players[1]._rosterConfirmed && state.players[2]._rosterConfirmed) {
+    state.confirmedRosters.add(player);
+    if (state.confirmedRosters.has(1) && state.confirmedRosters.has(2)) {
       calcInitiative();
       state.phase = PHASE.TERRAIN_DEPLOY;
     }
@@ -145,7 +187,7 @@ const Game = (() => {
     if (state.currentPlayer !== player) return false;
     if (state.players[player].terrainPlacements >= 3) return false;
 
-    const key = `${q},${r}`;
+    const key = Board.coordKey(q, r);
     const hex = Board.getHex(q, r);
     if (!hex) return false;
 
@@ -178,13 +220,23 @@ const Game = (() => {
 
   // ── Phase: Unit Deploy ────────────────────────────────────────
 
+  /** Check if a roster unit has been deployed. */
+  function isUnitDeployed(player, rosterIndex) {
+    return state.deployedUnits.has(`${player}-${rosterIndex}`);
+  }
+
+  /** Check if a player has undeployed roster units. */
+  function hasUndeployedUnits(player) {
+    return state.players[player].roster.some((_, i) => !isUnitDeployed(player, i));
+  }
+
   function deployUnit(player, rosterIndex, q, r) {
     if (state.phase !== PHASE.UNIT_DEPLOY) return false;
     if (state.currentPlayer !== player) return false;
 
     const p = state.players[player];
     const template = p.roster[rosterIndex];
-    if (!template || template._deployed) return false;
+    if (!template || isUnitDeployed(player, rosterIndex)) return false;
 
     const hex = Board.getHex(q, r);
     if (!hex) return false;
@@ -200,12 +252,12 @@ const Game = (() => {
 
     const unit = createUnit(template, player, q, r);
     state.units.push(unit);
-    template._deployed = true;
+    state.deployedUnits.add(`${player}-${rosterIndex}`);
 
     // Alternate
     const other = player === 1 ? 2 : 1;
-    const otherHasUndeployed = state.players[other].roster.some(u => !u._deployed);
-    const selfHasUndeployed = p.roster.some(u => !u._deployed);
+    const otherHasUndeployed = hasUndeployedUnits(other);
+    const selfHasUndeployed = hasUndeployedUnits(player);
 
     if (otherHasUndeployed) {
       state.currentPlayer = other;
@@ -252,7 +304,7 @@ const Game = (() => {
     for (const other of state.units) {
       if (other.health <= 0) continue;
       if (other.player !== u.player) {
-        blocked.add(`${other.q},${other.r}`);
+        blocked.add(Board.coordKey(other.q, other.r));
       }
     }
     // Also block hexes occupied by allies (can move through but not stop)
@@ -260,7 +312,7 @@ const Game = (() => {
     for (const other of state.units) {
       if (other === u || other.health <= 0) continue;
       if (other.player === u.player) {
-        allyOccupied.add(`${other.q},${other.r}`);
+        allyOccupied.add(Board.coordKey(other.q, other.r));
       }
     }
 
@@ -285,7 +337,7 @@ const Game = (() => {
     for (const enemy of state.units) {
       if (enemy.health <= 0 || enemy.player === u.player) continue;
       if (canAttack(u, enemy)) {
-        targets.add(`${enemy.q},${enemy.r}`);
+        targets.add(Board.coordKey(enemy.q, enemy.r));
       }
     }
 
@@ -295,19 +347,35 @@ const Game = (() => {
     return true;
   }
 
+  /** Currently animating movement, if any. */
+  let movementAnimation = null;
+
   function moveUnit(toQ, toR) {
     const act = state.activationState;
     if (!act || act.moved) return false;
     if (state.selectedAction !== 'move') return false;
 
-    const key = `${toQ},${toR}`;
+    const key = Board.coordKey(toQ, toR);
     if (!state.highlights || !state.highlights.has(key)) return false;
+
+    // Start animation from current position
+    const fromQ = act.unit.q;
+    const fromR = act.unit.r;
 
     act.unit.q = toQ;
     act.unit.r = toR;
     act.moved = true;
     state.selectedAction = null;
     state.highlights = null;
+
+    // Set up animation state
+    movementAnimation = {
+      unit: act.unit,
+      fromQ, fromR,
+      toQ, toR,
+      startTime: performance.now(),
+      duration: 200  // ms
+    };
 
     // Update objective control
     updateObjectiveControl(act.unit);
@@ -319,12 +387,32 @@ const Game = (() => {
     return true;
   }
 
+  /** Get the current animation state for use in rendering. */
+  function getMovementAnimation() {
+    if (!movementAnimation) return null;
+    const elapsed = performance.now() - movementAnimation.startTime;
+    if (elapsed >= movementAnimation.duration) {
+      movementAnimation = null;
+      return null;
+    }
+    const t = elapsed / movementAnimation.duration;
+    const eased = t * (2 - t);  // ease-out quadratic
+    return {
+      unit: movementAnimation.unit,
+      progress: eased,
+      fromQ: movementAnimation.fromQ,
+      fromR: movementAnimation.fromR,
+      toQ: movementAnimation.toQ,
+      toR: movementAnimation.toR
+    };
+  }
+
   function attackUnit(targetQ, targetR) {
     const act = state.activationState;
     if (!act || act.attacked) return false;
     if (state.selectedAction !== 'attack') return false;
 
-    const targetKey = `${targetQ},${targetR}`;
+    const targetKey = Board.coordKey(targetQ, targetR);
     if (!state.attackTargets || !state.attackTargets.has(targetKey)) return false;
 
     const target = state.units.find(
@@ -332,8 +420,23 @@ const Game = (() => {
     );
     if (!target) return false;
 
-    // Deal damage: damage - armor, minimum 1
-    const dmg = Math.max(1, act.unit.damage - target.armor);
+    // Calculate damage with ability modifiers
+    const attacker = act.unit;
+    let baseDamage = attacker.damage;
+    let armor = target.armor;
+
+    // Deadly: +1 damage
+    baseDamage += getAbilityValue(attacker, 'deadly', 0);
+
+    // Pierce: ignore armor
+    if (hasAbility(attacker, 'pierce')) {
+      armor = 0;
+    }
+
+    // Tough: reduce incoming damage
+    const toughReduction = getAbilityValue(target, 'tough', 0);
+
+    const dmg = Math.max(1, baseDamage - armor - toughReduction);
     target.health -= dmg;
 
     act.attacked = true;
@@ -344,6 +447,15 @@ const Game = (() => {
     if (act.moved && act.attacked) {
       endActivation();
     }
+    return true;
+  }
+
+  /** Cancel current action selection without using the action. */
+  function cancelAction() {
+    if (!state.selectedAction) return false;
+    state.selectedAction = null;
+    state.highlights = null;
+    state.attackTargets = null;
     return true;
   }
 
@@ -426,7 +538,7 @@ const Game = (() => {
 
   /** Check if a terrain hex has a specific rule (e.g. 'cover', 'difficult'). */
   function hasTerrainRule(q, r, rule) {
-    const td = state.terrain.get(`${q},${r}`);
+    const td = state.terrain.get(Board.coordKey(q, r));
     if (!td || !td.surface) return false;
     const info = Units.terrainRules[td.surface];
     return info && info.rules.includes(rule);
@@ -462,8 +574,8 @@ const Game = (() => {
         }
       }
       if (best) {
-        const key = `${best.q},${best.r}`;
-        if (key === `${q1},${r1}` || key === `${q2},${r2}`) continue;
+        const key = Board.coordKey(best.q, best.r);
+        if (key === Board.coordKey(q1, r1) || key === Board.coordKey(q2, r2)) continue;
         if (checked.has(key)) continue;
         checked.add(key);
         // Cover terrain blocks LoS beyond (not into)
@@ -478,16 +590,16 @@ const Game = (() => {
 
   function hasFreePath(q1, r1, q2, r2, maxDist) {
     // BFS: find at least one shortest path where no intermediate hex blocks LoE
-    const target = `${q2},${r2}`;
+    const target = Board.coordKey(q2, r2);
     const visited = new Map();
-    visited.set(`${q1},${r1}`, 0);
+    visited.set(Board.coordKey(q1, r1), 0);
     const queue = [{ q: q1, r: r1, dist: 0 }];
 
     while (queue.length > 0) {
       const cur = queue.shift();
       if (cur.dist >= maxDist) continue;
       for (const n of Board.getNeighbors(cur.q, cur.r)) {
-        const key = `${n.q},${n.r}`;
+        const key = Board.coordKey(n.q, n.r);
         const nd = cur.dist + 1;
         if (key === target) return true; // reached target via clear path
         if (visited.has(key)) continue;
@@ -502,7 +614,7 @@ const Game = (() => {
   // ── Objective control ─────────────────────────────────────────
 
   function updateObjectiveControl(unit) {
-    const key = `${unit.q},${unit.r}`;
+    const key = Board.coordKey(unit.q, unit.r);
     if (Board.OBJECTIVES.some(o => o.q === unit.q && o.r === unit.r)) {
       state.objectiveControl[key] = unit.player;
     }
@@ -530,7 +642,7 @@ const Game = (() => {
   function endRound() {
     // Score objectives
     for (const obj of Board.OBJECTIVES) {
-      const key = `${obj.q},${obj.r}`;
+      const key = Board.coordKey(obj.q, obj.r);
       const owner = state.objectiveControl[key];
       if (!owner) continue;
       if (obj.type === 'shard') {
@@ -575,6 +687,11 @@ const Game = (() => {
     reset,
     createUnit,
 
+    // Abilities
+    hasAbility,
+    getAbilityValue,
+    ABILITY_KEYWORDS,
+
     // Faction select
     selectFaction,
 
@@ -589,6 +706,7 @@ const Game = (() => {
 
     // Unit deploy
     deployUnit,
+    isUnitDeployed,
 
     // Battle
     selectUnit,
@@ -596,7 +714,9 @@ const Game = (() => {
     showMoveRange,
     showAttackRange,
     moveUnit,
+    getMovementAnimation,
     attackUnit,
+    cancelAction,
     skipAction,
     endActivation,
     forceEndActivation,

@@ -1,5 +1,6 @@
 // ui.js — Event handling, DOM management, phase UI
 // Bridges Board (rendering) and Game (logic).
+console.log('UI module loading...');
 
 const UI = (() => {
   let isPanning = false;
@@ -8,14 +9,26 @@ const UI = (() => {
   // ── Initialisation ────────────────────────────────────────────
 
   function init() {
+    console.log('UI.init() called');
     Board.init(document.getElementById('gameCanvas'));
     Game.reset();
 
+    // Set up loading state callback
+    Units.setStateChangeCallback(updateLoadingUI);
+    showLoadingUI();
+
     // Start fetching unit data, then show faction select
-    Units.fetchAll().then(() => {
-      showPhase();
-      render();
-    });
+    Units.fetchAll()
+      .then(() => {
+        console.log('Units loaded successfully');
+        hideLoadingUI();
+        showPhase();
+        render();
+      })
+      .catch(err => {
+        // Error UI is already shown by the state change callback
+        console.error('Failed to initialize:', err);
+      });
 
     // Canvas events
     const c = Board.canvas;
@@ -30,15 +43,124 @@ const UI = (() => {
     // Button events (delegated)
     document.addEventListener('click', onButtonClick);
 
-    showPhase();
+    // Keyboard navigation
+    initKeyboardNavigation();
+
     render();
+  }
+
+  // ── Loading/Error UI ──────────────────────────────────────────
+
+  let loadingOverlay = null;
+
+  function showLoadingUI() {
+    if (!loadingOverlay) {
+      loadingOverlay = document.createElement('div');
+      loadingOverlay.id = 'loading-overlay';
+      loadingOverlay.className = 'phase-panel center-panel';
+      document.body.appendChild(loadingOverlay);
+    }
+    loadingOverlay.innerHTML = `
+      <h2>Loading Game Data</h2>
+      <p>Fetching unit and terrain data...</p>
+    `;
+    loadingOverlay.classList.remove('hidden');
+  }
+
+  function hideLoadingUI() {
+    if (loadingOverlay) {
+      loadingOverlay.classList.add('hidden');
+    }
+  }
+
+  function updateLoadingUI(state, error) {
+    if (!loadingOverlay) return;
+    if (state === 'loading') {
+      loadingOverlay.innerHTML = `
+        <h2>Loading Game Data</h2>
+        <p>Fetching unit and terrain data...</p>
+      `;
+    } else if (state === 'error') {
+      loadingOverlay.innerHTML = `
+        <h2>Loading Failed</h2>
+        <p style="color: #f66;">${error || 'Unknown error'}</p>
+        <button class="btn btn-confirm" onclick="location.reload()">Retry</button>
+      `;
+    }
+  }
+
+  // ── Keyboard Navigation ──────────────────────────────────────
+
+  function initKeyboardNavigation() {
+    document.addEventListener('keydown', onGlobalKeydown);
+  }
+
+  function onGlobalKeydown(e) {
+    const s = Game.state;
+
+    // Escape: cancel current action or deselect
+    if (e.key === 'Escape') {
+      if (s.phase === Game.PHASE.BATTLE) {
+        if (s.selectedAction) {
+          Game.cancelAction();
+          showPhase();
+          render();
+        } else if (s.selectedUnit) {
+          Game.deselectUnit();
+          showPhase();
+          render();
+        }
+      }
+      return;
+    }
+
+    // Tab: cycle through own units (in battle phase)
+    if (e.key === 'Tab' && s.phase === Game.PHASE.BATTLE) {
+      e.preventDefault();
+      const ownUnits = s.units.filter(u => u.player === s.currentPlayer && u.health > 0 && !u.activated);
+      if (ownUnits.length === 0) return;
+
+      const currentIdx = s.selectedUnit ? ownUnits.indexOf(s.selectedUnit) : -1;
+      const nextIdx = (currentIdx + 1) % ownUnits.length;
+      Game.selectUnit(ownUnits[nextIdx]);
+      showPhase();
+      render();
+      return;
+    }
+
+    // Enter: confirm action / end turn
+    if (e.key === 'Enter' && s.phase === Game.PHASE.BATTLE) {
+      if (s.activationState) {
+        Game.endActivation();
+        showPhase();
+        render();
+      }
+      return;
+    }
   }
 
   // ── Render loop ───────────────────────────────────────────────
 
+  let animationFrameId = null;
+
   function render() {
-    Board.render(Game.state);
+    // Get current animation state
+    const animation = Game.getMovementAnimation();
+
+    // Pass animation to board renderer
+    const renderState = { ...Game.state, animation };
+    Board.render(renderState);
+
     updateStatusBar();
+    updateRosterCards();
+
+    // Continue animation if in progress
+    if (animation) {
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+      animationFrameId = requestAnimationFrame(render);
+    } else {
+      animationFrameId = null;
+    }
   }
 
   // ── Phase UI switching ────────────────────────────────────────
@@ -156,8 +278,9 @@ const UI = (() => {
     const cost = Game.rosterCost(p);
     const available = Units.catalog[faction] || [];
 
-    let html = `<h2>Player ${p}: Build Roster (${faction})</h2>`;
-    html += `<p>Points: <strong>${cost}/30</strong></p>`;
+    const remaining = 30 - cost;
+    let html = `<div class="roster-sticky-header"><span>Points Remaining</span><span class="points-value">${remaining}</span></div>`;
+    html += `<h2>Player ${p}: Build Roster (${faction})</h2>`;
 
     // Available units
     html += '<h3>Available Units</h3><div class="unit-list">';
@@ -236,14 +359,14 @@ const UI = (() => {
     const p = s.currentPlayer;
     applyPlayerStyle(panel, p);
     const roster = s.players[p].roster;
-    const undeployed = roster.filter(u => !u._deployed);
+    const undeployed = roster.filter((_, i) => !Game.isUnitDeployed(p, i));
 
     let html = `<h2>Player ${p}: Deploy Units</h2>`;
     html += '<p class="hint">Select a unit, then click a hex in your deployment zone.</p>';
     html += '<div class="unit-list">';
     for (let i = 0; i < roster.length; i++) {
       const u = roster[i];
-      if (u._deployed) continue;
+      if (Game.isUnitDeployed(p, i)) continue;
       html += `<button class="btn btn-unit" data-action="select-deploy-unit" data-index="${i}">`;
       html += `<span class="unit-name">${u.name}</span>`;
       html += `<span class="unit-stats">${u.cost}pt | HP:${u.health} Mv:${u.move} ${u.atkType}</span>`;
@@ -322,9 +445,9 @@ const UI = (() => {
   // ── Unit hover card ──────────────────────────────────────────
 
   const ATK_LABELS = { L: 'Line', P: 'Path', D: 'Direct' };
+  const ATK_ICONS = { L: '⟷', P: '↝', D: '◎' };
 
-  function showUnitCard(unit, e) {
-    const card = document.getElementById('unit-card');
+  function generateCardHTML(unit) {
     const atkLabel = ATK_LABELS[unit.atkType] || unit.atkType;
 
     let imgHtml;
@@ -334,27 +457,95 @@ const UI = (() => {
       imgHtml = `<span class="no-image">${unit.name.charAt(0)}</span>`;
     }
 
-    card.innerHTML = `
+    return `
       <div class="card-header">
-        <span class="card-name">${unit.name}</span>
         <span class="card-cost">${unit.cost}</span>
+        <span class="card-name">${unit.name}</span>
       </div>
       <div class="card-image">${imgHtml}</div>
-      <div class="card-type">${unit.unitClass || unit.faction} — ${atkLabel} Attack</div>
       <div class="card-stats">
-        <div class="stat"><div class="stat-label">HP</div><div class="stat-value health">${unit.health}</div></div>
-        <div class="stat"><div class="stat-label">Armor</div><div class="stat-value armor">${unit.armor}</div></div>
-        <div class="stat"><div class="stat-label">Move</div><div class="stat-value move">${unit.move}</div></div>
-        <div class="stat"><div class="stat-label">Range</div><div class="stat-value">${unit.range}</div></div>
-        <div class="stat"><div class="stat-label">Damage</div><div class="stat-value">${unit.damage}</div></div>
-        <div class="stat"><div class="stat-label">Attack</div><div class="stat-value">${atkLabel}</div></div>
+        <div class="stat stat-hp" title="Health"><span class="stat-value">${unit.health}</span></div>
+        <div class="stat stat-armor" title="Armor"><span class="stat-value">${unit.armor}</span></div>
+        <div class="stat stat-move" title="Move"><span class="stat-value">${unit.move}</span></div>
+        <div class="stat stat-atk-range" title="Range"><span class="stat-value">${unit.range}</span></div>
+        <div class="stat stat-atk-type" title="${atkLabel} Attack"><span class="stat-value">${unit.atkType}</span></div>
+        <div class="stat stat-damage" title="Damage"><span class="stat-value">${unit.damage}</span></div>
       </div>
+      <div class="card-type">${unit.unitClass || unit.faction}</div>
       ${unit.special ? `<div class="card-rules">${unit.special}</div>` : ''}
       <div class="card-footer">${unit.faction}</div>
     `;
+  }
 
+  function showUnitCard(unit, e) {
+    const card = document.getElementById('unit-card');
+    card.innerHTML = generateCardHTML(unit);
     card.classList.remove('hidden');
     positionCard(card, e);
+  }
+
+  // ── Roster cards in fixed side areas ─────────────────────────────
+
+  // Track existing card DOM elements by "player-unitName" key
+  const cardElements = new Map();
+
+  function updateRosterCards() {
+    const s = Game.state;
+
+    // Only show during roster_build phase
+    if (s.phase !== Game.PHASE.ROSTER_BUILD) {
+      clearRosterCards();
+      return;
+    }
+
+    const rosterAreaP1 = document.getElementById('roster-area-p1');
+    const rosterAreaP2 = document.getElementById('roster-area-p2');
+
+    // Build set of units that should have cards
+    const neededCards = new Set();
+    for (const p of [1, 2]) {
+      const roster = s.players[p].roster;
+      for (const unit of roster) {
+        neededCards.add(`${p}-${unit.name}`);
+      }
+    }
+
+    // Remove cards for units no longer in roster
+    for (const [cardKey, card] of cardElements) {
+      if (!neededCards.has(cardKey)) {
+        card.remove();
+        cardElements.delete(cardKey);
+      }
+    }
+
+    // Create or update cards for each player
+    for (const p of [1, 2]) {
+      const roster = s.players[p].roster;
+      const container = p === 1 ? rosterAreaP1 : rosterAreaP2;
+
+      for (const unit of roster) {
+        const cardKey = `${p}-${unit.name}`;
+        let card = cardElements.get(cardKey);
+
+        if (!card) {
+          // Create new card
+          card = document.createElement('div');
+          card.className = `unit-card roster-card player-${p}`;
+          card.dataset.unitName = unit.name;
+          card.dataset.player = p;
+          card.innerHTML = generateCardHTML(unit);
+          container.appendChild(card);
+          cardElements.set(cardKey, card);
+        }
+      }
+    }
+  }
+
+  function clearRosterCards() {
+    for (const [, card] of cardElements) {
+      card.remove();
+    }
+    cardElements.clear();
   }
 
   function positionCard(card, e) {
@@ -485,7 +676,7 @@ const UI = (() => {
       const valid = new Map();
       for (const hex of Board.hexes) {
         if (hex.zone === `player${p === 1 ? 2 : 1}`) continue;
-        const key = `${hex.q},${hex.r}`;
+        const key = Board.coordKey(hex.q, hex.r);
         if (Board.OBJECTIVES.some(o => o.q === hex.q && o.r === hex.r)) continue;
         const td = Game.state.terrain.get(key);
         if (td && td.surface) continue;
@@ -503,7 +694,7 @@ const UI = (() => {
       const valid = new Map();
       for (const hex of Board.hexes) {
         if (hex.zone !== `player${p}`) continue;
-        const key = `${hex.q},${hex.r}`;
+        const key = Board.coordKey(hex.q, hex.r);
         if (Game.state.units.some(u => u.q === hex.q && u.r === hex.r && u.health > 0)) continue;
         if (Board.OBJECTIVES.some(o => o.q === hex.q && o.r === hex.r)) continue;
         valid.set(key, 1);
@@ -584,6 +775,9 @@ const UI = (() => {
         render();
         return;
       }
+      // Invalid move - flash red
+      Board.flashHex(hex.q, hex.r, render);
+      return;
     }
 
     // If we're in attack mode, try to attack there
@@ -594,6 +788,9 @@ const UI = (() => {
         render();
         return;
       }
+      // Invalid attack - flash red
+      Board.flashHex(hex.q, hex.r, render);
+      return;
     }
 
     // Otherwise try to select a unit on this hex
