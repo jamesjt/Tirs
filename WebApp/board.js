@@ -2,34 +2,12 @@
 // No game logic lives here. Pure geometry + drawing.
 
 const Board = (() => {
-  // ── Configuration constants ──────────────────────────────────
-  const CONFIG = {
-    HEX_SCALE_DIVISOR: 25,        // hexSize = min(width, height) / this
-    COLUMN_OFFSET_FACTOR: 0.75,   // horizontal grid centering
-    NEIGHBOR_TOLERANCE: 1.15,     // multiplier for neighbor detection threshold
-    MAX_LINE_HEX_COUNT: 20,       // max hexes to check for line-of-sight
-    ZOOM_MIN: 0.3,
-    ZOOM_MAX: 3,
-    ZOOM_FACTOR_OUT: 0.9,
-    ZOOM_FACTOR_IN: 1.1,
-    SURFACE_ICON_SCALE: 1.4,
-    OBJECTIVE_ICON_SCALE: 1.5,
-  };
-
   let canvas, ctx;
   let hexSize = 30;
   let panX = 0, panY = 0;
   let zoomLevel = 1;
   let hexes = [];
   let neighborMap = new Map(); // "q,r" -> [{ q, r, dir }]
-  let distanceCache = new Map(); // "q1,r1:q2,r2" -> distance
-
-  // ── Coordinate key helpers ─────────────────────────────────────
-  function coordKey(q, r) { return `${q},${r}`; }
-  function parseCoordKey(key) {
-    const [q, r] = key.split(',').map(Number);
-    return { q, r };
-  }
 
   const COLUMNS = 13;
   const HEXES_PER_COL = [5, 6, 7, 8, 9, 8, 7, 8, 9, 8, 7, 6, 5];
@@ -124,7 +102,7 @@ const Board = (() => {
     canvas.style.width = cssW + 'px';
     canvas.style.height = cssH + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    hexSize = Math.min(cssW, cssH) / CONFIG.HEX_SCALE_DIVISOR;
+    hexSize = Math.min(cssW, cssH) / 25;
     buildHexes();
   }
 
@@ -133,14 +111,13 @@ const Board = (() => {
   function buildHexes() {
     hexes = [];
     neighborMap = new Map();
-    distanceCache = new Map();
 
     for (let q = 0; q < COLUMNS; q++) {
       const rowCount = HEXES_PER_COL[q];
       for (let r = 0; r < rowCount; r++) {
         const x = hexSize * 1.5 * q
                   + cssW / 2
-                  - (COLUMNS * hexSize * CONFIG.COLUMN_OFFSET_FACTOR);
+                  - (COLUMNS * hexSize * 0.75);
         const yOff = (rowCount - 1) * hexSize * Math.sqrt(3) / 2;
         const y = hexSize * Math.sqrt(3) * r
                   + cssH / 2
@@ -158,9 +135,9 @@ const Board = (() => {
 
     // Build adjacency using pixel distance.
     // For flat-top hexes every neighbour centre is sqrt(3)*hexSize away.
-    const threshold = hexSize * Math.sqrt(3) * CONFIG.NEIGHBOR_TOLERANCE;
+    const threshold = hexSize * Math.sqrt(3) * 1.15;
     for (const hex of hexes) {
-      const key = coordKey(hex.q, hex.r);
+      const key = `${hex.q},${hex.r}`;
       const adj = [];
       for (const other of hexes) {
         if (other === hex) continue;
@@ -200,7 +177,7 @@ const Board = (() => {
   }
 
   function getNeighbors(q, r) {
-    return neighborMap.get(coordKey(q, r)) || [];
+    return neighborMap.get(`${q},${r}`) || [];
   }
 
   function getNeighborInDir(q, r, dir) {
@@ -213,14 +190,14 @@ const Board = (() => {
   function getReachableHexes(startQ, startR, moveRange, blockedHexes) {
     const blocked = blockedHexes || new Set();
     const visited = new Map();
-    visited.set(coordKey(startQ, startR), 0);
+    visited.set(`${startQ},${startR}`, 0);
     const queue = [{ q: startQ, r: startR, dist: 0 }];
 
     while (queue.length > 0) {
       const cur = queue.shift();
       if (cur.dist >= moveRange) continue;
       for (const n of getNeighbors(cur.q, cur.r)) {
-        const key = coordKey(n.q, n.r);
+        const key = `${n.q},${n.r}`;
         if (blocked.has(key)) continue;
         const nd = cur.dist + 1;
         if (!visited.has(key) || visited.get(key) > nd) {
@@ -229,7 +206,7 @@ const Board = (() => {
         }
       }
     }
-    visited.delete(coordKey(startQ, startR));
+    visited.delete(`${startQ},${startR}`);
     return visited;
   }
 
@@ -246,19 +223,10 @@ const Board = (() => {
     return result;
   }
 
-  /** BFS shortest-path distance between two hexes. Cached for performance. */
+  /** BFS shortest-path distance between two hexes. */
   function hexDistance(q1, r1, q2, r2) {
     if (q1 === q2 && r1 === r2) return 0;
-
-    // Check cache (symmetric - distance A->B = B->A)
-    const cacheKey = q1 <= q2 || (q1 === q2 && r1 <= r2)
-      ? `${q1},${r1}:${q2},${r2}`
-      : `${q2},${r2}:${q1},${r1}`;
-    if (distanceCache.has(cacheKey)) {
-      return distanceCache.get(cacheKey);
-    }
-
-    const visited = new Set([coordKey(q1, r1)]);
+    const visited = new Set([`${q1},${r1}`]);
     let frontier = [{ q: q1, r: r1 }];
     let dist = 0;
     while (frontier.length > 0) {
@@ -266,11 +234,8 @@ const Board = (() => {
       const next = [];
       for (const { q, r } of frontier) {
         for (const n of getNeighbors(q, r)) {
-          if (n.q === q2 && n.r === r2) {
-            distanceCache.set(cacheKey, dist);
-            return dist;
-          }
-          const key = coordKey(n.q, n.r);
+          if (n.q === q2 && n.r === r2) return dist;
+          const key = `${n.q},${n.r}`;
           if (!visited.has(key)) {
             visited.add(key);
             next.push(n);
@@ -279,7 +244,6 @@ const Board = (() => {
       }
       frontier = next;
     }
-    distanceCache.set(cacheKey, Infinity);
     return Infinity;
   }
 
@@ -287,7 +251,7 @@ const Board = (() => {
    *  direction, or -1 if they don't. */
   function straightLineDir(q1, r1, q2, r2) {
     for (let dir = 0; dir < 6; dir++) {
-      const line = getLineHexes(q1, r1, dir, CONFIG.MAX_LINE_HEX_COUNT);
+      const line = getLineHexes(q1, r1, dir, 20);
       if (line.some(h => h.q === q2 && h.r === r2)) return dir;
     }
     return -1;
@@ -362,7 +326,7 @@ const Board = (() => {
     // 2. Highlights (reachable hexes, valid placements, etc.)
     if (state.highlights) {
       for (const key of state.highlights.keys()) {
-        const { q, r } = parseCoordKey(key);
+        const [q, r] = key.split(',').map(Number);
         const hex = getHex(q, r);
         if (hex) drawHexShape(hex, state.highlightColor || 'rgba(255,255,255,0.3)');
       }
@@ -371,14 +335,14 @@ const Board = (() => {
     // 3. Terrain surfaces
     for (const [key, td] of state.terrain) {
       if (!td.surface) continue;
-      const { q, r } = parseCoordKey(key);
+      const [q, r] = key.split(',').map(Number);
       const hex = getHex(q, r);
       if (!hex) continue;
       const { x, y } = px(hex);
       const s = sz();
       const icon = surfaceIcons[td.surface];
       if (icon && icon.complete && icon.naturalWidth > 0) {
-        const size = s * CONFIG.SURFACE_ICON_SCALE;
+        const size = s * 1.4;
         ctx.drawImage(icon, x - size / 2, y - size / 2, size, size);
       } else {
         // Fallback to colored circle + letter
@@ -391,11 +355,11 @@ const Board = (() => {
     for (const obj of OBJECTIVES) {
       const hex = getHex(obj.q, obj.r);
       if (!hex) continue;
-      const owner = state.objectiveControl[coordKey(obj.q, obj.r)] || 0;
+      const owner = state.objectiveControl[`${obj.q},${obj.r}`] || 0;
       const img = obj.type === 'core' ? coreImg : shardImg;
       const { x, y } = px(hex);
       const s = sz();
-      const size = s * CONFIG.OBJECTIVE_ICON_SCALE;
+      const size = s * 1.5;
 
       if (img.complete && img.naturalWidth > 0) {
         ctx.drawImage(img, x - size / 2, y - size / 2, size, size);
@@ -421,55 +385,18 @@ const Board = (() => {
       const hex = getHex(unit.q, unit.r);
       if (!hex) continue;
 
-      // Check if this unit is animating
-      let drawX, drawY;
-      if (state.animation && state.animation.unit === unit) {
-        const anim = state.animation;
-        const fromHex = getHex(anim.fromQ, anim.fromR);
-        const toHex = getHex(anim.toQ, anim.toR);
-        if (fromHex && toHex) {
-          const fromPos = px(fromHex);
-          const toPos = px(toHex);
-          drawX = fromPos.x + (toPos.x - fromPos.x) * anim.progress;
-          drawY = fromPos.y + (toPos.y - fromPos.y) * anim.progress;
-        } else {
-          const pos = px(hex);
-          drawX = pos.x;
-          drawY = pos.y;
-        }
-      } else {
-        const pos = px(hex);
-        drawX = pos.x;
-        drawY = pos.y;
-      }
-
       const s = sz();
       const fill = unit.player === 1 ? '#2A9D8F' : '#D4872C';
       const ring = unit.activated ? '#666' : '#fff';
-
-      // Draw unit at animated position
-      ctx.fillStyle = fill;
-      ctx.beginPath();
-      ctx.arc(drawX, drawY, s * 0.55, 0, Math.PI * 2);
-      ctx.fill();
-      if (ring) {
-        ctx.strokeStyle = ring;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
-
-      // Draw label
-      ctx.fillStyle = '#fff';
-      ctx.font = `bold ${s / 2.5}px sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(unit.name[0], drawX, drawY);
+      drawCircle(hex, 0.55, fill, ring, 2);
+      drawLabel(hex, unit.name[0], '#fff');
 
       // Health bar
+      const { x, y } = px(hex);
       const bw = s;
       const bh = s / 8;
-      const bx = drawX - bw / 2;
-      const by = drawY + s * 0.6;
+      const bx = x - bw / 2;
+      const by = y + s * 0.6;
       const ratio = unit.health / unit.maxHealth;
       ctx.fillStyle = '#333';
       ctx.fillRect(bx, by, bw, bh);
@@ -493,7 +420,7 @@ const Board = (() => {
     // 7. Attack target highlights
     if (state.attackTargets) {
       for (const key of state.attackTargets) {
-        const { q, r } = parseCoordKey(key);
+        const [q, r] = key.split(',').map(Number);
         const hex = getHex(q, r);
         if (hex) {
           const { x, y } = px(hex);
@@ -507,7 +434,6 @@ const Board = (() => {
         }
       }
     }
-
   }
 
   // ── Public API ──────────────────────────────────────────────────
@@ -519,8 +445,8 @@ const Board = (() => {
     const my = clientY - rect.top;
 
     const oldZoom = zoomLevel;
-    const factor = delta > 0 ? CONFIG.ZOOM_FACTOR_OUT : CONFIG.ZOOM_FACTOR_IN;
-    zoomLevel = Math.min(CONFIG.ZOOM_MAX, Math.max(CONFIG.ZOOM_MIN, zoomLevel * factor));
+    const factor = delta > 0 ? 0.9 : 1.1;
+    zoomLevel = Math.min(3, Math.max(0.3, zoomLevel * factor));
 
     // Adjust pan so the point under the cursor stays fixed
     panX = mx - (mx - panX) * (zoomLevel / oldZoom);
@@ -531,40 +457,6 @@ const Board = (() => {
   function getIconFile(surfaceName) {
     const mapped = ICON_FILE_MAP[surfaceName];
     return mapped ? `${mapped}.png` : `${surfaceName}.png`;
-  }
-
-  // ── Flash feedback for invalid actions ──────────────────────────
-
-  let flashingHex = null;
-  let flashTimeout = null;
-
-  /** Flash a hex red briefly to indicate invalid action. */
-  function flashHex(q, r, callback) {
-    const hex = getHex(q, r);
-    if (!hex) return;
-
-    flashingHex = { q, r };
-    if (flashTimeout) clearTimeout(flashTimeout);
-
-    // Draw flash overlay
-    const { x, y } = px(hex);
-    const s = sz();
-    ctx.beginPath();
-    for (let i = 0; i < 6; i++) {
-      const a = (Math.PI / 3) * i;
-      const hx = x + s * Math.cos(a);
-      const hy = y + s * Math.sin(a);
-      i === 0 ? ctx.moveTo(hx, hy) : ctx.lineTo(hx, hy);
-    }
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(255,50,50,0.5)';
-    ctx.fill();
-
-    // Clear flash after short delay
-    flashTimeout = setTimeout(() => {
-      flashingHex = null;
-      if (callback) callback();
-    }, 200);
   }
 
   return {
@@ -581,12 +473,10 @@ const Board = (() => {
     hexDistance,
     straightLineDir,
     getIconFile,
-    coordKey,
-    parseCoordKey,
-    flashHex,
     get hexes() { return hexes; },
     get hexSize() { return hexSize; },
     get zoomLevel() { return zoomLevel; },
+    setZoom(v) { zoomLevel = Math.min(3, Math.max(0.3, v)); },
     get panX() { return panX; },
     set panX(v) { panX = v; },
     get panY() { return panY; },

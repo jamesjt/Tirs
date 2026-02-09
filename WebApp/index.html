@@ -7,29 +7,65 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <nav id="top-nav" role="banner" style="position:fixed;top:0;left:0;right:0;height:40px;background:black;z-index:9999;display:flex;align-items:center;padding:0 16px;">
-    <span class="nav-title" style="color:gold;font-weight:bold;">Tirs of Traea</span>
+  <!-- SVG noise filter for parchment texture -->
+  <svg style="position:absolute;width:0;height:0" aria-hidden="true">
+    <filter id="paper-noise">
+      <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="4" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="noise-organic">
+      <feTurbulence type="fractalNoise" baseFrequency="0.5 0.8" numOctaves="5" stitchTiles="stitch" seed="2"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="noise-volcanic">
+      <feTurbulence type="turbulence" baseFrequency="0.45" numOctaves="3" stitchTiles="stitch" seed="7"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="noise-ethereal">
+      <feTurbulence type="fractalNoise" baseFrequency="0.3 0.4" numOctaves="6" stitchTiles="stitch" seed="13"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="noise-stone">
+      <feTurbulence type="turbulence" baseFrequency="0.9" numOctaves="3" stitchTiles="stitch" seed="5"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="noise-ripple">
+      <feTurbulence type="fractalNoise" baseFrequency="0.25 0.7" numOctaves="4" stitchTiles="stitch" seed="9"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="noise-sand">
+      <feTurbulence type="fractalNoise" baseFrequency="1.2" numOctaves="2" stitchTiles="stitch" seed="3"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+  </svg>
+
+  <nav id="top-nav">
+    <span class="nav-title">Tirs of Traea</span>
   </nav>
 
-  <canvas id="gameCanvas" role="img" aria-label="Game board with hexagonal grid"></canvas>
+  <canvas id="gameCanvas"></canvas>
 
-  <!-- Roster card areas - fixed columns on each side -->
-  <div id="roster-area-p1" class="roster-area roster-left" role="region" aria-label="Player 1 roster cards"></div>
-  <div id="roster-area-p2" class="roster-area roster-right" role="region" aria-label="Player 2 roster cards"></div>
+  <!-- Roster card areas — cards appear beside the board during roster build -->
+  <div id="roster-area-p1" class="roster-area roster-left"></div>
+  <div id="roster-area-p2" class="roster-area roster-right"></div>
 
-  <div id="status-bar" role="status" aria-live="polite" style="position:fixed;bottom:12px;left:50%;transform:translateX(-50%);padding:6px 20px;background:rgba(0,0,0,0.9);color:gold;z-index:9999;border-radius:20px;">Loading...</div>
+  <div id="status-bar">Loading...</div>
 
   <!-- Phase panels — only one visible at a time -->
-  <div id="panel-faction-p1" class="phase-panel side-panel side-left hidden" role="region" aria-label="Player 1 faction selection"></div>
-  <div id="panel-faction-p2" class="phase-panel side-panel side-right hidden" role="region" aria-label="Player 2 faction selection"></div>
-  <div id="panel-roster" class="phase-panel side-panel hidden" role="region" aria-label="Unit roster builder"></div>
-  <div id="panel-terrain" class="phase-panel side-panel hidden" role="region" aria-label="Terrain placement"></div>
-  <div id="panel-deploy" class="phase-panel side-panel hidden" role="region" aria-label="Unit deployment"></div>
-  <div id="panel-battle" class="phase-panel side-panel hidden" role="region" aria-label="Battle controls"></div>
-  <div id="panel-gameover" class="phase-panel center-panel hidden" role="dialog" aria-label="Game over"></div>
+  <div id="panel-faction-p1" class="phase-panel side-panel side-left hidden"></div>
+  <div id="panel-faction-p2" class="phase-panel side-panel side-right hidden"></div>
+  <div id="panel-roster-p1" class="phase-panel side-panel side-left hidden"></div>
+  <div id="panel-roster-p2" class="phase-panel side-panel side-right hidden"></div>
+  <div id="panel-rules" class="phase-panel center-panel hidden"></div>
+  <div id="panel-terrain" class="phase-panel side-panel hidden"></div>
+  <div id="panel-deploy" class="phase-panel side-panel hidden"></div>
+  <div id="panel-deploy-p1" class="phase-panel side-panel side-left hidden"></div>
+  <div id="panel-deploy-p2" class="phase-panel side-panel side-right hidden"></div>
+  <div id="panel-battle" class="phase-panel side-panel hidden"></div>
+  <div id="panel-gameover" class="phase-panel center-panel hidden"></div>
 
   <!-- Unit hover card -->
-  <div id="unit-card" class="unit-card hidden" role="tooltip" aria-hidden="true"></div>
+  <div id="unit-card" class="unit-card hidden"></div>
 
   <!-- PapaParse for CORS-safe Google Sheets CSV fetching -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>

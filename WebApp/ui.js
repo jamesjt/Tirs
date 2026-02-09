@@ -1,166 +1,180 @@
 // ui.js — Event handling, DOM management, phase UI
 // Bridges Board (rendering) and Game (logic).
-console.log('UI module loading...');
 
 const UI = (() => {
+  function factionClass(faction) {
+    if (!faction) return '';
+    return 'faction-' + faction.toLowerCase().replace(/\s+/g, '-');
+  }
+
   let isPanning = false;
+  let didPan = false;          // true once drag exceeds threshold — suppresses click
   let panStartX = 0, panStartY = 0;
+
+  // ── Smooth camera (WASD + zoom) ──────────────────────────────
+  const heldKeys = new Set();
+  const CAM_ACCEL = 1.2;       // px/frame² acceleration
+  const CAM_MAX_SPEED = 18;    // px/frame top speed
+  const CAM_FRICTION = 0.82;   // deceleration multiplier when key released
+  let camVX = 0, camVY = 0;
+
+  const ZOOM_LERP = 0.12;      // fraction to close per frame
+  let targetZoom = 1;
+  let zoomAnchorX = 0, zoomAnchorY = 0;  // screen-space zoom focus point
+  let animating = false;
+
+  function startAnimLoop() {
+    if (animating) return;
+    animating = true;
+    requestAnimationFrame(animTick);
+  }
+
+  function animTick() {
+    let needsRender = false;
+
+    // ── WASD velocity ──
+    if (heldKeys.has('w')) camVY = Math.min(camVY + CAM_ACCEL, CAM_MAX_SPEED);
+    if (heldKeys.has('s')) camVY = Math.max(camVY - CAM_ACCEL, -CAM_MAX_SPEED);
+    if (heldKeys.has('a')) camVX = Math.min(camVX + CAM_ACCEL, CAM_MAX_SPEED);
+    if (heldKeys.has('d')) camVX = Math.max(camVX - CAM_ACCEL, -CAM_MAX_SPEED);
+
+    // Friction when key not held
+    if (!heldKeys.has('w') && !heldKeys.has('s')) camVY *= CAM_FRICTION;
+    if (!heldKeys.has('a') && !heldKeys.has('d')) camVX *= CAM_FRICTION;
+
+    if (Math.abs(camVX) > 0.1 || Math.abs(camVY) > 0.1) {
+      Board.panX += camVX;
+      Board.panY += camVY;
+      needsRender = true;
+    } else {
+      camVX = 0;
+      camVY = 0;
+    }
+
+    // ── Smooth zoom ──
+    const curZoom = Board.zoomLevel;
+    if (Math.abs(targetZoom - curZoom) > 0.001) {
+      const newZoom = curZoom + (targetZoom - curZoom) * ZOOM_LERP;
+      const clampedZoom = Math.min(3, Math.max(0.3, newZoom));
+
+      // Keep the anchor point fixed on screen
+      const rect = Board.canvas.getBoundingClientRect();
+      const mx = zoomAnchorX - rect.left;
+      const my = zoomAnchorY - rect.top;
+      Board.panX = mx - (mx - Board.panX) * (clampedZoom / curZoom);
+      Board.panY = my - (my - Board.panY) * (clampedZoom / curZoom);
+
+      // Write zoom directly via applyZoom-style setter
+      Board.setZoom(clampedZoom);
+      needsRender = true;
+    }
+
+    if (needsRender) {
+      syncRosterCards();
+      render();
+    }
+
+    // Keep looping while there's motion
+    const stillMoving = Math.abs(camVX) > 0.1 || Math.abs(camVY) > 0.1 ||
+                        Math.abs(targetZoom - Board.zoomLevel) > 0.001;
+    if (stillMoving) {
+      requestAnimationFrame(animTick);
+    } else {
+      animating = false;
+    }
+  }
+
+  // ── UI State (rendering hints, separate from game logic) ────
+  let uiState = freshUiState();
+
+  function freshUiState() {
+    return {
+      selectedUnit: null,
+      selectedAction: null,     // 'move' | 'attack' | null
+      highlights: null,         // Map for rendering highlights
+      highlightColor: null,
+      attackTargets: null,      // Set of "q,r" for rendering
+    };
+  }
+
+  function resetUiState() {
+    uiState = freshUiState();
+  }
 
   // ── Initialisation ────────────────────────────────────────────
 
   function init() {
-    console.log('UI.init() called');
     Board.init(document.getElementById('gameCanvas'));
+    targetZoom = Board.zoomLevel;
     Game.reset();
 
-    // Set up loading state callback
-    Units.setStateChangeCallback(updateLoadingUI);
-    showLoadingUI();
+    // ── Theme toggle ──
+    const nav = document.getElementById('top-nav');
+    const themeWrap = document.createElement('div');
+    themeWrap.className = 'theme-toggle';
+    themeWrap.innerHTML =
+      '<button class="btn-theme active" data-theme="">Elegant White</button>' +
+      '<button class="btn-theme" data-theme="theme-dark">Simple Dark</button>' +
+      '<button class="btn-theme" data-theme="theme-gem">Gem CSS</button>' +
+      '<button class="btn-theme" data-theme="theme-gem-img">Gem Image</button>';
+    nav.appendChild(themeWrap);
+
+    const savedTheme = localStorage.getItem('cardTheme') || '';
+    if (savedTheme) {
+      document.body.classList.add(savedTheme);
+      themeWrap.querySelector('.active').classList.remove('active');
+      themeWrap.querySelector(`[data-theme="${savedTheme}"]`).classList.add('active');
+    }
+
+    themeWrap.addEventListener('click', e => {
+      const btn = e.target.closest('.btn-theme');
+      if (!btn) return;
+      const theme = btn.dataset.theme;
+      document.body.classList.remove('theme-dark', 'theme-gem', 'theme-gem-img');
+      if (theme) document.body.classList.add(theme);
+      localStorage.setItem('cardTheme', theme);
+      themeWrap.querySelectorAll('.btn-theme').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
 
     // Start fetching unit data, then show faction select
-    Units.fetchAll()
-      .then(() => {
-        console.log('Units loaded successfully');
-        hideLoadingUI();
-        showPhase();
-        render();
-      })
-      .catch(err => {
-        // Error UI is already shown by the state change callback
-        console.error('Failed to initialize:', err);
-      });
+    Units.fetchAll().then(() => {
+      showPhase();
+      render();
+    });
 
     // Canvas events
     const c = Board.canvas;
     c.addEventListener('mousedown', onMouseDown);
-    c.addEventListener('mousemove', onMouseMove);
-    c.addEventListener('mouseup', onMouseUp);
     c.addEventListener('contextmenu', e => e.preventDefault());
     c.addEventListener('wheel', onWheel, { passive: false });
     c.addEventListener('click', onClick);
+    // Pan tracking on document so dragging beyond canvas edge still works
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
     window.addEventListener('resize', () => { Board.resize(); render(); });
+
+    // Allow zoom when mouse is over roster cards
+    document.getElementById('roster-area-p1').addEventListener('wheel', onWheel, { passive: false });
+    document.getElementById('roster-area-p2').addEventListener('wheel', onWheel, { passive: false });
+
+    // Keyboard events (WASD camera, E/Q rotation)
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
 
     // Button events (delegated)
     document.addEventListener('click', onButtonClick);
+    document.getElementById('panel-rules').addEventListener('change', onRuleChange);
 
-    // Keyboard navigation
-    initKeyboardNavigation();
-
+    showPhase();
     render();
-  }
-
-  // ── Loading/Error UI ──────────────────────────────────────────
-
-  let loadingOverlay = null;
-
-  function showLoadingUI() {
-    if (!loadingOverlay) {
-      loadingOverlay = document.createElement('div');
-      loadingOverlay.id = 'loading-overlay';
-      loadingOverlay.className = 'phase-panel center-panel';
-      document.body.appendChild(loadingOverlay);
-    }
-    loadingOverlay.innerHTML = `
-      <h2>Loading Game Data</h2>
-      <p>Fetching unit and terrain data...</p>
-    `;
-    loadingOverlay.classList.remove('hidden');
-  }
-
-  function hideLoadingUI() {
-    if (loadingOverlay) {
-      loadingOverlay.classList.add('hidden');
-    }
-  }
-
-  function updateLoadingUI(state, error) {
-    if (!loadingOverlay) return;
-    if (state === 'loading') {
-      loadingOverlay.innerHTML = `
-        <h2>Loading Game Data</h2>
-        <p>Fetching unit and terrain data...</p>
-      `;
-    } else if (state === 'error') {
-      loadingOverlay.innerHTML = `
-        <h2>Loading Failed</h2>
-        <p style="color: #f66;">${error || 'Unknown error'}</p>
-        <button class="btn btn-confirm" onclick="location.reload()">Retry</button>
-      `;
-    }
-  }
-
-  // ── Keyboard Navigation ──────────────────────────────────────
-
-  function initKeyboardNavigation() {
-    document.addEventListener('keydown', onGlobalKeydown);
-  }
-
-  function onGlobalKeydown(e) {
-    const s = Game.state;
-
-    // Escape: cancel current action or deselect
-    if (e.key === 'Escape') {
-      if (s.phase === Game.PHASE.BATTLE) {
-        if (s.selectedAction) {
-          Game.cancelAction();
-          showPhase();
-          render();
-        } else if (s.selectedUnit) {
-          Game.deselectUnit();
-          showPhase();
-          render();
-        }
-      }
-      return;
-    }
-
-    // Tab: cycle through own units (in battle phase)
-    if (e.key === 'Tab' && s.phase === Game.PHASE.BATTLE) {
-      e.preventDefault();
-      const ownUnits = s.units.filter(u => u.player === s.currentPlayer && u.health > 0 && !u.activated);
-      if (ownUnits.length === 0) return;
-
-      const currentIdx = s.selectedUnit ? ownUnits.indexOf(s.selectedUnit) : -1;
-      const nextIdx = (currentIdx + 1) % ownUnits.length;
-      Game.selectUnit(ownUnits[nextIdx]);
-      showPhase();
-      render();
-      return;
-    }
-
-    // Enter: confirm action / end turn
-    if (e.key === 'Enter' && s.phase === Game.PHASE.BATTLE) {
-      if (s.activationState) {
-        Game.endActivation();
-        showPhase();
-        render();
-      }
-      return;
-    }
   }
 
   // ── Render loop ───────────────────────────────────────────────
 
-  let animationFrameId = null;
-
   function render() {
-    // Get current animation state
-    const animation = Game.getMovementAnimation();
-
-    // Pass animation to board renderer
-    const renderState = { ...Game.state, animation };
-    Board.render(renderState);
-
+    Board.render({ ...Game.state, ...uiState });
     updateStatusBar();
-    updateRosterCards();
-
-    // Continue animation if in progress
-    if (animation) {
-      if (animationFrameId) cancelAnimationFrame(animationFrameId);
-      animationFrameId = requestAnimationFrame(render);
-    } else {
-      animationFrameId = null;
-    }
   }
 
   // ── Phase UI switching ────────────────────────────────────────
@@ -178,12 +192,19 @@ const UI = (() => {
     document.querySelectorAll('.phase-panel').forEach(el => el.classList.add('hidden'));
 
     const phase = Game.state.phase;
-    if (phase === Game.PHASE.FACTION_SELECT) buildFactionSelectUI();
-    else if (phase === Game.PHASE.ROSTER_BUILD) buildRosterUI();
+
+    if (phase === Game.PHASE.FACTION_ROSTER) {
+      buildFactionRosterUI();
+    }
     else if (phase === Game.PHASE.TERRAIN_DEPLOY) buildTerrainDeployUI();
     else if (phase === Game.PHASE.UNIT_DEPLOY) buildUnitDeployUI();
     else if (phase === Game.PHASE.BATTLE) buildBattleUI();
     else if (phase === Game.PHASE.GAME_OVER) buildGameOverUI();
+
+    // Ensure both players' roster cards are visible after faction/roster phase
+    if (phase !== Game.PHASE.FACTION_ROSTER) {
+      ensureRosterCardsShown();
+    }
   }
 
   // ── Status bar ────────────────────────────────────────────────
@@ -194,7 +215,7 @@ const UI = (() => {
     let text = '';
 
     if (s.phase === Game.PHASE.BATTLE) {
-      text = `Round ${s.round}/4 | Player ${s.currentPlayer}'s Turn | Score: P1 ${s.scores[1]} - P2 ${s.scores[2]}`;
+      text = `Round ${s.round}/${s.rules.numTurns} | Player ${s.currentPlayer}'s Turn | Score: P1 ${s.scores[1]} - P2 ${s.scores[2]}`;
     } else if (s.phase === Game.PHASE.GAME_OVER) {
       const winner = s.scores[1] > s.scores[2] ? 'Player 1' :
                      s.scores[2] > s.scores[1] ? 'Player 2' : 'Tie';
@@ -208,8 +229,7 @@ const UI = (() => {
 
   function phaseLabel(phase) {
     return {
-      faction_select: 'Select Factions',
-      roster_build: 'Build Rosters',
+      faction_roster: 'Faction & Roster',
       terrain_deploy: 'Deploy Terrain',
       unit_deploy: 'Deploy Units',
       battle: 'Battle',
@@ -217,7 +237,7 @@ const UI = (() => {
     }[phase] || phase;
   }
 
-  // ── Faction Select UI ─────────────────────────────────────────
+  // ── Faction & Roster UI ───────────────────────────────────────
 
   const FACTION_LOGOS = {
     'Syli': 'SyliForest.png',
@@ -231,84 +251,150 @@ const UI = (() => {
     'Down Town': 'DownTown.png',
   };
 
-  function buildFactionSelectUI() {
+  // ── Rules Panel ──────────────────────────────────────────────
+
+  function ruleCheckbox(key, label, checked) {
+    return `<div class="rule-row">
+      <span class="rule-label">${label}</span>
+      <input type="checkbox" class="rule-checkbox" data-rule="${key}" ${checked ? 'checked' : ''}>
+    </div>`;
+  }
+
+  function ruleNumber(key, label, value, min, max) {
+    return `<div class="rule-row">
+      <span class="rule-label">${label}</span>
+      <input type="number" class="rule-input" data-rule="${key}" value="${value}" min="${min}" max="${max}">
+    </div>`;
+  }
+
+  function buildRulesPanel() {
+    const panel = document.getElementById('panel-rules');
     const s = Game.state;
+    const r = s.rules;
 
-    for (const p of [1, 2]) {
-      const panel = document.getElementById(`panel-faction-p${p}`);
-      panel.classList.remove('hidden');
+    if (s.players[1].faction || s.players[2].faction) {
+      panel.classList.add('hidden');
+      return;
+    }
 
-      const selected = s.players[p].faction;
-      const otherFaction = s.players[p === 1 ? 2 : 1].faction;
+    panel.classList.remove('hidden');
 
-      let html = `<h2>Player ${p}</h2>`;
-      html += '<div class="faction-grid">';
-      for (const f of Units.activeFactions) {
-        const isSelected = selected === f;
-        const takenByOther = otherFaction === f;
-        const cls = isSelected ? 'btn btn-faction selected' : 'btn btn-faction';
-        const disabled = (selected && !isSelected) ? 'disabled' : '';
-        const logo = FACTION_LOGOS[f] || '';
-        html += `<button class="${cls}" data-action="pick-faction" data-player="${p}" data-faction="${f}" ${disabled}>`;
-        if (logo) html += `<img class="faction-logo" src="${logo}" alt="">`;
-        html += `<span>${f}</span>`;
-        html += `</button>`;
-      }
-      html += '</div>';
+    let html = '<h2>Game Rules</h2>';
+    html += '<div class="rules-form">';
+    html += ruleCheckbox('allowDuplicates', 'Allow duplicate units', r.allowDuplicates);
+    html += ruleCheckbox('firstPlayerSame', '1st player same each round', r.firstPlayerSame);
+    html += ruleCheckbox('hiddenDeploy', 'Hidden deployment', r.hiddenDeploy);
+    html += ruleNumber('numTurns', 'Number of turns', r.numTurns, 1, 10);
+    html += ruleNumber('rosterPoints', 'Points per roster', r.rosterPoints, 10, 100);
+    html += ruleNumber('survivalPct', '% pts for surviving units', r.survivalPct, 0, 100);
+    html += ruleNumber('terrainPerTeam', 'Terrain per team', r.terrainPerTeam, 0, 10);
+    html += '</div>';
 
-      if (selected) {
-        html += `<p class="hint" style="margin-top:8px">Picked: ${selected}</p>`;
-      }
+    panel.innerHTML = html;
+  }
 
-      panel.innerHTML = html;
+  function onRuleChange(e) {
+    const input = e.target;
+    const key = input.dataset.rule;
+    if (!key) return;
+
+    let value;
+    if (input.type === 'checkbox') {
+      value = input.checked;
+    } else {
+      value = parseInt(input.value, 10);
+      if (isNaN(value)) return;
+      const min = parseInt(input.min, 10);
+      const max = parseInt(input.max, 10);
+      if (!isNaN(min)) value = Math.max(min, value);
+      if (!isNaN(max)) value = Math.min(max, value);
+      input.value = value;
+    }
+
+    Game.setRule(key, value);
+
+    // Rebuild roster panels if points or duplicates changed
+    if (key === 'rosterPoints' || key === 'allowDuplicates') {
+      showPhase();
     }
   }
 
-  // ── Roster Build UI ───────────────────────────────────────────
+  // ── Faction & Roster UI ───────────────────────────────────────
 
-  function buildRosterUI() {
-    const panel = document.getElementById('panel-roster');
-    panel.classList.remove('hidden');
-
+  function buildFactionRosterUI() {
+    buildRulesPanel();
     const s = Game.state;
-    const p = s.currentPlayer;
-    applyPlayerStyle(panel, p);
-    const faction = s.players[p].faction;
-    const roster = s.players[p].roster;
-    const cost = Game.rosterCost(p);
-    const available = Units.catalog[faction] || [];
 
-    const remaining = 30 - cost;
-    let html = `<div class="roster-sticky-header"><span>Points Remaining</span><span class="points-value">${remaining}</span></div>`;
-    html += `<h2>Player ${p}: Build Roster (${faction})</h2>`;
+    for (const p of [1, 2]) {
+      const factionPanel = document.getElementById(`panel-faction-p${p}`);
+      const rosterPanel = document.getElementById(`panel-roster-p${p}`);
+      const faction = s.players[p].faction;
+      const confirmed = s.players[p]._rosterConfirmed;
 
-    // Available units
-    html += '<h3>Available Units</h3><div class="unit-list">';
-    for (const u of available) {
-      const inRoster = roster.some(r => r.name === u.name);
-      const canAfford = cost + u.cost <= 30;
-      const cls = inRoster ? 'btn btn-unit in-roster' : 'btn btn-unit';
-      const disabled = (inRoster || !canAfford) ? 'disabled' : '';
-      html += `<button class="${cls}" data-action="add-unit" data-name="${u.name}" data-unit-hover="${u.name}" ${disabled}>`;
-      html += `<span class="unit-name">${u.name}</span>`;
-      html += '</button>';
+      if (!faction) {
+        // Show faction picker
+        factionPanel.classList.remove('hidden');
+        rosterPanel.classList.add('hidden');
+
+        const otherFaction = s.players[p === 1 ? 2 : 1].faction;
+
+        let html = `<h2>Player ${p}</h2>`;
+        html += '<div class="faction-grid">';
+        for (const f of Units.activeFactions) {
+          const takenByOther = otherFaction === f;
+          const cls = 'btn btn-faction';
+          const disabled = takenByOther ? 'disabled' : '';
+          const logo = FACTION_LOGOS[f] || '';
+          html += `<button class="${cls}" data-action="pick-faction" data-player="${p}" data-faction="${f}" ${disabled}>`;
+          if (logo) html += `<img class="faction-logo" src="${logo}" alt="">`;
+          html += `<span>${f}</span>`;
+          html += `</button>`;
+        }
+        html += '</div>';
+
+        factionPanel.innerHTML = html;
+      } else if (!confirmed) {
+        // Show roster builder
+        factionPanel.classList.add('hidden');
+        rosterPanel.classList.remove('hidden');
+        applyPlayerStyle(rosterPanel, p);
+
+        const roster = s.players[p].roster;
+        const cost = Game.rosterCost(p);
+        const allUnits = Units.catalog[faction] || [];
+        // Sort: highest cost first, then alphabetically within same cost
+        const sorted = [...allUnits].sort((a, b) => b.cost - a.cost || a.name.localeCompare(b.name));
+
+        let html = `<div class="roster-points-bar"><span>${s.rules.rosterPoints - cost} pts remaining</span></div>`;
+        html += `<h2>Player ${p}: Build Roster</h2>`;
+        html += `<p class="hint">${faction}</p>`;
+
+        // Available units — hide picked units when duplicates not allowed
+        html += '<div class="unit-list">';
+        for (const u of sorted) {
+          const inRoster = !s.rules.allowDuplicates && roster.some(r => r.name === u.name);
+          if (inRoster) continue;  // remove from list entirely
+          const canAfford = cost + u.cost <= s.rules.rosterPoints;
+          const disabled = !canAfford ? 'disabled' : '';
+          html += `<button class="btn btn-unit" data-action="add-unit" data-player="${p}" data-name="${u.name}" data-unit-hover="${u.name}" ${disabled}>`;
+          html += `<span class="unit-name">${u.name}</span>`;
+          html += `<span class="unit-cost">${u.cost} pts</span>`;
+          html += '</button>';
+        }
+        html += '</div>';
+
+        html += `<button class="btn btn-confirm" data-action="confirm-roster" data-player="${p}">Confirm Roster</button>`;
+        html += `<button class="btn btn-back" data-action="back-to-faction" data-player="${p}">← Change Faction</button>`;
+
+        rosterPanel.innerHTML = html;
+        attachCardHovers(rosterPanel, allUnits);
+        updateRosterCards(p);
+      } else {
+        // Roster confirmed — hide both panels
+        factionPanel.classList.add('hidden');
+        rosterPanel.classList.add('hidden');
+      }
     }
-    html += '</div>';
-
-    // Current roster
-    html += '<h3>Roster</h3><div class="unit-list roster">';
-    for (const u of roster) {
-      html += `<button class="btn btn-unit in-roster" data-action="remove-unit" data-name="${u.name}" data-unit-hover="${u.name}">`;
-      html += `<span class="unit-name">${u.name}</span> <span class="unit-cost">${u.cost}pt</span> <span class="remove-x">[x]</span>`;
-      html += '</button>';
-    }
-    if (roster.length === 0) html += '<p class="hint">Click units above to add them</p>';
-    html += '</div>';
-
-    html += `<button class="btn btn-confirm" data-action="confirm-roster" data-player="${p}">Confirm Roster</button>`;
-
-    panel.innerHTML = html;
-    attachCardHovers(panel, available);
   }
 
   // ── Terrain Deploy UI ─────────────────────────────────────────
@@ -326,7 +412,7 @@ const UI = (() => {
     // Get terrain types available to this faction from the spreadsheet
     const availableTerrain = Units.factionTerrain[faction] || [];
 
-    let html = `<h2>Player ${p}: Deploy Terrain (${placed}/3)</h2>`;
+    let html = `<h2>Player ${p}: Deploy Terrain (${placed}/${Game.state.rules.terrainPerTeam})</h2>`;
     html += '<p class="hint">Select a surface, then click a hex to place it.</p>';
     html += '<div class="surface-grid">';
     for (const surf of availableTerrain) {
@@ -352,21 +438,27 @@ const UI = (() => {
   // ── Unit Deploy UI ────────────────────────────────────────────
 
   function buildUnitDeployUI() {
+    const s = Game.state;
+
+    if (s.rules.hiddenDeploy) {
+      buildHiddenDeployUI();
+      return;
+    }
+
     const panel = document.getElementById('panel-deploy');
     panel.classList.remove('hidden');
 
-    const s = Game.state;
     const p = s.currentPlayer;
     applyPlayerStyle(panel, p);
     const roster = s.players[p].roster;
-    const undeployed = roster.filter((_, i) => !Game.isUnitDeployed(p, i));
+    const undeployed = roster.filter(u => !u._deployed);
 
     let html = `<h2>Player ${p}: Deploy Units</h2>`;
     html += '<p class="hint">Select a unit, then click a hex in your deployment zone.</p>';
     html += '<div class="unit-list">';
     for (let i = 0; i < roster.length; i++) {
       const u = roster[i];
-      if (Game.isUnitDeployed(p, i)) continue;
+      if (u._deployed) continue;
       html += `<button class="btn btn-unit" data-action="select-deploy-unit" data-index="${i}">`;
       html += `<span class="unit-name">${u.name}</span>`;
       html += `<span class="unit-stats">${u.cost}pt | HP:${u.health} Mv:${u.move} ${u.atkType}</span>`;
@@ -381,6 +473,46 @@ const UI = (() => {
     panel.innerHTML = html;
   }
 
+  let hiddenDeployPlayer = 1;  // which player's roster the hex click deploys for
+
+  function buildHiddenDeployUI() {
+    const s = Game.state;
+
+    for (const p of [1, 2]) {
+      const panel = document.getElementById(`panel-deploy-p${p}`);
+      panel.classList.remove('hidden');
+      applyPlayerStyle(panel, p);
+
+      const roster = s.players[p].roster;
+      const undeployed = roster.filter(u => !u._deployed);
+      const confirmed = s.players[p]._deployConfirmed;
+
+      let html = `<h2>Player ${p}: Deploy</h2>`;
+
+      if (confirmed) {
+        html += '<p class="hint">Deployment confirmed. Waiting for opponent...</p>';
+      } else {
+        html += '<p class="hint">Select a unit, then click your zone.</p>';
+        html += '<div class="unit-list">';
+        for (let i = 0; i < roster.length; i++) {
+          const u = roster[i];
+          if (u._deployed) continue;
+          html += `<button class="btn btn-unit" data-action="select-deploy-unit" data-player="${p}" data-index="${i}">`;
+          html += `<span class="unit-name">${u.name}</span>`;
+          html += `<span class="unit-stats">${u.cost}pt | HP:${u.health} Mv:${u.move} ${u.atkType}</span>`;
+          html += '</button>';
+        }
+        html += '</div>';
+
+        if (undeployed.length === 0) {
+          html += `<button class="btn btn-confirm" data-action="confirm-deploy" data-player="${p}">Confirm Deployment</button>`;
+        }
+      }
+
+      panel.innerHTML = html;
+    }
+  }
+
   // ── Battle UI ─────────────────────────────────────────────────
 
   function buildBattleUI() {
@@ -389,7 +521,7 @@ const UI = (() => {
 
     const s = Game.state;
     applyPlayerStyle(panel, s.currentPlayer);
-    let html = `<h2>Round ${s.round}/4</h2>`;
+    let html = `<h2>Round ${s.round}/${s.rules.numTurns}</h2>`;
     html += `<p>Player ${s.currentPlayer}'s turn</p>`;
 
     if (s.activationState) {
@@ -445,10 +577,73 @@ const UI = (() => {
   // ── Unit hover card ──────────────────────────────────────────
 
   const ATK_LABELS = { L: 'Line', P: 'Path', D: 'Direct' };
-  const ATK_ICONS = { L: '⟷', P: '↝', D: '◎' };
+  const ATK_SHORT  = { L: 'L', P: 'P', D: 'D' };
 
-  function generateCardHTML(unit) {
+  // ── Stat icon SVGs (inline, with centered number) ──────────
+
+  const ICON_STROKE = 'rgba(40,35,28,0.45)';
+
+  /** Heart icon for HP */
+  function svgHeart(val) {
+    return `<svg class="stat-icon" viewBox="0 0 36 36">
+      <title>HP</title>
+      <path d="M18 32 C6 22 2 16 2 12 2 7 6 4 10 4 13 4 16 6 18 9 20 6 23 4 26 4 30 4 34 7 34 12 34 16 30 22 18 32Z" fill="none" stroke="${ICON_STROKE}" stroke-width="1.5"/>
+      <text x="18" y="18" class="stat-num">${val}</text>
+    </svg>`;
+  }
+
+  /** Shield/armor outline */
+  function svgArmor(val) {
+    return `<svg class="stat-icon" viewBox="0 0 36 36">
+      <title>Armor</title>
+      <path d="M18 3 L30 8 30 18 C30 26 18 33 18 33 18 33 6 26 6 18 L6 8Z" fill="none" stroke="${ICON_STROKE}" stroke-width="1.5"/>
+      <text x="18" y="18" class="stat-num">${val}</text>
+    </svg>`;
+  }
+
+  /** Hexagon for move */
+  function svgHex(val) {
+    return `<svg class="stat-icon" viewBox="0 0 36 36">
+      <title>Move</title>
+      <polygon points="18,3 31,10.5 31,25.5 18,33 5,25.5 5,10.5" fill="none" stroke="${ICON_STROKE}" stroke-width="1.5"/>
+      <text x="18" y="18" class="stat-num">${val}</text>
+    </svg>`;
+  }
+
+  /** Square + obtuse triangle for range */
+  function svgRange(val) {
+    return `<svg class="stat-icon" viewBox="0 0 36 36">
+      <title>Range</title>
+      <polygon points="4,8 20,8 20,5 34,18 20,31 20,28 4,28" fill="none" stroke="${ICON_STROKE}" stroke-width="1.5" stroke-linejoin="round"/>
+      <text x="16" y="18" class="stat-num">${val}</text>
+    </svg>`;
+  }
+
+  /** Circle with corner notches for attack type */
+  function svgAtkType(val) {
+    return `<svg class="stat-icon" viewBox="0 0 36 36">
+      <title>Attack Type</title>
+      <circle cx="18" cy="18" r="13" fill="none" stroke="${ICON_STROKE}" stroke-width="1.5"/>
+      <line x1="7.5" y1="7.5" x2="10.5" y2="10.5" stroke="${ICON_STROKE}" stroke-width="2" stroke-linecap="round"/>
+      <line x1="28.5" y1="7.5" x2="25.5" y2="10.5" stroke="${ICON_STROKE}" stroke-width="2" stroke-linecap="round"/>
+      <line x1="7.5" y1="28.5" x2="10.5" y2="25.5" stroke="${ICON_STROKE}" stroke-width="2" stroke-linecap="round"/>
+      <line x1="28.5" y1="28.5" x2="25.5" y2="25.5" stroke="${ICON_STROKE}" stroke-width="2" stroke-linecap="round"/>
+      <text x="18" y="18" class="stat-num">${val}</text>
+    </svg>`;
+  }
+
+  /** Starburst for damage */
+  function svgDamage(val) {
+    return `<svg class="stat-icon" viewBox="0 0 36 36">
+      <title>Damage</title>
+      <polygon points="18,2 23,7 31,7 29,13 34,18 29,23 31,29 23,29 18,34 13,29 5,29 7,23 2,18 7,13 5,7 13,7" fill="none" stroke="${ICON_STROKE}" stroke-width="1.2"/>
+      <text x="18" y="18" class="stat-num">${val}</text>
+    </svg>`;
+  }
+
+  function buildCardHTML(unit) {
     const atkLabel = ATK_LABELS[unit.atkType] || unit.atkType;
+    const atkShort = ATK_SHORT[unit.atkType] || unit.atkType;
 
     let imgHtml;
     if (unit.image) {
@@ -458,95 +653,333 @@ const UI = (() => {
     }
 
     return `
-      <div class="card-header">
+      <div class="card-texture"></div>
+      <div class="card-header card-notched">
         <span class="card-cost">${unit.cost}</span>
         <span class="card-name">${unit.name}</span>
       </div>
-      <div class="card-image">${imgHtml}</div>
+      <div class="card-image card-notched">${imgHtml}</div>
       <div class="card-stats">
-        <div class="stat stat-hp" title="Health"><span class="stat-value">${unit.health}</span></div>
-        <div class="stat stat-armor" title="Armor"><span class="stat-value">${unit.armor}</span></div>
-        <div class="stat stat-move" title="Move"><span class="stat-value">${unit.move}</span></div>
-        <div class="stat stat-atk-range" title="Range"><span class="stat-value">${unit.range}</span></div>
-        <div class="stat stat-atk-type" title="${atkLabel} Attack"><span class="stat-value">${unit.atkType}</span></div>
-        <div class="stat stat-damage" title="Damage"><span class="stat-value">${unit.damage}</span></div>
+        ${svgHeart(unit.health)}
+        ${svgArmor(unit.armor)}
+        ${svgHex(unit.move)}
+        ${svgRange(unit.range)}
+        ${svgAtkType(atkShort)}
+        ${svgDamage(unit.damage)}
       </div>
-      <div class="card-type">${unit.unitClass || unit.faction}</div>
-      ${unit.special ? `<div class="card-rules">${unit.special}</div>` : ''}
-      <div class="card-footer">${unit.faction}</div>
+      ${unit.specialRules && unit.specialRules.length > 0 ? `<div class="card-rules card-notched">${unit.specialRules.map(r => `<div class="card-rule"><div class="rule-name">${r.name}</div>${r.text ? `<div class="rule-desc">${r.text}</div>` : ''}</div>`).join('')}</div>` : ''}
     `;
   }
 
   function showUnitCard(unit, e) {
     const card = document.getElementById('unit-card');
-    card.innerHTML = generateCardHTML(unit);
-    card.classList.remove('hidden');
+    card.className = 'unit-card ' + factionClass(unit.faction);
+    card.innerHTML = buildCardHTML(unit);
     positionCard(card, e);
   }
 
-  // ── Roster cards in fixed side areas ─────────────────────────────
+  // ── Roster card area ──────────────────────────────────────────
+  //
+  // Card positions are stored in BOARD-SPACE (same coordinate system
+  // as hexes). Rendering applies zoom + pan so cards move with the
+  // board like objects on a tabletop.
 
-  // Track existing card DOM elements by "player-unitName" key
-  const cardElements = new Map();
+  const ROSTER_CARD_SCALE = 0.667;  // 160/240 — roster cards are scaled-down hover cards
+  const ROSTER_CARD_W = 240;       // CSS width (before scale)
+  const ROSTER_CARD_GAP = 40;
+  const ROSTER_CARD_H = 336;       // CSS height (before scale)
+  const ROSTER_ROWS = 2;       // two rows: row 0 (close to board) and row 1
 
-  function updateRosterCards() {
-    const s = Game.state;
+  /** Board-space positions. Key = "player-unitName" → { bx, by, rot } */
+  let rosterCardPositions = {};
 
-    // Only show during roster_build phase
-    if (s.phase !== Game.PHASE.ROSTER_BUILD) {
-      clearRosterCards();
-      return;
+  /**
+   * Slot arrays per player. Each slot is either a unit key string or null.
+   * Slot 0 → row 0, col 0 (closest to board)
+   * Slot 1 → row 1, col 0
+   * Slot 2 → row 0, col 1
+   * Slot 3 → row 1, col 1  etc.
+   * Columns grow outward from the board.
+   */
+  let rosterSlots = { 1: [], 2: [] };
+
+  /** Compute board-space bounding box of the hex grid. */
+  function getGridBoardBounds() {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    const s = Board.hexSize;
+    for (const hex of Board.hexes) {
+      if (hex.x - s < minX) minX = hex.x - s;
+      if (hex.x + s > maxX) maxX = hex.x + s;
+      if (hex.y - s < minY) minY = hex.y - s;
+      if (hex.y + s > maxY) maxY = hex.y + s;
     }
+    return { minX, maxX, minY, maxY };
+  }
 
-    const rosterAreaP1 = document.getElementById('roster-area-p1');
-    const rosterAreaP2 = document.getElementById('roster-area-p2');
+  /** Get board-space CENTER { bx, by } for a given slot index and player. */
+  function slotPosition(player, slotIndex) {
+    const bounds = getGridBoardBounds();
+    const margin = 16;
+    // Use visual (scaled) dimensions for layout spacing
+    const cardW = ROSTER_CARD_W * ROSTER_CARD_SCALE;
+    const cardH = ROSTER_CARD_H * ROSTER_CARD_SCALE;
 
-    // Build set of units that should have cards
-    const neededCards = new Set();
-    for (const p of [1, 2]) {
-      const roster = s.players[p].roster;
-      for (const unit of roster) {
-        neededCards.add(`${p}-${unit.name}`);
+    const row = slotIndex % ROSTER_ROWS;       // 0 = close to board, 1 = far row
+    const col = Math.floor(slotIndex / ROSTER_ROWS); // grows outward
+
+    // Anchor point: edge of board closest to this player
+    // P1: left side, columns grow leftward (outward)
+    // P2: right side, columns grow rightward (outward)
+    let bx;
+    if (player === 1) {
+      bx = bounds.minX - margin - (col + 1) * (cardW + ROSTER_CARD_GAP) + ROSTER_CARD_GAP + cardW / 2;
+    } else {
+      bx = bounds.maxX + margin + col * (cardW + ROSTER_CARD_GAP) + cardW / 2;
+    }
+    const by = bounds.minY + row * (cardH + ROSTER_CARD_GAP) + cardH / 2;
+
+    return { bx, by };
+  }
+
+  /** Assign a unit to the lowest available slot for a player. */
+  function assignSlot(player, unitKey) {
+    const slots = rosterSlots[player];
+    // Find lowest empty slot
+    for (let i = 0; i < slots.length; i++) {
+      if (slots[i] === null) {
+        slots[i] = unitKey;
+        return i;
       }
     }
+    // No empty slot found, append
+    slots.push(unitKey);
+    return slots.length - 1;
+  }
 
-    // Remove cards for units no longer in roster
-    for (const [cardKey, card] of cardElements) {
-      if (!neededCards.has(cardKey)) {
-        card.remove();
-        cardElements.delete(cardKey);
-      }
+  /** Remove a unit from its slot, leaving the slot null (empty). */
+  function removeSlot(player, unitKey) {
+    const slots = rosterSlots[player];
+    const idx = slots.indexOf(unitKey);
+    if (idx !== -1) slots[idx] = null;
+    // Trim trailing nulls
+    while (slots.length > 0 && slots[slots.length - 1] === null) slots.pop();
+  }
+
+  /** Recompute card positions from the slot arrays. */
+  function syncSlotPositions(player) {
+    const slots = rosterSlots[player];
+    for (let i = 0; i < slots.length; i++) {
+      const key = slots[i];
+      if (!key) continue;
+      const pos = rosterCardPositions[key];
+      if (!pos) continue;
+      const sp = slotPosition(player, i);
+      pos.bx = sp.bx;
+      pos.by = sp.by;
     }
+  }
 
-    // Create or update cards for each player
-    for (const p of [1, 2]) {
-      const roster = s.players[p].roster;
-      const container = p === 1 ? rosterAreaP1 : rosterAreaP2;
-
-      for (const unit of roster) {
-        const cardKey = `${p}-${unit.name}`;
-        let card = cardElements.get(cardKey);
-
-        if (!card) {
-          // Create new card
-          card = document.createElement('div');
-          card.className = `unit-card roster-card player-${p}`;
-          card.dataset.unitName = unit.name;
-          card.dataset.player = p;
-          card.innerHTML = generateCardHTML(unit);
-          container.appendChild(card);
-          cardElements.set(cardKey, card);
+  /** Build slot data from current roster (used when first entering roster build
+   *  or when cards don't yet have slot assignments). */
+  function ensureSlots(player, roster) {
+    const slots = rosterSlots[player];
+    for (let i = 0; i < roster.length; i++) {
+      const key = `p${player}_${i}`;
+      if (!slots.includes(key)) {
+        const idx = assignSlot(player, key);
+        if (!rosterCardPositions[key]) {
+          const sp = slotPosition(player, idx);
+          rosterCardPositions[key] = { bx: sp.bx, by: sp.by, rot: 0 };
         }
       }
     }
+    syncSlotPositions(player);
   }
 
-  function clearRosterCards() {
-    for (const [, card] of cardElements) {
-      card.remove();
-    }
-    cardElements.clear();
+  /** Convert board-space position to screen-space. */
+  function boardToScreen(bx, by) {
+    return {
+      x: bx * Board.zoomLevel + Board.panX,
+      y: by * Board.zoomLevel + Board.panY,
+    };
   }
+
+  const TAPPED_SCALE = 0.75;   // shrink factor when card is tapped (sideways)
+
+  /** Is a rotation angle "tapped" (sideways, not upright)? */
+  function isTapped(rot) {
+    const r = ((rot % 360) + 360) % 360; // normalize to 0–359
+    return r === 90 || r === 270;
+  }
+
+  /** Total scale for a card: base roster scale × board zoom × tapped shrink. */
+  function cardScale(rot) {
+    return ROSTER_CARD_SCALE * Board.zoomLevel * (isTapped(rot) ? TAPPED_SCALE : 1);
+  }
+
+  /** Compute CSS left/top for a roster card.
+   *  (bx, by) is the card CENTER in board-space.
+   *  With transform-origin:center, we just need the element's
+   *  untransformed center at the screen point — so offset by half
+   *  the CSS width/height (before any transform). */
+  function rosterCardScreenPos(bx, by) {
+    const scr = boardToScreen(bx, by);
+    return {
+      x: scr.x - ROSTER_CARD_W / 2,
+      y: scr.y - ROSTER_CARD_H / 2,
+    };
+  }
+
+  /** Convert screen-space position to board-space. */
+  function screenToBoard(sx, sy) {
+    return {
+      bx: (sx - Board.panX) / Board.zoomLevel,
+      by: (sy - Board.panY) / Board.zoomLevel,
+    };
+  }
+
+  function updateRosterCards(player) {
+    const area = document.getElementById(`roster-area-p${player}`);
+    const roster = Game.state.players[player].roster;
+    ensureSlots(player, roster);
+
+    let html = '';
+    for (let i = 0; i < roster.length; i++) {
+      const u = roster[i];
+      const key = `p${player}_${i}`;
+      const pos = rosterCardPositions[key];
+      if (!pos) continue;
+      const rot = pos.rot || 0;
+      const scr = rosterCardScreenPos(pos.bx, pos.by);
+      const s = cardScale(rot);
+      html += `<div class="unit-card roster-card ${factionClass(u.faction)}" data-roster-unit="${u.name}" data-roster-index="${i}" data-card-key="${key}" data-player="${player}" style="left:${scr.x}px;top:${scr.y}px;transform:scale(${s}) rotate(${rot}deg);">`;
+      html += buildCardHTML(u);
+      html += '</div>';
+    }
+    area.innerHTML = html;
+
+    const pd = Game.state.players[player];
+    const inRosterBuild = Game.state.phase === Game.PHASE.FACTION_ROSTER && pd.faction && !pd._rosterConfirmed;
+
+    // Attach handlers
+    area.querySelectorAll('.roster-card').forEach(card => {
+      if (inRosterBuild) {
+        // During roster build: click to remove, no dragging
+        card.style.cursor = 'pointer';
+        card.addEventListener('click', onRosterCardClick);
+      } else {
+        // After roster build: drag to reposition
+        card.addEventListener('mousedown', onRosterCardMouseDown);
+      }
+      card.addEventListener('mouseenter', () => { hoveredCard = card; });
+      card.addEventListener('mouseleave', () => { if (hoveredCard === card) hoveredCard = null; });
+    });
+  }
+
+  /** Re-position all roster cards from their board-space coords.
+   *  Called after pan or zoom changes. */
+  function syncRosterCards() {
+    document.querySelectorAll('.roster-card').forEach(card => {
+      const key = card.dataset.cardKey;
+      const pos = rosterCardPositions[key];
+      if (!pos) return;
+      const rot = pos.rot || 0;
+      const scr = rosterCardScreenPos(pos.bx, pos.by);
+      const s = cardScale(rot);
+      card.style.left = scr.x + 'px';
+      card.style.top = scr.y + 'px';
+      card.style.transform = `scale(${s}) rotate(${rot}deg)`;
+    });
+  }
+
+  /** Make sure both players' roster cards are on screen with correct handlers.
+   *  Always rebuilds to ensure drag handlers are attached (they differ by phase). */
+  function ensureRosterCardsShown() {
+    for (const p of [1, 2]) {
+      const roster = Game.state.players[p].roster;
+      if (roster.length > 0) {
+        updateRosterCards(p);
+      }
+    }
+  }
+
+  function clearRosterAreas(player) {
+    if (player) {
+      document.getElementById(`roster-area-p${player}`).innerHTML = '';
+      // Clear positions for this player
+      for (const key of Object.keys(rosterCardPositions)) {
+        if (key.startsWith(`p${player}_`)) delete rosterCardPositions[key];
+      }
+      rosterSlots[player] = [];
+    } else {
+      document.getElementById('roster-area-p1').innerHTML = '';
+      document.getElementById('roster-area-p2').innerHTML = '';
+      rosterCardPositions = {};
+      rosterSlots = { 1: [], 2: [] };
+    }
+  }
+
+  // ── Roster card dragging & hover tracking ──────────────────
+
+  let dragCard = null;
+  let dragStartX = 0, dragStartY = 0;
+  let dragMoved = false;
+  let hoveredCard = null;
+
+  /** Click handler for roster cards during roster build — removes the unit. */
+  function onRosterCardClick(e) {
+    e.stopPropagation();
+    const card = e.currentTarget;
+    const p = parseInt(card.dataset.player);
+    const rosterIdx = parseInt(card.dataset.rosterIndex);
+    // Clear all slot/position data for this player (indices shift after splice)
+    rosterSlots[p] = [];
+    for (const k of Object.keys(rosterCardPositions)) {
+      if (k.startsWith(`p${p}_`)) delete rosterCardPositions[k];
+    }
+    Game.removeFromRosterByIndex(p, rosterIdx);
+    showPhase();
+  }
+
+  function onRosterCardMouseDown(e) {
+    if (e.button !== 0) return;
+    const card = e.currentTarget;
+    dragCard = card;
+    dragMoved = false;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    card.style.zIndex = '45';
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  document.addEventListener('mousemove', e => {
+    if (!dragCard) return;
+    const dx = e.clientX - dragStartX;
+    const dy = e.clientY - dragStartY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) dragMoved = true;
+    if (!dragMoved) return;
+
+    // Convert screen delta to board-space delta
+    const key = dragCard.dataset.cardKey;
+    const pos = rosterCardPositions[key];
+    if (!pos) return;
+    pos.bx += (e.clientX - dragStartX) / Board.zoomLevel;
+    pos.by += (e.clientY - dragStartY) / Board.zoomLevel;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+
+    const rot = pos.rot || 0;
+    const scr = rosterCardScreenPos(pos.bx, pos.by);
+    dragCard.style.left = scr.x + 'px';
+    dragCard.style.top = scr.y + 'px';
+  });
+
+  document.addEventListener('mouseup', e => {
+    if (!dragCard) return;
+    dragCard.style.zIndex = '';
+    dragCard = null;
+  });
 
   function positionCard(card, e) {
     const pad = 12;
@@ -564,7 +997,7 @@ const UI = (() => {
   }
 
   function hideUnitCard() {
-    document.getElementById('unit-card').classList.add('hidden');
+    document.getElementById('unit-card').className = 'unit-card hidden';
   }
 
   function attachCardHovers(container, units) {
@@ -586,36 +1019,86 @@ const UI = (() => {
 
   // ── Event handlers ────────────────────────────────────────────
 
+  function onKeyDown(e) {
+    const key = e.key.toLowerCase();
+
+    // WASD camera panning (smooth)
+    if (key === 'w' || key === 'a' || key === 's' || key === 'd') {
+      heldKeys.add(key);
+      startAnimLoop();
+      e.preventDefault();
+      return;
+    }
+
+    // E/Q card rotation (only when hovering a roster card)
+    if ((key === 'e' || key === 'q') && hoveredCard) {
+      const cardKey = hoveredCard.dataset.cardKey;
+      const pos = rosterCardPositions[cardKey];
+      if (!pos) return;
+      pos.rot = (pos.rot || 0) + (key === 'e' ? 90 : -90);
+      const s = cardScale(pos.rot);
+      const scr = rosterCardScreenPos(pos.bx, pos.by);
+      hoveredCard.style.transform = `scale(${s}) rotate(${pos.rot}deg)`;
+      hoveredCard.style.left = scr.x + 'px';
+      hoveredCard.style.top = scr.y + 'px';
+      e.preventDefault();
+      return;
+    }
+  }
+
+  function onKeyUp(e) {
+    heldKeys.delete(e.key.toLowerCase());
+  }
+
   function onWheel(e) {
     e.preventDefault();
-    Board.applyZoom(e.deltaY, e.clientX, e.clientY);
-    render();
+    // Accumulate toward a target zoom instead of jumping
+    const factor = e.deltaY > 0 ? 0.93 : 1.07;
+    targetZoom = Math.min(3, Math.max(0.3, targetZoom * factor));
+    zoomAnchorX = e.clientX;
+    zoomAnchorY = e.clientY;
+    startAnimLoop();
   }
 
   function onMouseDown(e) {
-    if (e.button === 2) {
+    if (e.button === 0) {
       isPanning = true;
+      didPan = false;
       panStartX = e.clientX;
       panStartY = e.clientY;
     }
   }
 
   function onMouseMove(e) {
+    if (dragCard) return;  // roster card drag takes priority
     if (isPanning) {
-      Board.panX += e.clientX - panStartX;
-      Board.panY += e.clientY - panStartY;
-      panStartX = e.clientX;
-      panStartY = e.clientY;
-      render();
+      const dx = e.clientX - panStartX;
+      const dy = e.clientY - panStartY;
+      if (!didPan && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
+        didPan = true;
+        // Reset start so the first pan frame doesn't jump
+        panStartX = e.clientX;
+        panStartY = e.clientY;
+        return;
+      }
+      if (didPan) {
+        Board.panX += dx;
+        Board.panY += dy;
+        panStartX = e.clientX;
+        panStartY = e.clientY;
+        syncRosterCards();
+        render();
+      }
     }
   }
 
   function onMouseUp(e) {
-    if (e.button === 2) isPanning = false;
+    if (e.button === 0) isPanning = false;
   }
 
   function onClick(e) {
     if (e.button !== 0) return;
+    if (didPan) return;  // suppress click after panning
     const hex = Board.hexAtPixel(e.clientX, e.clientY);
     if (!hex) return;
 
@@ -645,7 +1128,7 @@ const UI = (() => {
     }
 
     else if (action === 'add-unit') {
-      const p = Game.state.currentPlayer;
+      const p = parseInt(btn.dataset.player);
       const faction = Game.state.players[p].faction;
       const unit = (Units.catalog[faction] || []).find(u => u.name === btn.dataset.name);
       if (unit) Game.addToRoster(p, unit);
@@ -653,7 +1136,12 @@ const UI = (() => {
     }
 
     else if (action === 'remove-unit') {
-      const p = Game.state.currentPlayer;
+      const p = parseInt(btn.dataset.player);
+      // Clear slot data since indices shift after removal
+      rosterSlots[p] = [];
+      for (const k of Object.keys(rosterCardPositions)) {
+        if (k.startsWith(`p${p}_`)) delete rosterCardPositions[k];
+      }
       Game.removeFromRoster(p, btn.dataset.name);
       showPhase();
     }
@@ -661,10 +1149,14 @@ const UI = (() => {
     else if (action === 'confirm-roster') {
       const p = parseInt(btn.dataset.player);
       Game.confirmRoster(p);
-      if (Game.state.phase === Game.PHASE.ROSTER_BUILD) {
-        // Other player's turn to build
-        Game.state.currentPlayer = Game.state.currentPlayer === 1 ? 2 : 1;
-      }
+      showPhase();
+      render();
+    }
+
+    else if (action === 'back-to-faction') {
+      const p = parseInt(btn.dataset.player);
+      Game.unselectFaction(p);
+      clearRosterAreas(p);
       showPhase();
       render();
     }
@@ -676,54 +1168,83 @@ const UI = (() => {
       const valid = new Map();
       for (const hex of Board.hexes) {
         if (hex.zone === `player${p === 1 ? 2 : 1}`) continue;
-        const key = Board.coordKey(hex.q, hex.r);
+        const key = `${hex.q},${hex.r}`;
         if (Board.OBJECTIVES.some(o => o.q === hex.q && o.r === hex.r)) continue;
         const td = Game.state.terrain.get(key);
         if (td && td.surface) continue;
         valid.set(key, 1);
       }
-      Game.state.highlights = valid;
-      Game.state.highlightColor = (Board.SURFACE_COLORS[selectedSurface] || '#AAAAAA') + '55';
+      uiState.highlights = valid;
+      uiState.highlightColor = (Board.SURFACE_COLORS[selectedSurface] || '#AAAAAA') + '55';
       render();
     }
 
     else if (action === 'select-deploy-unit') {
       selectedDeployIndex = parseInt(btn.dataset.index);
+      // In hidden deploy, the player comes from the button; otherwise currentPlayer
+      const p = btn.dataset.player ? parseInt(btn.dataset.player) : Game.state.currentPlayer;
+      if (Game.state.rules.hiddenDeploy) hiddenDeployPlayer = p;
       // Highlight deployment zone
-      const p = Game.state.currentPlayer;
       const valid = new Map();
       for (const hex of Board.hexes) {
         if (hex.zone !== `player${p}`) continue;
-        const key = Board.coordKey(hex.q, hex.r);
+        const key = `${hex.q},${hex.r}`;
         if (Game.state.units.some(u => u.q === hex.q && u.r === hex.r && u.health > 0)) continue;
         if (Board.OBJECTIVES.some(o => o.q === hex.q && o.r === hex.r)) continue;
         valid.set(key, 1);
       }
-      Game.state.highlights = valid;
-      Game.state.highlightColor = p === 1 ? 'rgba(42,157,143,0.3)' : 'rgba(212,135,44,0.3)';
+      uiState.highlights = valid;
+      uiState.highlightColor = p === 1 ? 'rgba(42,157,143,0.3)' : 'rgba(212,135,44,0.3)';
+      render();
+    }
+
+    else if (action === 'confirm-deploy') {
+      const p = parseInt(btn.dataset.player);
+      Game.confirmDeploy(p);
+      showPhase();
       render();
     }
 
     else if (action === 'show-move') {
-      Game.showMoveRange();
+      const reachable = Game.getMoveRange();
+      if (reachable) {
+        uiState.selectedAction = 'move';
+        uiState.highlights = reachable;
+        uiState.highlightColor = 'rgba(100,255,100,0.35)';
+        uiState.attackTargets = null;
+      }
       showPhase();
       render();
     }
 
     else if (action === 'show-attack') {
-      Game.showAttackRange();
+      const targets = Game.getAttackTargets();
+      if (targets) {
+        uiState.selectedAction = 'attack';
+        uiState.attackTargets = targets;
+        uiState.highlights = null;
+      }
       showPhase();
       render();
     }
 
     else if (action === 'skip-action') {
-      Game.skipAction();
+      Game.skipAction(uiState.selectedAction);
+      if (!Game.state.activationState) {
+        resetUiState();
+      } else {
+        uiState.selectedAction = null;
+        uiState.highlights = null;
+        uiState.attackTargets = null;
+        uiState.selectedUnit = Game.state.activationState.unit;
+      }
       showPhase();
       render();
     }
 
     else if (action === 'end-activation') {
       Game.forceEndActivation();
+      resetUiState();
       showPhase();
       render();
     }
@@ -733,6 +1254,8 @@ const UI = (() => {
       Game.reset();
       selectedSurface = null;
       selectedDeployIndex = null;
+      resetUiState();
+      clearRosterAreas();
       showPhase();
       render();
     }
@@ -746,7 +1269,7 @@ const UI = (() => {
     const ok = Game.deployTerrain(p, hex.q, hex.r, selectedSurface);
     if (ok) {
       selectedSurface = null;
-      Game.state.highlights = null;
+      uiState.highlights = null;
       showPhase();
       render();
     }
@@ -754,11 +1277,11 @@ const UI = (() => {
 
   function handleDeployClick(hex) {
     if (selectedDeployIndex === null) return;
-    const p = Game.state.currentPlayer;
+    const p = Game.state.rules.hiddenDeploy ? hiddenDeployPlayer : Game.state.currentPlayer;
     const ok = Game.deployUnit(p, selectedDeployIndex, hex.q, hex.r);
     if (ok) {
       selectedDeployIndex = null;
-      Game.state.highlights = null;
+      uiState.highlights = null;
       showPhase();
       render();
     }
@@ -768,29 +1291,29 @@ const UI = (() => {
     const s = Game.state;
 
     // If we're in move mode, try to move there
-    if (s.selectedAction === 'move') {
+    if (uiState.selectedAction === 'move') {
       const ok = Game.moveUnit(hex.q, hex.r);
       if (ok) {
+        uiState.selectedAction = null;
+        uiState.highlights = null;
+        if (!Game.state.activationState) resetUiState();
         showPhase();
         render();
         return;
       }
-      // Invalid move - flash red
-      Board.flashHex(hex.q, hex.r, render);
-      return;
     }
 
     // If we're in attack mode, try to attack there
-    if (s.selectedAction === 'attack') {
+    if (uiState.selectedAction === 'attack') {
       const ok = Game.attackUnit(hex.q, hex.r);
       if (ok) {
+        uiState.selectedAction = null;
+        uiState.attackTargets = null;
+        if (!Game.state.activationState) resetUiState();
         showPhase();
         render();
         return;
       }
-      // Invalid attack - flash red
-      Board.flashHex(hex.q, hex.r, render);
-      return;
     }
 
     // Otherwise try to select a unit on this hex
@@ -798,7 +1321,11 @@ const UI = (() => {
       u => u.q === hex.q && u.r === hex.r && u.player === s.currentPlayer && !u.activated && u.health > 0
     );
     if (unit) {
-      Game.selectUnit(unit);
+      const selected = Game.selectUnit(unit);
+      if (selected) {
+        resetUiState();
+        uiState.selectedUnit = selected;
+      }
       showPhase();
       render();
     }
