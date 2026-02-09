@@ -475,6 +475,8 @@ const Board = (() => {
     getIconFile,
     get hexes() { return hexes; },
     get hexSize() { return hexSize; },
+    get zoomLevel() { return zoomLevel; },
+    setZoom(v) { zoomLevel = Math.min(3, Math.max(0.3, v)); },
     get panX() { return panX; },
     set panX(v) { panX = v; },
     get panY() { return panY; },

@@ -119,6 +119,24 @@ const Units = (() => {
     return '';
   }
 
+  /** Collect all special rules as [{name, text}] from numbered columns. */
+  function collectSpecialRules(raw) {
+    const rules = [];
+    // Try "special rule 1" / "rule text 1", "special rule 2" / "rule text 2", etc.
+    for (let i = 1; i <= 10; i++) {
+      const name = col(raw, [`special rule ${i}`]);
+      if (!name || name === '-') continue;
+      const text = col(raw, [`special rule text ${i}`]);
+      rules.push({ name, text });
+    }
+    // Fallback: if no numbered rules found, try concat or single special column
+    if (rules.length === 0) {
+      const fallback = col(raw, ['concat rules', 'special']);
+      if (fallback) rules.push({ name: fallback, text: '' });
+    }
+    return rules;
+  }
+
   function normalizeUnit(raw, faction) {
     return {
       name:     col(raw, ['units faction rules', 'units', 'name']),
@@ -130,6 +148,7 @@ const Units = (() => {
       range:    int(col(raw, ['rng', 'range'])),
       damage:   int(col(raw, ['dmg', 'damage'])),
       special:  col(raw, ['concat rules', 'special rule 1', 'special']),
+      specialRules: collectSpecialRules(raw),
       unitClass: col(raw, ['class', 'theme 1']),
       image:    fixImagePath(col(raw, ['image'])),
       faction,

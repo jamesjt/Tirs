@@ -7,20 +7,60 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- SVG noise filter for parchment texture -->
+  <svg style="position:absolute;width:0;height:0" aria-hidden="true">
+    <filter id="paper-noise">
+      <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="4" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="noise-organic">
+      <feTurbulence type="fractalNoise" baseFrequency="0.5 0.8" numOctaves="5" stitchTiles="stitch" seed="2"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="noise-volcanic">
+      <feTurbulence type="turbulence" baseFrequency="0.45" numOctaves="3" stitchTiles="stitch" seed="7"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="noise-ethereal">
+      <feTurbulence type="fractalNoise" baseFrequency="0.3 0.4" numOctaves="6" stitchTiles="stitch" seed="13"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="noise-stone">
+      <feTurbulence type="turbulence" baseFrequency="0.9" numOctaves="3" stitchTiles="stitch" seed="5"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="noise-ripple">
+      <feTurbulence type="fractalNoise" baseFrequency="0.25 0.7" numOctaves="4" stitchTiles="stitch" seed="9"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="noise-sand">
+      <feTurbulence type="fractalNoise" baseFrequency="1.2" numOctaves="2" stitchTiles="stitch" seed="3"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+  </svg>
+
   <nav id="top-nav">
     <span class="nav-title">Tirs of Traea</span>
   </nav>
 
   <canvas id="gameCanvas"></canvas>
 
+  <!-- Roster card areas — cards appear beside the board during roster build -->
+  <div id="roster-area-p1" class="roster-area roster-left"></div>
+  <div id="roster-area-p2" class="roster-area roster-right"></div>
+
   <div id="status-bar">Loading...</div>
 
   <!-- Phase panels — only one visible at a time -->
   <div id="panel-faction-p1" class="phase-panel side-panel side-left hidden"></div>
   <div id="panel-faction-p2" class="phase-panel side-panel side-right hidden"></div>
-  <div id="panel-roster" class="phase-panel side-panel hidden"></div>
+  <div id="panel-roster-p1" class="phase-panel side-panel side-left hidden"></div>
+  <div id="panel-roster-p2" class="phase-panel side-panel side-right hidden"></div>
+  <div id="panel-rules" class="phase-panel center-panel hidden"></div>
   <div id="panel-terrain" class="phase-panel side-panel hidden"></div>
   <div id="panel-deploy" class="phase-panel side-panel hidden"></div>
+  <div id="panel-deploy-p1" class="phase-panel side-panel side-left hidden"></div>
+  <div id="panel-deploy-p2" class="phase-panel side-panel side-right hidden"></div>
   <div id="panel-battle" class="phase-panel side-panel hidden"></div>
   <div id="panel-gameover" class="phase-panel center-panel hidden"></div>
 
