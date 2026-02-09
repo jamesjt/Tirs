@@ -1197,14 +1197,14 @@ body.theme-gem-img .unit-card .card-header {
 }
 
 body.theme-gem-img .unit-card .card-name {
-  color: #1a1a1a;
-  text-shadow: none;
+  color: #f0ede6;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
 }
 
 body.theme-gem-img .unit-card .card-cost {
   background: transparent;
   border: none;
-  color: #c5a64e;
+  color: #000000;
   box-shadow: none;
 }
 
@@ -1212,8 +1212,13 @@ body.theme-gem-img .unit-card .card-image {
   background: transparent;
 }
 
+body.theme-gem-img .unit-card .card-image img {
+  object-fit: cover;
+}
+
 body.theme-gem-img .unit-card .card-stats {
   background: transparent;
+  margin-top: -3px;
 }
 
 body.theme-gem-img .stat-icon path,
