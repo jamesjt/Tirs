@@ -26,7 +26,8 @@ const Units = (() => {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  async function fetchSheet(sheetName, useHeader, retries = 0) {
+  /** Fetch a single sheet by exact name (with retries for transient errors). */
+  async function fetchSheetExact(sheetName, useHeader, retries = 0) {
     const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
 
     return new Promise((resolve, reject) => {
@@ -39,13 +40,42 @@ const Units = (() => {
           if (retries < MAX_RETRIES) {
             console.log(`Retrying ${sheetName} (attempt ${retries + 2}/${MAX_RETRIES + 1})...`);
             await delay(RETRY_DELAY_MS);
-            resolve(fetchSheet(sheetName, useHeader, retries + 1));
+            resolve(fetchSheetExact(sheetName, useHeader, retries + 1));
           } else {
             reject(err);
           }
         },
       });
     });
+  }
+
+  /** Case-insensitive sheet fetch — tries exact name, then case variants. */
+  async function fetchSheet(sheetName, useHeader) {
+    // Try the given name first (with retries for network issues)
+    try {
+      const data = await fetchSheetExact(sheetName, useHeader);
+      if (data && data.length > 0) return data;
+    } catch (e) { /* fall through to case variants */ }
+
+    // Build case variants to try
+    const variants = [...new Set([
+      sheetName.toLowerCase(),
+      sheetName.toUpperCase(),
+      sheetName.charAt(0).toUpperCase() + sheetName.slice(1),
+      sheetName.replace(/\b\w/g, c => c.toUpperCase()),
+    ])].filter(v => v !== sheetName);
+
+    for (const variant of variants) {
+      try {
+        const data = await fetchSheetExact(variant, useHeader, MAX_RETRIES); // single attempt
+        if (data && data.length > 0) {
+          console.log(`Sheet "${sheetName}" found as "${variant}"`);
+          return data;
+        }
+      } catch (e) { /* try next variant */ }
+    }
+
+    throw new Error(`Sheet "${sheetName}" not found`);
   }
 
   // ── Fetch faction unit data ─────────────────────────────────
@@ -114,6 +144,120 @@ const Units = (() => {
     }
   }
 
+  // ── Fetch ability tabs ──────────────────────────────────────
+
+  async function fetchAbilityTabs() {
+    const results = {};
+    // Unified atomic rules tab
+    try {
+      results.rules = await fetchSheet('rules', true);
+    } catch (e) {
+      console.warn('Rules tab not found');
+      results.rules = [];
+    }
+    // Layer 2 composition mapping tab
+    try {
+      results.abilities = await fetchSheet('abilities', true);
+    } catch (e) {
+      console.warn('Abilities mapping tab not found');
+      results.abilities = [];
+    }
+    // Faction rules
+    try {
+      results.factionRule = await fetchSheet('factionRule', true);
+    } catch (e) {
+      results.factionRule = [];
+    }
+    return results;
+  }
+
+  // ── Parse atomic rules (Layer 3) ──────────────────────────────
+
+  function parseAtomicRules(rows) {
+    const rules = {};
+    for (const row of rows) {
+      const ruleName = col(row, ['rulename', 'rule name']).trim();
+      if (!ruleName) continue;
+
+      const type = col(row, ['type']).trim();
+      if (!type) continue;
+
+      // Collect Effect N / Value N pairs
+      const effects = [];
+      for (let i = 1; i <= 4; i++) {
+        const eff = col(row, [`effect ${i}`]).trim();
+        const val = col(row, [`value ${i}`]).trim();
+        if (eff) effects.push({ effect: eff, value: val });
+      }
+
+      rules[ruleName] = {
+        type,
+        ruleName,
+        target: col(row, ['target']).trim(),
+        effects,
+        condition: col(row, ['condition']).trim() || null,
+        stat: col(row, ['stat']).trim() || null,
+        value: col(row, ['value']).trim() || null,
+        range: col(row, ['range']).trim() || null,
+        los: col(row, ['los']).trim() || null,
+      };
+    }
+    return rules;
+  }
+
+  // ── Parse ability definitions (Layer 2) ────────────────────────
+
+  function parseAbilityDefs(rows) {
+    const defs = {};
+    for (const row of rows) {
+      // Find the ability name column — must match exactly 'ability' or 'abilities',
+      // NOT 'ability 1', 'ability2' etc. (those are rule columns)
+      let name = '';
+      for (const key of Object.keys(row)) {
+        const k = key.trim().toLowerCase();
+        if (k === 'ability' || k === 'abilities' || k === 'ability name') {
+          name = (row[key] || '').trim();
+          break;
+        }
+      }
+      if (!name) continue;
+
+      // Collect rule IDs from columns: "Rule N", "Ability N", "AbilityN"
+      const ruleIds = [];
+      for (let i = 1; i <= 4; i++) {
+        const ruleId = col(row, [`rule ${i}`, `rule${i}`, `ability ${i}`, `ability${i}`]).trim();
+        // Skip if it matches the ability name column itself
+        if (ruleId && ruleId !== name) ruleIds.push(ruleId);
+      }
+
+      defs[name] = {
+        name,
+        text: col(row, ['display text', 'description']).trim(),
+        oncePerGame: /^(y|yes|true)$/i.test(col(row, ['once per game'])),
+        ruleIds,
+      };
+    }
+    return defs;
+  }
+
+  // ── Parse faction rules ───────────────────────────────────────
+
+  let factionRuleData = {};
+
+  function parseFactionRules(rows) {
+    factionRuleData = {};
+    for (const row of rows) {
+      const faction = col(row, ['faction']).trim();
+      if (!faction) continue;
+      if (!factionRuleData[faction]) factionRuleData[faction] = [];
+      factionRuleData[faction].push({
+        rule: col(row, ['rule']).trim(),
+        effect: col(row, ['effect']).trim(),
+        trigger: col(row, ['trigger']).trim(),
+      });
+    }
+  }
+
   // ── Fetch everything ────────────────────────────────────────
 
   function setLoadingState(newState, error = null) {
@@ -129,7 +273,25 @@ const Units = (() => {
       if (activeFactions.length === 0) {
         throw new Error('No active factions found. Check your internet connection.');
       }
-      await Promise.all(activeFactions.map(f => fetchFaction(f)));
+      await Promise.all([
+        Promise.all(activeFactions.map(f => fetchFaction(f))),
+        fetchAbilityTabs().then(abilityTabs => {
+          // Parse Layer 3: atomic rules from unified rules tab
+          const allAtomicRules = parseAtomicRules(abilityTabs.rules);
+
+          // Parse Layer 2: ability definitions
+          const allAbilityDefs = parseAbilityDefs(abilityTabs.abilities);
+
+          // Parse faction rules
+          parseFactionRules(abilityTabs.factionRule);
+
+          // Pass to Abilities module
+          if (typeof Abilities !== 'undefined') {
+            Abilities.setAtomicRules(allAtomicRules);
+            Abilities.setAbilityDefs(allAbilityDefs);
+          }
+        }),
+      ]);
       console.log('All faction data loaded:', Object.keys(catalog).map(k => `${k}: ${catalog[k].length} units`));
       setLoadingState('success');
     } catch (err) {
@@ -159,11 +321,11 @@ const Units = (() => {
   /** Collect all special rules as [{name, text}] from numbered columns. */
   function collectSpecialRules(raw) {
     const rules = [];
-    // Try "special rule 1" / "rule text 1", "special rule 2" / "rule text 2", etc.
+    // Try "special rule 1" / "ability 1" / "rule text 1", etc.
     for (let i = 1; i <= 10; i++) {
-      const name = col(raw, [`special rule ${i}`]);
+      const name = col(raw, [`special rule ${i}`, `ability ${i}`]);
       if (!name || name === '-') continue;
-      const text = col(raw, [`special rule text ${i}`]);
+      const text = col(raw, [`special rule text ${i}`, `ability text ${i}`]);
       rules.push({ name, text });
     }
     // Fallback: if no numbered rules found, try concat or single special column
@@ -213,6 +375,7 @@ const Units = (() => {
     get catalog() { return catalog; },
     get loadingState() { return loadingState; },
     get loadingError() { return loadingError; },
+    get factionRules() { return factionRuleData; },
     setStateChangeCallback(cb) { onStateChange = cb; },
     fetchAll,
     fetchFaction,

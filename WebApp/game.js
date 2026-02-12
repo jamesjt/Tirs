@@ -9,7 +9,9 @@ const Game = (() => {
     FACTION_ROSTER:   'faction_roster',
     TERRAIN_DEPLOY:   'terrain_deploy',
     UNIT_DEPLOY:      'unit_deploy',
+    ROUND_START:      'round_start',
     BATTLE:           'battle',
+    ROUND_END:        'round_end',
     GAME_OVER:        'game_over',
   };
 
@@ -33,6 +35,10 @@ const Game = (() => {
         survivalPct:           50,
         terrainPerTeam:        3,
         hiddenDeploy:          false,
+        confirmEndTurn:        false,
+        canUndoMove:           true,
+        canUndoAttack:         true,
+        crystalCapture:        'activationEnd',  // 'activationEnd' | 'turnEnd' | 'moveOn'
       },
 
       players: {
@@ -41,12 +47,25 @@ const Game = (() => {
       },
 
       units: [],                // deployed Unit objects
-      terrain: new Map(),       // "q,r" -> { surface }
+      terrain: new Map(),       // "q,r" -> { surface, player }
+      consumedUnits: [],        // [{ unit, fromQ, fromR }] — units swallowed by consuming terrain
       objectiveControl: {},     // "q,r" -> player (1|2|0)
 
       // Per-activation tracking
       activationState: null,    // { unit, moved, attacked }
+      actionHistory: [],        // stack of { type, ... } for undo
+
+      // Round phase step queue
+      roundStepQueue: [],       // [{ id, label, auto, execute }]
+      roundStepIndex: 0,
+
+      // Combat log
+      combatLog: [],            // [{ text, player, round }]
     };
+  }
+
+  function log(text, player) {
+    state.combatLog.push({ text, player: player || 0, round: state.round });
   }
 
   function reset() {
@@ -64,7 +83,7 @@ const Game = (() => {
   // ── Unit factory ──────────────────────────────────────────────
 
   function createUnit(template, player, q, r) {
-    return {
+    const u = {
       name:       template.name,
       cost:       template.cost,
       health:     template.health,
@@ -75,11 +94,61 @@ const Game = (() => {
       range:      template.range,
       damage:     template.damage,
       special:    template.special || '',
+      specialRules: template.specialRules || [],
+      image:      template.image || '',
+      faction:    template.faction || '',
       player,
       q,
       r,
       activated:  false,
+      conditions: [],           // [{ id, duration, source? }]
     };
+    if (typeof Abilities !== 'undefined') Abilities.bindUnit(u);
+    return u;
+  }
+
+  // ── Conditions ───────────────────────────────────────────────
+
+  function addCondition(unit, id, duration, source) {
+    unit.conditions.push({ id, duration, source: source || null });
+  }
+
+  function removeCondition(unit, id) {
+    const idx = unit.conditions.findIndex(c => c.id === id);
+    if (idx !== -1) unit.conditions.splice(idx, 1);
+    return idx !== -1;
+  }
+
+  function hasCondition(unit, id) {
+    return unit.conditions.some(c => c.id === id);
+  }
+
+  /** Remove all conditions on a unit matching a given duration type. */
+  function clearConditions(unit, duration) {
+    unit.conditions = unit.conditions.filter(c => c.duration !== duration);
+  }
+
+  /** Condition-based stat modifiers. */
+  const CONDITION_MODS = {
+    protected:    { armor: 1 },
+    vulnerable:   { armor: -1 },
+    strengthened: { damage: 1 },
+    weakness:     { damage: -1 },
+  };
+
+  /** Get effective stat value after condition + ability modifiers. */
+  function getEffective(unit, stat) {
+    let val = unit[stat];
+    for (const c of unit.conditions) {
+      const mods = CONDITION_MODS[c.id];
+      if (mods && mods[stat] !== undefined) val += mods[stat];
+    }
+    if (typeof Abilities !== 'undefined') {
+      val += Abilities.getPassiveMod(unit, stat);
+    }
+    if (stat === 'damage' && val < 1) val = 1;
+    if (stat === 'armor') { /* armor can go negative via vulnerable */ }
+    return val;
   }
 
   // ── Phase: Faction Select ─────────────────────────────────────
@@ -187,7 +256,7 @@ const Game = (() => {
     const td = state.terrain.get(key);
     if (td && td.surface) return false;
 
-    state.terrain.set(key, { surface: surfaceType });
+    state.terrain.set(key, { surface: surfaceType, player });
     state.players[player].terrainPlacements++;
 
     // Alternate turns
@@ -217,8 +286,15 @@ const Game = (() => {
     const hex = Board.getHex(q, r);
     if (!hex) return false;
 
-    // Must be own deployment zone
-    if (hex.zone !== `player${player}`) return false;
+    // Must be own deployment zone (or covering/concealing terrain for Scout)
+    if (hex.zone !== `player${player}`) {
+      const isScout = typeof Abilities !== 'undefined' &&
+        Abilities.hasDeployRule(p.roster[rosterIndex], 'coveringOrConcealing');
+      if (!isScout) return false;
+      // Scout can deploy in neutral hexes with covering or concealing terrain
+      if (hex.zone !== 'neutral') return false;
+      if (!hasTerrainRule(q, r, 'cover') && !hasTerrainRule(q, r, 'concealing')) return false;
+    }
 
     // Can't deploy on top of another unit
     if (state.units.some(u => u.q === q && u.r === r && u.health > 0)) return false;
@@ -243,9 +319,8 @@ const Game = (() => {
     } else if (selfHasUndeployed) {
       // other done, keep going
     } else {
-      // All deployed — start battle
-      state.currentPlayer = state.firstTurnPlayer;
-      state.phase = PHASE.BATTLE;
+      // All deployed — enter first round start
+      startRound();
     }
     return true;
   }
@@ -267,8 +342,7 @@ const Game = (() => {
     if (state.players[player].roster.some(u => !u._deployed)) return false;
     state.players[player]._deployConfirmed = true;
     if (state.players[1]._deployConfirmed && state.players[2]._deployConfirmed) {
-      state.currentPlayer = state.firstTurnPlayer;
-      state.phase = PHASE.BATTLE;
+      startRound();
     }
     return true;
   }
@@ -281,7 +355,24 @@ const Game = (() => {
     if (unit.activated) return null;
     if (unit.health <= 0) return null;
 
-    state.activationState = { unit, moved: false, attacked: false };
+    state.activationState = { unit, moved: false, attacked: false, moveDistance: 0 };
+    state.actionHistory = [];
+    log(`${unit.name} activated`, unit.player);
+
+    // Invigorating terrain: heal 1 or gain strengthened if full
+    if (hasTerrainRule(unit.q, unit.r, 'invigorating')) {
+      if (unit.health < unit.maxHealth) {
+        unit.health = Math.min(unit.health + 1, unit.maxHealth);
+        log(`${unit.name} healed by invigorating terrain (${unit.health}/${unit.maxHealth} HP)`, unit.player);
+      } else {
+        addCondition(unit, 'strengthened', 'untilAttack');
+        log(`${unit.name} strengthened by invigorating terrain`, unit.player);
+      }
+    }
+
+    if (typeof Abilities !== 'undefined') {
+      Abilities.dispatch('afterSelect', { unit });
+    }
     return unit;
   }
 
@@ -290,16 +381,31 @@ const Game = (() => {
   }
 
   function getMoveRange() {
-    if (!state.activationState || state.activationState.moved) return null;
-    const u = state.activationState.unit;
+    const act = state.activationState;
+    if (!act) return null;
 
-    // Build set of hexes blocked by enemy units
+    const isMobile = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'mobile');
+
+    if (isMobile) {
+      if (act.unit.move - act.moveDistance <= 0) return null;
+    } else {
+      if (act.moved) return null;
+    }
+
+    const u = act.unit;
+    if (hasCondition(u, 'immobilized')) return null;
+
+    // Build set of blocked hexes: enemy units + impassable terrain
     const blocked = new Set();
     for (const other of state.units) {
       if (other.health <= 0) continue;
       if (other.player !== u.player) {
         blocked.add(`${other.q},${other.r}`);
       }
+    }
+    for (const [key] of state.terrain) {
+      const [tq, tr] = key.split(',').map(Number);
+      if (hasTerrainRule(tq, tr, 'impassable')) blocked.add(key);
     }
     // Also block hexes occupied by allies (can move through but not stop)
     const allyOccupied = new Set();
@@ -310,7 +416,16 @@ const Game = (() => {
       }
     }
 
-    const reachable = Board.getReachableHexes(u.q, u.r, u.move, blocked);
+    const range = isMobile ? (u.move - act.moveDistance) : u.move;
+    function moveCost(fromQ, fromR, toQ, toR) {
+      if (hasTerrainRule(toQ, toR, 'flow')) {
+        const td = state.terrain.get(`${toQ},${toR}`);
+        return (td && td.player === u.player) ? 0 : 2;
+      }
+      if (hasTerrainRule(toQ, toR, 'difficult')) return 2;
+      return 1;
+    }
+    const reachable = Board.getReachableHexes(u.q, u.r, range, blocked, moveCost);
     // Remove hexes occupied by allies (can't stop there)
     for (const key of allyOccupied) {
       reachable.delete(key);
@@ -321,7 +436,16 @@ const Game = (() => {
 
   function getAttackTargets() {
     if (!state.activationState || state.activationState.attacked) return null;
-    const u = state.activationState.unit;
+    const act = state.activationState;
+    const u = act.unit;
+    if (hasCondition(u, 'disarmed')) return null;
+
+    // Build blocked set for Taunted reachability check
+    const blocked = new Set();
+    for (const other of state.units) {
+      if (other.health <= 0) continue;
+      if (other.player !== u.player) blocked.add(`${other.q},${other.r}`);
+    }
 
     const targets = new Set();
     for (const enemy of state.units) {
@@ -331,27 +455,91 @@ const Game = (() => {
       }
     }
 
+    // Taunted: restrict targets to taunter(s) if reachable
+    const taunters = u.conditions
+      .filter(c => c.id === 'taunted' && c.source && c.source.health > 0)
+      .map(c => c.source);
+
+    if (taunters.length > 0) {
+      let tauntKeys = new Set(
+        taunters.filter(t => targets.has(`${t.q},${t.r}`)).map(t => `${t.q},${t.r}`)
+      );
+
+      // If none attackable from here, check from all reachable hexes (move+attack)
+      if (tauntKeys.size === 0 && !act.moved) {
+        const reachable = Board.getReachableHexes(u.q, u.r, u.move, blocked);
+        reachable.set(`${u.q},${u.r}`, 0);
+        for (const [hexKey] of reachable) {
+          const [hq, hr] = hexKey.split(',').map(Number);
+          for (const t of taunters) {
+            const savedQ = u.q, savedR = u.r;
+            u.q = hq; u.r = hr;
+            const canHit = canAttack(u, t);
+            u.q = savedQ; u.r = savedR;
+            if (canHit) tauntKeys.add(`${t.q},${t.r}`);
+          }
+        }
+      }
+
+      // If any taunter is reachable (now or after move), restrict targets
+      if (tauntKeys.size > 0) {
+        for (const key of [...targets]) {
+          if (!tauntKeys.has(key)) targets.delete(key);
+        }
+      }
+      // If still empty → truly impossible → targets remain unfiltered
+    }
+
     return targets;
   }
 
   function moveUnit(toQ, toR) {
     const act = state.activationState;
-    if (!act || act.moved) return false;
+    if (!act) return false;
+
+    const isMobile = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'mobile');
+    if (!isMobile && act.moved) return false;
 
     // Validate by recomputing reachable hexes
     const reachable = getMoveRange();
     if (!reachable || !reachable.has(`${toQ},${toR}`)) return false;
 
+    const fromQ = act.unit.q;
+    const fromR = act.unit.r;
+    const destKey = `${toQ},${toR}`;
+    const prevObjControl = state.objectiveControl[destKey];
+    const prevMoveDistance = act.moveDistance;
+
+    const stepDistance = reachable.get(destKey) || 0;
+
+    if (isMobile) {
+      act.moveDistance += stepDistance;
+      if (act.moveDistance >= act.unit.move) act.moved = true;
+    } else {
+      act.moveDistance = stepDistance;
+      act.moved = true;
+    }
+
     act.unit.q = toQ;
     act.unit.r = toR;
-    act.moved = true;
+
+    // Terrain entry effects
+    onEnterHex(act.unit, toQ, toR);
+
+    // Dizzy: moving locks out attacking
+    if (hasCondition(act.unit, 'dizzy')) act.attacked = true;
 
     // Update objective control
     updateObjectiveControl(act.unit);
 
-    // If both actions used, end activation
-    if (act.moved && act.attacked) {
-      endActivation();
+    state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ, toR, prevObjControl, prevMoveDistance });
+    log(`${act.unit.name} moved (${fromQ},${fromR}) \u2192 (${toQ},${toR})`, act.unit.player);
+
+    // If both actions used, end activation (unless confirmEndTurn or pending effects)
+    if (act.moved && act.attacked && !state.rules.confirmEndTurn) {
+      if (typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) {
+        endActivation();
+      }
     }
     return true;
   }
@@ -366,15 +554,51 @@ const Game = (() => {
     if (!target) return false;
     if (!canAttack(act.unit, target)) return false;
 
-    // Deal damage: damage - armor, minimum 1
-    const dmg = Math.max(1, act.unit.damage - target.armor);
+    // Deal damage using effective stats (conditions applied)
+    const prevHealth = target.health;
+    const prevAttackerHealth = act.unit.health;
+    const atkDmg = getEffective(act.unit, 'damage');
+    let defArm = getEffective(target, 'armor');
+    // Precise: ignore target's base armor (only condition-granted armor applies)
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'ignoreBaseArmor')) {
+      defArm = defArm - target.armor;
+    }
+    const dmg = Math.max(1, atkDmg - defArm);
     target.health -= dmg;
 
     act.attacked = true;
 
-    // If both actions used, end activation
-    if (act.moved && act.attacked) {
-      endActivation();
+    // Dizzy: attacking locks out moving
+    if (hasCondition(act.unit, 'dizzy')) act.moved = true;
+
+    // Clear "until attack" conditions on the attacker
+    clearConditions(act.unit, 'untilAttack');
+
+    // Burning: attacker takes 1 self-damage after attacking
+    if (hasCondition(act.unit, 'burning')) {
+      act.unit.health -= 1;
+    }
+
+    // Ability dispatch: afterAttack + afterDeath
+    if (typeof Abilities !== 'undefined') {
+      Abilities.dispatch('afterAttack', { unit: act.unit, target, damage: dmg });
+      if (target.health <= 0) {
+        Abilities.dispatch('afterDeath', { unit: target, killer: act.unit });
+      }
+    }
+
+    state.actionHistory.push({ type: 'attack', target, prevHealth, prevAttackerHealth });
+    const killText = target.health <= 0 ? ' \u2620 KILLED' : ` (${target.health}/${target.maxHealth} HP)`;
+    log(`${act.unit.name} attacks ${target.name} for ${dmg} dmg${killText}`, act.unit.player);
+    if (hasCondition(act.unit, 'burning') && prevAttackerHealth !== act.unit.health) {
+      log(`${act.unit.name} takes 1 burning self-damage (${act.unit.health}/${act.unit.maxHealth} HP)`, act.unit.player);
+    }
+
+    // If both actions used, end activation (unless confirmEndTurn or pending effects)
+    if (act.moved && act.attacked && !state.rules.confirmEndTurn) {
+      if (typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) {
+        endActivation();
+      }
     }
     return true;
   }
@@ -394,7 +618,9 @@ const Game = (() => {
     }
 
     if (act.moved && act.attacked) {
-      endActivation();
+      if (typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) {
+        endActivation();
+      }
     }
     return true;
   }
@@ -402,11 +628,41 @@ const Game = (() => {
   function endActivation() {
     const act = state.activationState;
     if (act) {
+      // Crystal capture (before poison — dying unit still captures)
+      if (state.rules.crystalCapture === 'activationEnd') {
+        captureObjective(act.unit);
+      } else if (state.rules.crystalCapture === 'turnEnd') {
+        captureAllObjectives();
+      }
+
+      // Poisoned: take damage equal to spaces moved
+      if (hasCondition(act.unit, 'poisoned') && act.moveDistance > 0) {
+        act.unit.health -= act.moveDistance;
+        log(`${act.unit.name} takes ${act.moveDistance} poison damage (${act.unit.health}/${act.unit.maxHealth} HP)`, act.unit.player);
+      }
       act.unit.activated = true;
+      clearConditions(act.unit, 'endOfActivation');
     }
     state.activationState = null;
+    state.actionHistory = [];
 
     nextTurn();
+  }
+
+  /** Spend the attack action to remove Burning. */
+  function removeBurning() {
+    const act = state.activationState;
+    if (!act || act.attacked) return false;
+    if (!hasCondition(act.unit, 'burning')) return false;
+    removeCondition(act.unit, 'burning');
+    act.attacked = true;
+    log(`${act.unit.name} quenches burning (uses attack)`, act.unit.player);
+    if (act.moved && act.attacked && !state.rules.confirmEndTurn) {
+      if (typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) {
+        endActivation();
+      }
+    }
+    return true;
   }
 
   function forceEndActivation() {
@@ -424,28 +680,37 @@ const Game = (() => {
     const dist = Board.hexDistance(attacker.q, attacker.r, target.q, target.r);
     if (dist > attacker.range) return false;
 
+    // Hidden: units in concealing terrain require adjacent attacker
+    // (negated by revealing-sourced vulnerable)
+    if (hasTerrainRule(target.q, target.r, 'concealing') && dist > 1) {
+      const revealed = target.conditions?.some(c => c.id === 'vulnerable' && c.source === 'revealing');
+      if (!revealed) return false;
+    }
+
+    // Line of Sight (all attack types)
+    if (!hasLoS(attacker.q, attacker.r, target.q, target.r)) return false;
+
+    // Targeting pattern
     const atkType = (attacker.atkType || 'D').toUpperCase();
 
     if (atkType === 'L') {
-      // Line: must be in a straight hex line, and path must be clear
+      // Line: straight hex line + LoE clear on intermediates
       const dir = Board.straightLineDir(attacker.q, attacker.r, target.q, target.r);
       if (dir === -1) return false;
-      // Check LoE: no units or covering terrain between
       const line = Board.getLineHexes(attacker.q, attacker.r, dir, dist);
       for (let i = 0; i < line.length - 1; i++) {
-        const h = line[i];
-        if (isBlockingLoE(h.q, h.r)) return false;
+        if (isBlockingLoE(line[i].q, line[i].r)) return false;
       }
       return true;
     }
 
     if (atkType === 'P') {
-      // Path: at least one shortest path must be clear
+      // Path: at least one shortest path with LoE clear on intermediates
       return hasFreePath(attacker.q, attacker.r, target.q, target.r, dist);
     }
 
-    // Direct: any unit in range with LoS
-    return hasLoS(attacker.q, attacker.r, target.q, target.r);
+    // Direct: in range + LoS + not hidden (all checked above)
+    return true;
   }
 
   /** Check if a terrain hex has a specific rule (e.g. 'cover', 'difficult'). */
@@ -462,6 +727,29 @@ const Game = (() => {
     // Covering terrain blocks LoE beyond it
     if (hasTerrainRule(q, r, 'cover')) return true;
     return false;
+  }
+
+  /** Handle terrain effects when a unit enters a hex. */
+  function onEnterHex(unit, q, r) {
+    if (!unit || unit.health <= 0) return;
+    if (hasTerrainRule(q, r, 'dangerous')) {
+      unit.health -= 1;
+      log(`${unit.name} takes 1 terrain damage (${unit.health}/${unit.maxHealth} HP)`, unit.player);
+    }
+    if (hasTerrainRule(q, r, 'poisonous')) {
+      addCondition(unit, 'poisoned', 'endOfActivation');
+      log(`${unit.name} poisoned by terrain`, unit.player);
+    }
+    if (hasTerrainRule(q, r, 'revealing')) {
+      addCondition(unit, 'vulnerable', 'endOfRound', 'revealing');
+      log(`${unit.name} revealed (vulnerable)`, unit.player);
+    }
+    if (hasTerrainRule(q, r, 'consuming')) {
+      state.consumedUnits.push({ unit, fromQ: q, fromR: r });
+      log(`${unit.name} consumed by terrain`, unit.player);
+      unit.q = -99;
+      unit.r = -99;
+    }
   }
 
   function hasLoS(q1, r1, q2, r2) {
@@ -492,7 +780,7 @@ const Game = (() => {
         checked.add(key);
         // Cover terrain blocks LoS beyond (not into)
         if (hasTerrainRule(best.q, best.r, 'cover')) return false;
-        // Concealing terrain blocks LoS both into and beyond
+        // Concealing terrain blocks LoS beyond (not into — target hex is skipped)
         if (hasTerrainRule(best.q, best.r, 'concealing')) return false;
         // Large units block LoS (not implemented yet)
       }
@@ -523,12 +811,72 @@ const Game = (() => {
     return false;
   }
 
+  // ── Undo ─────────────────────────────────────────────────────
+
+  function undoLastAction() {
+    if (state.actionHistory.length === 0) return false;
+    const act = state.activationState;
+    if (!act) return false;
+
+    const last = state.actionHistory[state.actionHistory.length - 1];
+    if (last.type === 'move' && !state.rules.canUndoMove) return false;
+    if (last.type === 'attack' && !state.rules.canUndoAttack) return false;
+
+    state.actionHistory.pop();
+
+    if (last.type === 'move') {
+      last.unit.q = last.fromQ;
+      last.unit.r = last.fromR;
+      act.moved = false;
+      act.moveDistance = last.prevMoveDistance !== undefined ? last.prevMoveDistance : 0;
+      // Dizzy: undoing move also unlocks attack
+      if (hasCondition(act.unit, 'dizzy')) act.attacked = false;
+      // Restore objective control at destination
+      const destKey = `${last.toQ},${last.toR}`;
+      if (destKey in state.objectiveControl) {
+        state.objectiveControl[destKey] = last.prevObjControl !== undefined ? last.prevObjControl : 0;
+      }
+    } else if (last.type === 'attack') {
+      last.target.health = last.prevHealth;
+      // Restore attacker health (Burning self-damage)
+      if (last.prevAttackerHealth !== undefined) {
+        act.unit.health = last.prevAttackerHealth;
+      }
+      act.attacked = false;
+      // Dizzy: undoing attack also unlocks move
+      if (hasCondition(act.unit, 'dizzy')) act.moved = false;
+    }
+
+    return true;
+  }
+
   // ── Objective control ─────────────────────────────────────────
 
   function updateObjectiveControl(unit) {
+    if (state.rules.crystalCapture !== 'moveOn') return;
     const key = `${unit.q},${unit.r}`;
     if (Board.OBJECTIVES.some(o => o.q === unit.q && o.r === unit.r)) {
       state.objectiveControl[key] = unit.player;
+    }
+  }
+
+  /** Capture objective if unit is on it. */
+  function captureObjective(unit) {
+    if (!unit) return;
+    const key = `${unit.q},${unit.r}`;
+    if (Board.OBJECTIVES.some(o => o.q === unit.q && o.r === unit.r)) {
+      state.objectiveControl[key] = unit.player;
+    }
+  }
+
+  /** Check all objectives and capture for any living unit standing on them. */
+  function captureAllObjectives() {
+    for (const obj of Board.OBJECTIVES) {
+      const key = `${obj.q},${obj.r}`;
+      const unit = state.units.find(u => u.q === obj.q && u.r === obj.r && u.health > 0);
+      if (unit) {
+        state.objectiveControl[key] = unit.player;
+      }
     }
   }
 
@@ -551,36 +899,191 @@ const Game = (() => {
     }
   }
 
+  /** Transition into ROUND_END phase with a step queue. */
   function endRound() {
-    // Score objectives
-    for (const obj of Board.OBJECTIVES) {
-      const key = `${obj.q},${obj.r}`;
-      const owner = state.objectiveControl[key];
-      if (!owner) continue;
-      if (obj.type === 'shard') {
-        state.scores[owner] += 1;
-      } else if (obj.type === 'core') {
-        // Core: 2 points round 1, +1 each round (2/3/4/5)
-        state.scores[owner] += state.round + 1;
+    log(`\u2501\u2501 Round ${state.round} End \u2501\u2501`);
+    state.roundStepQueue = [
+      {
+        id: 'scoreObjectives',
+        label: 'Score objectives',
+        auto: false,
+        data: (() => {
+          const entries = [];
+          for (const obj of Board.OBJECTIVES) {
+            const key = `${obj.q},${obj.r}`;
+            const owner = state.objectiveControl[key];
+            if (!owner) continue;
+            const points = obj.type === 'shard' ? 1 : state.round + 1;
+            entries.push({ q: obj.q, r: obj.r, type: obj.type, owner, points });
+          }
+          return entries;
+        })(),
+      },
+      {
+        id: 'evanescent',
+        label: 'Evanescent terrain fades',
+        auto: true,
+        execute() {
+          for (const [key] of state.terrain) {
+            const [q, r] = key.split(',').map(Number);
+            if (hasTerrainRule(q, r, 'evanescent')) state.terrain.delete(key);
+          }
+        },
+      },
+      (() => {
+        // Pre-compute shifting terrain moves
+        const shiftMoves = [];
+        for (const [key, td] of state.terrain) {
+          if (!td.surface || !td.player) continue;
+          const info = Units.terrainRules[td.surface];
+          if (!info || !info.rules.includes('shifting')) continue;
+          const [q, r] = key.split(',').map(Number);
+          const targetDir = td.player === 1 ? 1 : -1;
+          const neighbors = Board.getNeighbors(q, r);
+          let best = null, bestScore = -Infinity;
+          for (const n of neighbors) {
+            if (!Board.getHex(n.q, n.r)) continue;
+            const existing = state.terrain.get(`${n.q},${n.r}`);
+            if (existing && existing.surface) continue;
+            const score = (n.q - q) * targetDir;
+            if (score > bestScore) { best = n; bestScore = score; }
+          }
+          if (best && bestScore > 0) {
+            const unitOn = state.units.find(u => u.q === q && u.r === r && u.health > 0);
+            shiftMoves.push({ fromKey: key, fromQ: q, fromR: r, toQ: best.q, toR: best.r, td, unit: unitOn || null });
+          }
+        }
+        const unitChoices = shiftMoves.filter(m => m.unit);
+        return {
+          id: 'shifting',
+          label: 'Shifting terrain moves',
+          auto: shiftMoves.length === 0 || unitChoices.length === 0,
+          data: { moves: shiftMoves, unitChoices: unitChoices.map(m => ({ unit: m.unit, toQ: m.toQ, toR: m.toR, decided: false, rides: false })), terrainMoved: false },
+          execute() {
+            // Move terrain (idempotent)
+            if (!this.data.terrainMoved) {
+              this.data.terrainMoved = true;
+              for (const m of this.data.moves) {
+                state.terrain.delete(m.fromKey);
+                state.terrain.set(`${m.toQ},${m.toR}`, m.td);
+              }
+            }
+          },
+        };
+      })(),
+      (() => {
+        const alive = state.consumedUnits.filter(e => e.unit.health > 0);
+        return {
+          id: 'consuming-restore',
+          label: 'Consumed units return',
+          auto: alive.length === 0,
+          data: { pending: alive, currentIndex: 0 },
+          execute() {
+            // Auto: nothing to place
+            state.consumedUnits = [];
+          },
+        };
+      })(),
+      {
+        id: 'clearEndOfRound',
+        label: 'Clear end-of-round conditions',
+        auto: true,
+        execute() {
+          for (const u of state.units) {
+            clearConditions(u, 'endOfRound');
+          }
+        },
+      },
+    ];
+    state.roundStepIndex = 0;
+    state.phase = PHASE.ROUND_END;
+    runAutoSteps();
+  }
+
+  /** Transition into ROUND_START phase with a step queue. */
+  function startRound() {
+    log(`\u2501\u2501 Round ${state.round} Start \u2501\u2501`);
+    state.roundStepQueue = [
+      {
+        id: 'resetActivations',
+        label: 'Reset activations',
+        auto: true,
+        execute() {
+          for (const u of state.units) {
+            u.activated = false;
+          }
+        },
+      },
+      {
+        id: 'passInitiative',
+        label: 'Pass initiative',
+        auto: true,
+        execute() {
+          if (!state.rules.firstPlayerSame) {
+            state.firstTurnPlayer = state.firstTurnPlayer === 1 ? 2 : 1;
+          }
+          state.currentPlayer = state.firstTurnPlayer;
+        },
+      },
+      {
+        id: 'abilityRoundStart',
+        label: 'Ability effects',
+        auto: true,
+        execute() {
+          if (typeof Abilities !== 'undefined') {
+            for (const u of state.units.filter(u => u.health > 0)) {
+              Abilities.dispatch('roundStart', { unit: u });
+            }
+          }
+        },
+      },
+      // [Future: Dancer prompts, Ebb and Flow, etc. inserted here]
+    ];
+    state.roundStepIndex = 0;
+    state.phase = PHASE.ROUND_START;
+    runAutoSteps();
+  }
+
+  /** Run all consecutive auto steps starting from roundStepIndex.
+   *  Stops when hitting a non-auto step or reaching the end.
+   *  Returns true if the queue finished (ready to transition). */
+  function runAutoSteps() {
+    const q = state.roundStepQueue;
+    while (state.roundStepIndex < q.length) {
+      const step = q[state.roundStepIndex];
+      if (!step.auto) return false; // needs user input — pause
+      if (step.execute) step.execute();
+      state.roundStepIndex++;
+    }
+    // Queue exhausted — transition
+    finishRoundPhase();
+    return true;
+  }
+
+  /** Called by UI when a non-auto step is completed. */
+  function advanceRoundStep() {
+    state.roundStepIndex++;
+    runAutoSteps();
+  }
+
+  /** Apply points for a single objective (called by UI during animation). */
+  function applyScore(owner, points) {
+    state.scores[owner] += points;
+    log(`Player ${owner} scores ${points} pts (total: ${state.scores[owner]})`, owner);
+  }
+
+  /** Transition out of ROUND_END or ROUND_START. */
+  function finishRoundPhase() {
+    if (state.phase === PHASE.ROUND_END) {
+      state.round++;
+      if (state.round > state.rules.numTurns) {
+        endGame();
+        return;
       }
+      startRound();
+    } else if (state.phase === PHASE.ROUND_START) {
+      state.phase = PHASE.BATTLE;
     }
-
-    state.round++;
-    if (state.round > state.rules.numTurns) {
-      endGame();
-      return;
-    }
-
-    // Reset activations
-    for (const u of state.units) {
-      u.activated = false;
-    }
-
-    // Pass first turn token
-    if (!state.rules.firstPlayerSame) {
-      state.firstTurnPlayer = state.firstTurnPlayer === 1 ? 2 : 1;
-    }
-    state.currentPlayer = state.firstTurnPlayer;
   }
 
   function endGame() {
@@ -591,6 +1094,160 @@ const Game = (() => {
       }
     }
     state.phase = PHASE.GAME_OVER;
+  }
+
+  // ── Ability utility functions ──────────────────────────────────
+
+  /** Push unit N hexes away from (fromQ, fromR). Returns actual distance pushed. */
+  function pushUnit(unit, fromQ, fromR, distance) {
+    let pushed = 0;
+    for (let i = 0; i < distance; i++) {
+      const neighbors = Board.getNeighbors(unit.q, unit.r);
+      let best = null, bestDist = -1;
+      for (const n of neighbors) {
+        if (state.units.some(u => u !== unit && u.q === n.q && u.r === n.r && u.health > 0)) continue;
+        if (hasTerrainRule(n.q, n.r, 'impassable')) continue;
+        const d = Board.hexDistance(fromQ, fromR, n.q, n.r);
+        if (d > bestDist) { best = n; bestDist = d; }
+      }
+      if (!best || bestDist <= Board.hexDistance(fromQ, fromR, unit.q, unit.r)) break;
+      unit.q = best.q;
+      unit.r = best.r;
+      onEnterHex(unit, best.q, best.r);
+      pushed++;
+    }
+    if (pushed > 0) {
+      updateObjectiveControl(unit);
+      log(`${unit.name} pushed ${pushed} hex${pushed > 1 ? 'es' : ''}`, unit.player);
+    }
+    return pushed;
+  }
+
+  /** Pull unit N hexes toward (towardQ, towardR). Returns actual distance pulled. */
+  function pullUnit(unit, towardQ, towardR, distance) {
+    let pulled = 0;
+    for (let i = 0; i < distance; i++) {
+      const neighbors = Board.getNeighbors(unit.q, unit.r);
+      let best = null, bestDist = Infinity;
+      for (const n of neighbors) {
+        if (state.units.some(u => u !== unit && u.q === n.q && u.r === n.r && u.health > 0)) continue;
+        if (hasTerrainRule(n.q, n.r, 'impassable')) continue;
+        const d = Board.hexDistance(towardQ, towardR, n.q, n.r);
+        if (d < bestDist) { best = n; bestDist = d; }
+      }
+      if (!best || bestDist >= Board.hexDistance(unit.q, unit.r, towardQ, towardR)) break;
+      unit.q = best.q;
+      unit.r = best.r;
+      onEnterHex(unit, best.q, best.r);
+      pulled++;
+    }
+    if (pulled > 0) {
+      updateObjectiveControl(unit);
+      log(`${unit.name} pulled ${pulled} hex${pulled > 1 ? 'es' : ''}`, unit.player);
+    }
+    return pulled;
+  }
+
+  /** Place terrain surface on a hex. */
+  function placeTerrain(q, r, surface, player) {
+    const hex = Board.getHex(q, r);
+    if (!hex) return false;
+    state.terrain.set(`${q},${r}`, { surface, player: player || 0 });
+    return true;
+  }
+
+  /** Deal damage to a unit from a source. */
+  function damageUnit(unit, amount, source) {
+    if (!unit || amount <= 0) return;
+    unit.health -= amount;
+    // Future: trigger Fire Charged check here
+  }
+
+  // ── Shifting / Consuming round-step helpers ──────────────────
+
+  /** Move shifting terrain (idempotent — safe to call multiple times). */
+  function executeShifting() {
+    const step = state.roundStepQueue[state.roundStepIndex];
+    if (!step || step.id !== 'shifting') return;
+    step.execute();
+  }
+
+  /** Resolve a unit's ride/stay choice for the current shifting step. */
+  function resolveShiftRide(choiceIndex, rides) {
+    const step = state.roundStepQueue[state.roundStepIndex];
+    if (!step || step.id !== 'shifting') return false;
+    const choice = step.data.unitChoices[choiceIndex];
+    if (!choice || choice.decided) return false;
+    choice.decided = true;
+    choice.rides = rides;
+    if (rides) {
+      choice.unit.q = choice.toQ;
+      choice.unit.r = choice.toR;
+      onEnterHex(choice.unit, choice.toQ, choice.toR);
+      updateObjectiveControl(choice.unit);
+    }
+    return true;
+  }
+
+  /** Check if all shifting unit choices have been made. */
+  function allShiftChoicesDecided() {
+    const step = state.roundStepQueue[state.roundStepIndex];
+    if (!step || step.id !== 'shifting') return true;
+    return step.data.unitChoices.every(c => c.decided);
+  }
+
+  /** Get valid placement hexes for the current consumed unit. */
+  function getConsumingValidHexes() {
+    const step = state.roundStepQueue[state.roundStepIndex];
+    if (!step || step.id !== 'consuming-restore') return null;
+    const { pending, currentIndex } = step.data;
+    if (currentIndex >= pending.length) return null;
+    const entry = pending[currentIndex];
+    const neighbors = Board.getNeighbors(entry.fromQ, entry.fromR);
+    const valid = new Map();
+    for (const n of neighbors) {
+      if (!Board.getHex(n.q, n.r)) continue;
+      if (state.units.some(u => u.q === n.q && u.r === n.r && u.health > 0)) continue;
+      if (hasTerrainRule(n.q, n.r, 'impassable')) continue;
+      valid.set(`${n.q},${n.r}`, 1);
+    }
+    return valid;
+  }
+
+  /** Place a consumed unit back on the board at the chosen hex. */
+  function resolveConsumingPlacement(q, r) {
+    const step = state.roundStepQueue[state.roundStepIndex];
+    if (!step || step.id !== 'consuming-restore') return false;
+    const { pending, currentIndex } = step.data;
+    if (currentIndex >= pending.length) return false;
+    const entry = pending[currentIndex];
+    entry.unit.q = q;
+    entry.unit.r = r;
+    step.data.currentIndex++;
+    if (step.data.currentIndex >= pending.length) {
+      state.consumedUnits = [];
+    }
+    return true;
+  }
+
+  /** Skip placing a consumed unit (no valid hex available). Unit stays off-board. */
+  function skipConsumingPlacement() {
+    const step = state.roundStepQueue[state.roundStepIndex];
+    if (!step || step.id !== 'consuming-restore') return false;
+    const { pending, currentIndex } = step.data;
+    if (currentIndex >= pending.length) return false;
+    step.data.currentIndex++;
+    if (step.data.currentIndex >= pending.length) {
+      state.consumedUnits = [];
+    }
+    return true;
+  }
+
+  /** Check if all consumed units have been placed. */
+  function allConsumingPlaced() {
+    const step = state.roundStepQueue[state.roundStepIndex];
+    if (!step || step.id !== 'consuming-restore') return true;
+    return step.data.currentIndex >= step.data.pending.length;
   }
 
   // ── Public API ────────────────────────────────────────────────
@@ -633,6 +1290,39 @@ const Game = (() => {
     skipAction,
     endActivation,
     forceEndActivation,
+    undoLastAction,
+    removeBurning,
     canAttack,
+
+    // Conditions
+    addCondition,
+    removeCondition,
+    hasCondition,
+    getEffective,
+
+    // Ability utilities
+    pushUnit,
+    pullUnit,
+    placeTerrain,
+    damageUnit,
+    updateObjectiveControl,
+    onEnterHex,
+    hasTerrainRule,
+
+    // Round phases
+    advanceRoundStep,
+    applyScore,
+
+    // Combat log
+    log,
+
+    // Shifting / Consuming helpers
+    executeShifting,
+    resolveShiftRide,
+    allShiftChoicesDecided,
+    getConsumingValidHexes,
+    resolveConsumingPlacement,
+    skipConsumingPlacement,
+    allConsumingPlaced,
   };
 })();

@@ -76,6 +76,19 @@ const Board = (() => {
     surfaceIcons[name] = img;
   }
 
+  // Unit art image cache — keyed by image path
+  const unitImageCache = {};
+
+  function getUnitImage(imagePath) {
+    if (!imagePath) return null;
+    if (unitImageCache[imagePath]) return unitImageCache[imagePath];
+    const img = new Image();
+    img.src = imagePath;
+    img.onload = () => { if (lastState) render(lastState); };
+    unitImageCache[imagePath] = img;
+    return img;
+  }
+
   // ── Initialisation ──────────────────────────────────────────────
 
   function init(canvasEl) {
@@ -102,7 +115,7 @@ const Board = (() => {
     canvas.style.width = cssW + 'px';
     canvas.style.height = cssH + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    hexSize = Math.min(cssW, cssH) / 25;
+    hexSize = Math.min(cssW, cssH) / 16.67;
     buildHexes();
   }
 
@@ -186,8 +199,9 @@ const Board = (() => {
 
   /** BFS reachable hexes within moveRange steps.
    *  blockedHexes: Set of "q,r" strings that cannot be entered.
+   *  costFn(fromQ, fromR, toQ, toR): optional, returns movement cost to enter (default 1).
    *  Returns Map<"q,r", distance>. */
-  function getReachableHexes(startQ, startR, moveRange, blockedHexes) {
+  function getReachableHexes(startQ, startR, moveRange, blockedHexes, costFn) {
     const blocked = blockedHexes || new Set();
     const visited = new Map();
     visited.set(`${startQ},${startR}`, 0);
@@ -199,7 +213,9 @@ const Board = (() => {
       for (const n of getNeighbors(cur.q, cur.r)) {
         const key = `${n.q},${n.r}`;
         if (blocked.has(key)) continue;
-        const nd = cur.dist + 1;
+        const cost = costFn ? costFn(cur.q, cur.r, n.q, n.r) : 1;
+        const nd = cur.dist + cost;
+        if (nd > moveRange) continue;
         if (!visited.has(key) || visited.get(key) > nd) {
           visited.set(key, nd);
           queue.push({ q: n.q, r: n.r, dist: nd });
@@ -255,6 +271,27 @@ const Board = (() => {
       if (line.some(h => h.q === q2 && h.r === r2)) return dir;
     }
     return -1;
+  }
+
+  // ── Image tinting (offscreen canvas cache) ─────────────────────
+
+  const tintCache = {};
+
+  /** Return a canvas with the image tinted by the given color (cached). */
+  function getTintedImage(img, tintColor) {
+    const key = img.src + '|' + tintColor;
+    if (tintCache[key]) return tintCache[key];
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    const cx = c.getContext('2d');
+    cx.drawImage(img, 0, 0);
+    cx.globalCompositeOperation = 'source-atop';
+    cx.fillStyle = tintColor;
+    cx.globalAlpha = 0.55;
+    cx.fillRect(0, 0, c.width, c.height);
+    tintCache[key] = c;
+    return c;
   }
 
   // ── Rendering helpers ───────────────────────────────────────────
@@ -342,7 +379,7 @@ const Board = (() => {
       const s = sz();
       const icon = surfaceIcons[td.surface];
       if (icon && icon.complete && icon.naturalWidth > 0) {
-        const size = s * 1.4;
+        const size = s * 1.85;
         ctx.drawImage(icon, x - size / 2, y - size / 2, size, size);
       } else {
         // Fallback to colored circle + letter
@@ -359,50 +396,21 @@ const Board = (() => {
       const img = obj.type === 'core' ? coreImg : shardImg;
       const { x, y } = px(hex);
       const s = sz();
-      const size = s * 1.5;
+      const size = s * 1.8;
 
       if (img.complete && img.naturalWidth > 0) {
-        ctx.drawImage(img, x - size / 2, y - size / 2, size, size);
+        const tint = owner === 1 ? '#2A9D8F' : owner === 2 ? '#D4872C' : null;
+        const src = tint ? getTintedImage(img, tint) : img;
+        ctx.drawImage(src, x - size / 2, y - size / 2, size, size);
       } else {
-        const fill = obj.type === 'core' ? '#FFD700' : '#00BFFF';
+        const fill = owner === 1 ? '#2A9D8F' : owner === 2 ? '#D4872C'
+                   : obj.type === 'core' ? '#FFD700' : '#00BFFF';
         drawCircle(hex, 0.75, fill, '#fff', 2);
         drawLabel(hex, obj.type === 'core' ? 'C' : 'S', '#000', `bold ${s / 2}px sans-serif`);
       }
-
-      if (owner) {
-        const ring = owner === 1 ? '#2A9D8F' : '#D4872C';
-        ctx.strokeStyle = ring;
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(x, y, s * 0.8, 0, Math.PI * 2);
-        ctx.stroke();
-      }
     }
 
-    // 5. Units
-    for (const unit of state.units) {
-      if (unit.health <= 0) continue;
-      const hex = getHex(unit.q, unit.r);
-      if (!hex) continue;
-
-      const s = sz();
-      const fill = unit.player === 1 ? '#2A9D8F' : '#D4872C';
-      const ring = unit.activated ? '#666' : '#fff';
-      drawCircle(hex, 0.55, fill, ring, 2);
-      drawLabel(hex, unit.name[0], '#fff');
-
-      // Health bar
-      const { x, y } = px(hex);
-      const bw = s;
-      const bh = s / 8;
-      const bx = x - bw / 2;
-      const by = y + s * 0.6;
-      const ratio = unit.health / unit.maxHealth;
-      ctx.fillStyle = '#333';
-      ctx.fillRect(bx, by, bw, bh);
-      ctx.fillStyle = ratio > 0.5 ? '#0a0' : ratio > 0.25 ? '#dd0' : '#d00';
-      ctx.fillRect(bx, by, bw * ratio, bh);
-    }
+    // 5. Units — rendered as HTML overlays (see ui.js renderTokens)
 
     // 6. Selected-unit ring
     if (state.selectedUnit && state.selectedUnit.health > 0) {
@@ -417,21 +425,12 @@ const Board = (() => {
       }
     }
 
-    // 7. Attack target highlights
+    // 7. Attack target highlights (red hex fill, like yellow move highlights)
     if (state.attackTargets) {
       for (const key of state.attackTargets) {
         const [q, r] = key.split(',').map(Number);
         const hex = getHex(q, r);
-        if (hex) {
-          const { x, y } = px(hex);
-          ctx.strokeStyle = 'rgba(255,0,0,0.8)';
-          ctx.lineWidth = 3;
-          ctx.setLineDash([4, 4]);
-          ctx.beginPath();
-          ctx.arc(x, y, sz() * 0.65, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.setLineDash([]);
-        }
+        if (hex) drawHexShape(hex, 'rgba(255,50,50,0.35)');
       }
     }
   }

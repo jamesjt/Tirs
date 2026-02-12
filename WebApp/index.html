@@ -44,12 +44,30 @@
   </nav>
 
   <canvas id="gameCanvas"></canvas>
+  <div id="unit-tokens"></div>
 
   <!-- Roster card areas — cards appear beside the board during roster build -->
   <div id="roster-area-p1" class="roster-area roster-left"></div>
   <div id="roster-area-p2" class="roster-area roster-right"></div>
 
   <div id="status-bar">Loading...</div>
+
+  <!-- Battle HUD — top-center bar during battle phase -->
+  <div id="battle-hud" class="hidden">
+    <div id="hud-p1" class="hud-score">
+      <span class="hud-label">P1</span>
+      <span class="hud-pts" id="hud-pts-1">0</span>
+    </div>
+    <div id="hud-center">
+      <div id="hud-round"></div>
+      <div id="hud-turn"></div>
+      <button class="btn btn-hud-end" id="hud-end-turn" data-action="end-activation">End Turn</button>
+    </div>
+    <div id="hud-p2" class="hud-score">
+      <span class="hud-label">P2</span>
+      <span class="hud-pts" id="hud-pts-2">0</span>
+    </div>
+  </div>
 
   <!-- Phase panels — only one visible at a time -->
   <div id="panel-faction-p1" class="phase-panel side-panel side-left hidden"></div>
@@ -62,18 +80,27 @@
   <div id="panel-deploy-p1" class="phase-panel side-panel side-left hidden"></div>
   <div id="panel-deploy-p2" class="phase-panel side-panel side-right hidden"></div>
   <div id="panel-battle" class="phase-panel side-panel hidden"></div>
+  <div id="panel-round" class="phase-panel center-panel hidden"></div>
   <div id="panel-gameover" class="phase-panel center-panel hidden"></div>
+
+  <!-- Combat log -->
+  <div id="combat-log" class="combat-log collapsed">
+    <div id="combat-log-header" class="combat-log-header">Combat Log <span id="combat-log-toggle">&#9650;</span></div>
+    <div id="combat-log-body" class="combat-log-body"></div>
+  </div>
 
   <!-- Unit hover card -->
   <div id="unit-card" class="unit-card hidden"></div>
+  <div id="card-conditions" class="card-conditions hidden"></div>
 
   <!-- PapaParse for CORS-safe Google Sheets CSV fetching -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
 
-  <!-- Load order matters: board first (no deps), then units, game, ui -->
+  <!-- Load order matters: board first (no deps), then units, game, abilities, ui -->
   <script src="board.js"></script>
   <script src="units.js"></script>
   <script src="game.js"></script>
+  <script src="abilities.js"></script>
   <script src="ui.js"></script>
 </body>
 </html>
