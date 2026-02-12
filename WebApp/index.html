@@ -53,20 +53,33 @@
 
   <div id="status-bar">Loading...</div>
 
-  <!-- Battle HUD — top-center bar during battle phase -->
-  <div id="battle-hud" class="hidden">
-    <div id="hud-p1" class="hud-score">
-      <span class="hud-label">P1</span>
-      <span class="hud-pts" id="hud-pts-1">0</span>
+  <!-- Battle HUD + Game Log wrapper — fixed top-center -->
+  <div id="hud-wrapper" class="hud-wrapper hidden">
+    <div id="battle-hud">
+      <div id="hud-p1" class="hud-score">
+        <span class="hud-label">P1</span>
+        <span class="hud-pts" id="hud-pts-1">0</span>
+      </div>
+      <div id="hud-center">
+        <div id="hud-round"></div>
+        <div id="hud-turn"></div>
+        <button class="btn btn-hud-end" id="hud-end-turn" data-action="end-activation">End Turn</button>
+      </div>
+      <div id="hud-p2" class="hud-score">
+        <span class="hud-label">P2</span>
+        <span class="hud-pts" id="hud-pts-2">0</span>
+      </div>
     </div>
-    <div id="hud-center">
-      <div id="hud-round"></div>
-      <div id="hud-turn"></div>
-      <button class="btn btn-hud-end" id="hud-end-turn" data-action="end-activation">End Turn</button>
-    </div>
-    <div id="hud-p2" class="hud-score">
-      <span class="hud-label">P2</span>
-      <span class="hud-pts" id="hud-pts-2">0</span>
+
+    <!-- Game log — sits directly below battle HUD, opens downward -->
+    <div id="game-log" class="game-log collapsed">
+      <div id="game-log-header" class="game-log-header">
+        <button id="game-log-filter-btn" class="btn-log-filter active">Filtered</button>
+        <span class="game-log-title">Log</span>
+        <span id="game-log-toggle" class="game-log-arrow">&#9660;</span>
+      </div>
+      <div id="game-log-body" class="game-log-body"></div>
+      <div id="game-log-footer" class="game-log-footer">Close</div>
     </div>
   </div>
 
@@ -83,12 +96,6 @@
   <div id="panel-battle" class="phase-panel side-panel hidden"></div>
   <div id="panel-round" class="phase-panel center-panel hidden"></div>
   <div id="panel-gameover" class="phase-panel center-panel hidden"></div>
-
-  <!-- Combat log -->
-  <div id="combat-log" class="combat-log collapsed">
-    <div id="combat-log-header" class="combat-log-header">Combat Log <span id="combat-log-toggle">&#9650;</span></div>
-    <div id="combat-log-body" class="combat-log-body"></div>
-  </div>
 
   <!-- Unit hover card -->
   <div id="unit-card" class="unit-card hidden"></div>

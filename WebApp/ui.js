@@ -303,9 +303,38 @@ const UI = (() => {
     document.addEventListener('click', onButtonClick);
     document.getElementById('panel-rules').addEventListener('change', onRuleChange);
 
-    // Combat log toggle
-    document.getElementById('combat-log-header').addEventListener('click', () => {
-      document.getElementById('combat-log').classList.toggle('collapsed');
+    // Game log – header click: collapse/expand (per-player state in multiplayer)
+    document.getElementById('game-log-header').addEventListener('click', () => {
+      const lp = (typeof Net !== 'undefined' && Net.isOnline()) ? Net.localPlayer : 1;
+      logCollapsed[lp] = !logCollapsed[lp];
+      applyGameLogCollapsed();
+    });
+
+    // Game log – footer "Close" click: collapse
+    document.getElementById('game-log-footer').addEventListener('click', () => {
+      const lp = (typeof Net !== 'undefined' && Net.isOnline()) ? Net.localPlayer : 1;
+      logCollapsed[lp] = true;
+      applyGameLogCollapsed();
+    });
+
+    // Game log – filter toggle (stops propagation so header click doesn't also fire)
+    document.getElementById('game-log-filter-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const btn = document.getElementById('game-log-filter-btn');
+      if (logMode === 'summary') {
+        logMode = 'full';
+        btn.textContent = 'All';
+        btn.classList.remove('active');
+      } else {
+        logMode = 'summary';
+        btn.textContent = 'Filtered';
+        btn.classList.add('active');
+      }
+      // Clear and re-render from scratch for the new data source
+      const body = document.getElementById('game-log-body');
+      body.innerHTML = '';
+      gameLogRenderedCount = 0;
+      renderGameLog();
     });
 
     showPhase();
@@ -319,7 +348,7 @@ const UI = (() => {
     renderTokens();
     syncRosterCardActivation();
     updateStatusBar();
-    renderCombatLog();
+    renderGameLog();
   }
 
   // ── HTML unit tokens ─────────────────────────────────────────
@@ -511,9 +540,9 @@ const UI = (() => {
 
   function showPhase() {
     hideUnitCard();
-    // Hide all panels + battle HUD
+    // Hide all panels + battle HUD wrapper (includes game log)
     document.querySelectorAll('.phase-panel').forEach(el => el.classList.add('hidden'));
-    document.getElementById('battle-hud').classList.add('hidden');
+    document.getElementById('hud-wrapper').classList.add('hidden');
 
     const phase = Game.state.phase;
 
@@ -568,17 +597,22 @@ const UI = (() => {
     bar.textContent = text;
   }
 
-  // ── Combat log ──────────────────────────────────────────────
+  // ── Game log (below battle HUD) ─────────────────────────────
 
-  let logRenderedCount = 0;
+  let logMode = 'summary';                   // 'summary' | 'full'
+  let gameLogRenderedCount = 0;
+  const logCollapsed = { 1: true, 2: true };  // per-player collapsed state
 
-  function renderCombatLog() {
-    const entries = Game.state.combatLog;
-    if (entries.length === logRenderedCount) return;  // no new entries
+  function renderGameLog() {
+    const entries = logMode === 'full'
+      ? Game.state.combatLog
+      : (Game.state.summaryLog || []);
+    if (entries.length === gameLogRenderedCount) return;  // no new entries
 
-    const body = document.getElementById('combat-log-body');
-    // Append only new entries
-    for (let i = logRenderedCount; i < entries.length; i++) {
+    const body = document.getElementById('game-log-body');
+    if (!body) return;
+
+    for (let i = gameLogRenderedCount; i < entries.length; i++) {
       const e = entries[i];
       const div = document.createElement('div');
       const cls = e.player === 1 ? 'log-p1' : e.player === 2 ? 'log-p2' : 'log-system';
@@ -586,8 +620,15 @@ const UI = (() => {
       div.textContent = e.text;
       body.appendChild(div);
     }
-    logRenderedCount = entries.length;
+    gameLogRenderedCount = entries.length;
     body.scrollTop = body.scrollHeight;
+  }
+
+  /** Apply correct per-player collapsed state to the game log */
+  function applyGameLogCollapsed() {
+    const logEl = document.getElementById('game-log');
+    const lp = (typeof Net !== 'undefined' && Net.isOnline()) ? Net.localPlayer : 1;
+    logEl.classList.toggle('collapsed', logCollapsed[lp]);
   }
 
   function phaseLabel(phase) {
@@ -1056,9 +1097,9 @@ const UI = (() => {
     if (scoringAnimating) return;
     scoringAnimating = true;
 
-    // Show the HUD so scores are visible during the animation
-    const hud = document.getElementById('battle-hud');
-    hud.classList.remove('hidden');
+    // Show the HUD wrapper so scores are visible during the animation
+    const wrapper = document.getElementById('hud-wrapper');
+    wrapper.classList.remove('hidden');
     document.getElementById('hud-pts-1').textContent = Game.state.scores[1];
     document.getElementById('hud-pts-2').textContent = Game.state.scores[2];
     document.getElementById('hud-round').textContent = `Round ${Game.state.round} / ${Game.state.rules.numTurns}`;
@@ -1229,13 +1270,14 @@ const UI = (() => {
   }
 
   function updateBattleHud() {
-    const hud = document.getElementById('battle-hud');
+    const wrapper = document.getElementById('hud-wrapper');
     const s = Game.state;
     if (s.phase !== Game.PHASE.BATTLE) {
-      hud.classList.add('hidden');
+      wrapper.classList.add('hidden');
       return;
     }
-    hud.classList.remove('hidden');
+    wrapper.classList.remove('hidden');
+    applyGameLogCollapsed();
 
     document.getElementById('hud-pts-1').textContent = s.scores[1];
     document.getElementById('hud-pts-2').textContent = s.scores[2];
@@ -2248,7 +2290,8 @@ const UI = (() => {
         valid.set(key, 1);
       }
       uiState.highlights = valid;
-      uiState.highlightColor = p === 1 ? 'rgba(42,157,143,0.3)' : 'rgba(212,135,44,0.3)';
+      uiState.highlightColor = 'rgba(255, 220, 0, 0.3)';
+      uiState.highlightStyle = 'dots';
       render();
     }
 
@@ -2342,9 +2385,15 @@ const UI = (() => {
       resetUiState();
       clearTokens();
       clearRosterAreas();
-      logRenderedCount = 0;
+      gameLogRenderedCount = 0;
+      logMode = 'summary';
+      logCollapsed[1] = true;
+      logCollapsed[2] = true;
       faceUpOverrides.clear();
-      document.getElementById('combat-log-body').innerHTML = '';
+      document.getElementById('game-log-body').innerHTML = '';
+      const filterBtn = document.getElementById('game-log-filter-btn');
+      filterBtn.textContent = 'Filtered';
+      filterBtn.classList.add('active');
       showPhase();
       render();
     }
@@ -2474,11 +2523,13 @@ const UI = (() => {
       if (uiState.highlights && uiState.highlights.has(key)) {
         // Override parentMap if waypoints exist so unit follows the custom path
         const wps = uiState.waypoints.length > 0 ? [...uiState.waypoints] : null;
+        let wpCost = undefined;
         if (wps) {
           const act = Game.state.activationState;
           if (act) {
             const result = buildWaypointPath(act.unit.q, act.unit.r, wps, hex.q, hex.r);
             if (result.path.length > 0 && !result.invalid) {
+              wpCost = result.cost;
               const newParentMap = new Map();
               let prev = `${act.unit.q},${act.unit.r}`;
               for (const step of result.path) {
@@ -2497,7 +2548,7 @@ const UI = (() => {
           animUnit.q, animUnit.r, hex.q, hex.r, s.activationState._parentMap
         );
 
-        const ok = Game.moveUnit(hex.q, hex.r);
+        const ok = Game.moveUnit(hex.q, hex.r, wpCost);
         if (ok) {
           netSend({ type: 'moveUnit', q: hex.q, r: hex.r, waypoints: wps || undefined });
           const speed = Game.state.rules.animSpeed || 0;
@@ -2758,10 +2809,12 @@ const UI = (() => {
         break;
       case 'moveUnit': {
         // Rebuild parentMap for waypoint paths so terrain effects match
+        let netWpCost = undefined;
         if (data.waypoints && data.waypoints.length > 0 && Game.state.activationState) {
           const act = Game.state.activationState;
           const result = buildWaypointPath(act.unit.q, act.unit.r, data.waypoints, data.q, data.r);
           if (result.path.length > 0 && !result.invalid) {
+            netWpCost = result.cost;
             const newParentMap = new Map();
             let prev = `${act.unit.q},${act.unit.r}`;
             for (const step of result.path) {
@@ -2783,7 +2836,7 @@ const UI = (() => {
           );
         }
 
-        Game.moveUnit(data.q, data.r);
+        Game.moveUnit(data.q, data.r, netWpCost);
 
         const netSpeed = Game.state.rules.animSpeed || 0;
         if (netSpeed > 0 && netAnimPath.length > 0 && netAnimUnit) {

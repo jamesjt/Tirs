@@ -165,6 +165,13 @@ const Abilities = (() => {
       for (const t of targets) {
         if (!isUnit(t)) continue;
         Game.addCondition(t, lower, CONDITION_DEFAULTS[lower]);
+        const src = ctx.unit ? ctx.unit.name : 'Effect';
+        const player = ctx.unit ? ctx.unit.player : 0;
+        if (ctx.unit && ctx.unit === t) {
+          Game.log(`${t.name} gains ${lower}`, player);
+        } else {
+          Game.log(`${src} applies ${lower} to ${t.name}`, player);
+        }
       }
       return;
     }
@@ -178,6 +185,10 @@ const Abilities = (() => {
       } else {
         for (const t of targets) {
           Game.placeTerrain(t.q, t.r, lower, owner);
+          const tName = (Units.terrainRules[lower] || {}).displayName || lower;
+          const src = ctx.unit ? ctx.unit.name : 'Effect';
+          const player = ctx.unit ? ctx.unit.player : 0;
+          Game.log(`${src} creates ${tName} terrain at (${t.q},${t.r})`, player);
         }
       }
       return;
@@ -225,6 +236,10 @@ const Abilities = (() => {
         for (const t of targets) {
           if (!isUnit(t)) continue;
           Game.damageUnit(t, dmg, ctx.unit);
+          const src = ctx.unit ? ctx.unit.name : 'Ability';
+          const player = ctx.unit ? ctx.unit.player : 0;
+          const killText = t.health <= 0 ? ' \u2620 KILLED' : '';
+          Game.log(`${src} deals ${dmg} ability dmg to ${t.name}${killText}`, player);
         }
         break;
       }
@@ -232,13 +247,23 @@ const Abilities = (() => {
       case 'bonusdamage':
         if (ctx.target && isUnit(ctx.target)) {
           Game.damageUnit(ctx.target, int(value), ctx.unit);
+          const src = ctx.unit ? ctx.unit.name : 'Ability';
+          const player = ctx.unit ? ctx.unit.player : 0;
+          const killText = ctx.target.health <= 0 ? ' \u2620 KILLED' : '';
+          Game.log(`${src} deals ${int(value)} bonus dmg to ${ctx.target.name}${killText}`, player);
         }
         break;
 
       case 'armorreduce':
         for (const t of targets) {
           if (!isUnit(t)) continue;
+          const prev = t.armor;
           t.armor = Math.max(0, t.armor - int(value));
+          if (prev > t.armor) {
+            const src = ctx.unit ? ctx.unit.name : 'Ability';
+            const player = ctx.unit ? ctx.unit.player : 0;
+            Game.log(`${src} reduces ${t.name}'s armor by ${prev - t.armor}`, player);
+          }
         }
         break;
 
@@ -494,6 +519,10 @@ const Abilities = (() => {
     // Create effect: place terrain and consume
     if (eff.type === 'create') {
       Game.placeTerrain(q, r, eff.surface, eff.player || 0);
+      const tName = (Units.terrainRules[eff.surface] || {}).displayName || eff.surface;
+      const src = eff.unit ? eff.unit.name : 'Effect';
+      const player = eff.unit ? eff.unit.player : 0;
+      Game.log(`${src} creates ${tName} terrain at (${q},${r})`, player);
       effectQueue.shift();
       return true;
     }

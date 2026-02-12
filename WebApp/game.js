@@ -65,6 +65,9 @@ const Game = (() => {
 
       // Combat log
       combatLog: [],            // [{ text, player, round }]
+      summaryLog: [],           // [{ text, player, round }] — committed actions only
+      turnActions: [],          // accumulates during turn, flushed on nextTurn
+      _logIndexAtSelect: 0,     // combatLog index at last selectUnit call
     };
   }
 
@@ -361,6 +364,7 @@ const Game = (() => {
 
     state.activationState = { unit, moved: false, attacked: false, moveDistance: 0 };
     state.actionHistory = [];
+    state._logIndexAtSelect = state.combatLog.length;
     log(`${unit.name} activated`, unit.player);
 
     // Invigorating terrain: heal 1 or gain strengthened if full
@@ -536,16 +540,22 @@ const Game = (() => {
     return targets;
   }
 
-  function moveUnit(toQ, toR) {
+  function moveUnit(toQ, toR, waypointCost) {
     const act = state.activationState;
     if (!act) return false;
 
     const isMobile = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'mobile');
     if (!isMobile && act.moved) return false;
 
+    // Save the UI-committed parentMap before validation overwrites it
+    const savedParentMap = act._parentMap;
+
     // Validate by recomputing reachable hexes
-    const reachable = getMoveRange();
+    const reachable = getMoveRange();  // overwrites act._parentMap
     if (!reachable || !reachable.has(`${toQ},${toR}`)) return false;
+
+    // Restore the committed parentMap so path traversal matches animation
+    if (savedParentMap) act._parentMap = savedParentMap;
 
     const fromQ = act.unit.q;
     const fromR = act.unit.r;
@@ -553,7 +563,11 @@ const Game = (() => {
     const prevObjControl = state.objectiveControl[destKey];
     const prevMoveDistance = act.moveDistance;
 
-    const stepDistance = reachable.get(destKey) || 0;
+    // Use waypoint cost if provided (longer path through waypoints),
+    // otherwise use direct shortest-path cost
+    const directCost = reachable.get(destKey) || 0;
+    const stepDistance = (waypointCost != null && waypointCost >= directCost)
+      ? waypointCost : directCost;
 
     if (isMobile) {
       act.moveDistance += stepDistance;
@@ -694,6 +708,14 @@ const Game = (() => {
       act.unit.activated = true;
       clearConditions(act.unit, 'endOfActivation');
     }
+
+    // Snapshot committed log entries for summary (exclude "activated" messages)
+    const newEntries = state.combatLog.slice(state._logIndexAtSelect);
+    for (const e of newEntries) {
+      if (e.text.endsWith('activated')) continue;
+      state.turnActions.push(e);
+    }
+
     state.activationState = null;
     state.actionHistory = [];
 
@@ -912,8 +934,14 @@ const Game = (() => {
   function updateObjectiveControl(unit) {
     if (state.rules.crystalCapture !== 'moveOn') return;
     const key = `${unit.q},${unit.r}`;
-    if (Board.OBJECTIVES.some(o => o.q === unit.q && o.r === unit.r)) {
+    const obj = Board.OBJECTIVES.find(o => o.q === unit.q && o.r === unit.r);
+    if (obj) {
+      const prev = state.objectiveControl[key] || 0;
       state.objectiveControl[key] = unit.player;
+      if (prev !== unit.player) {
+        const label = obj.type === 'core' ? 'Core Crystal' : 'Shard';
+        log(`${unit.name} captures ${label} at (${unit.q},${unit.r})`, unit.player);
+      }
     }
   }
 
@@ -921,8 +949,14 @@ const Game = (() => {
   function captureObjective(unit) {
     if (!unit) return;
     const key = `${unit.q},${unit.r}`;
-    if (Board.OBJECTIVES.some(o => o.q === unit.q && o.r === unit.r)) {
+    const obj = Board.OBJECTIVES.find(o => o.q === unit.q && o.r === unit.r);
+    if (obj) {
+      const prev = state.objectiveControl[key] || 0;
       state.objectiveControl[key] = unit.player;
+      if (prev !== unit.player) {
+        const label = obj.type === 'core' ? 'Core Crystal' : 'Shard';
+        log(`${unit.name} captures ${label} at (${unit.q},${unit.r})`, unit.player);
+      }
     }
   }
 
@@ -932,7 +966,12 @@ const Game = (() => {
       const key = `${obj.q},${obj.r}`;
       const unit = state.units.find(u => u.q === obj.q && u.r === obj.r && u.health > 0);
       if (unit) {
+        const prev = state.objectiveControl[key] || 0;
         state.objectiveControl[key] = unit.player;
+        if (prev !== unit.player) {
+          const label = obj.type === 'core' ? 'Core Crystal' : 'Shard';
+          log(`${unit.name} captures ${label} at (${obj.q},${obj.r})`, unit.player);
+        }
       }
     }
   }
@@ -947,6 +986,9 @@ const Game = (() => {
     const otherUnactivated = otherAlive.filter(u => !u.activated);
 
     if (otherUnactivated.length > 0) {
+      // Flush committed actions to summary log before switching player
+      for (const e of state.turnActions) state.summaryLog.push(e);
+      state.turnActions = [];
       state.currentPlayer = other;
     } else if (currentUnactivated.length > 0) {
       // Other player has no units to activate, stay with current
@@ -958,7 +1000,12 @@ const Game = (() => {
 
   /** Transition into ROUND_END phase with a step queue. */
   function endRound() {
+    // Flush any remaining turn actions to summary
+    for (const e of state.turnActions) state.summaryLog.push(e);
+    state.turnActions = [];
+
     log(`\u2501\u2501 Round ${state.round} End \u2501\u2501`);
+    state.summaryLog.push({ text: `\u2501\u2501 Round ${state.round} End \u2501\u2501`, player: 0, round: state.round });
     state.roundStepQueue = [
       {
         id: 'scoreObjectives',
@@ -981,9 +1028,13 @@ const Game = (() => {
         label: 'Evanescent terrain fades',
         auto: true,
         execute() {
-          for (const [key] of state.terrain) {
+          for (const [key, td] of state.terrain) {
             const [q, r] = key.split(',').map(Number);
-            if (hasTerrainRule(q, r, 'evanescent')) state.terrain.delete(key);
+            if (hasTerrainRule(q, r, 'evanescent')) {
+              const tName = (Units.terrainRules[td.surface] || {}).displayName || td.surface;
+              log(`${tName} terrain at (${q},${r}) fades`, 0);
+              state.terrain.delete(key);
+            }
           }
         },
       },
@@ -1023,6 +1074,8 @@ const Game = (() => {
               for (const m of this.data.moves) {
                 state.terrain.delete(m.fromKey);
                 state.terrain.set(`${m.toQ},${m.toR}`, m.td);
+                const tName = (Units.terrainRules[m.td.surface] || {}).displayName || m.td.surface;
+                log(`${tName} terrain shifts (${m.fromQ},${m.fromR}) \u2192 (${m.toQ},${m.toR})`, 0);
               }
             }
           },
@@ -1060,6 +1113,7 @@ const Game = (() => {
   /** Transition into ROUND_START phase with a step queue. */
   function startRound() {
     log(`\u2501\u2501 Round ${state.round} Start \u2501\u2501`);
+    state.summaryLog.push({ text: `\u2501\u2501 Round ${state.round} Start \u2501\u2501`, player: 0, round: state.round });
     state.roundStepQueue = [
       {
         id: 'resetActivations',
@@ -1126,7 +1180,9 @@ const Game = (() => {
   /** Apply points for a single objective (called by UI during animation). */
   function applyScore(owner, points) {
     state.scores[owner] += points;
-    log(`Player ${owner} scores ${points} pts (total: ${state.scores[owner]})`, owner);
+    const text = `Player ${owner} scores ${points} pts (total: ${state.scores[owner]})`;
+    log(text, owner);
+    state.summaryLog.push({ text, player: owner, round: state.round });
   }
 
   /** Transition out of ROUND_END or ROUND_START. */

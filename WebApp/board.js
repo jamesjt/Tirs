@@ -295,61 +295,83 @@ const Board = (() => {
    *  Optionally populates outIntermediates with the hexes between
    *  start and dest (exclusive of both, ordered from start to dest).
    *
-   *  Uses pixel-geometry: computes the actual line from source to
-   *  target, checks if intermediate hex centres are close to the line,
-   *  and verifies the line angle is within tolerance of a hex direction. */
+   *  Walks actual neighbor chains. For each of the source's neighbors,
+   *  continues outward by always picking the next neighbor whose pixel
+   *  angle from current hex is closest to the original heading. */
   function straightLineDir(q1, r1, q2, r2, outIntermediates) {
-    const src = getHex(q1, r1);
-    const dst = getHex(q2, r2);
-    if (!src || !dst) return -1;
+    if (q1 === q2 && r1 === r2) return -1;
+    const srcHex = getHex(q1, r1);
+    const dstHex = getHex(q2, r2);
+    if (!srcHex || !dstHex) return -1;
 
-    const dx = dst.x - src.x;
-    const dy = dst.y - src.y;
-    const len = Math.hypot(dx, dy);
-    if (len < 0.001) return -1;
+    const maxRange = 13;
+    const neighbors = getNeighbors(q1, r1);
 
-    // Unit vector & perpendicular
-    const ux = dx / len, uy = dy / len;
+    // Try walking from each of the source's actual neighbors
+    for (const firstNb of neighbors) {
+      const firstHex = getHex(firstNb.q, firstNb.r);
+      if (!firstHex) continue;
 
-    // Check that every hex between src and dst along the geometric line
-    // actually exists (i.e., the line passes through a chain of hexes).
-    // Collect hexes whose centres are close to the line segment.
-    const stepDist = hexSize * Math.sqrt(3);
-    const intermediates = [];
-    for (const hex of hexes) {
-      if ((hex.q === q1 && hex.r === r1) || (hex.q === q2 && hex.r === r2)) continue;
-      const vx = hex.x - src.x, vy = hex.y - src.y;
-      const proj = vx * ux + vy * uy;
-      if (proj <= 0 || proj >= len) continue;
-      const perpDist = Math.abs(vx * uy - vy * ux);
-      if (perpDist < stepDist * 0.4) {
-        intermediates.push({ q: hex.q, r: hex.r, proj });
+      // Heading angle from source to this neighbor (the line direction)
+      const heading = Math.atan2(firstHex.y - srcHex.y, firstHex.x - srcHex.x);
+
+      // Check if this first neighbor IS the target
+      if (firstNb.q === q2 && firstNb.r === r2) {
+        if (outIntermediates) {} // no intermediates for adjacent
+        return firstNb.dir;
+      }
+
+      // Walk outward, always picking the neighbor closest to the heading
+      const intermediates = [{ q: firstNb.q, r: firstNb.r }];
+      let cur = firstNb;
+      let found = false;
+
+      for (let step = 1; step < maxRange; step++) {
+        const curHex = getHex(cur.q, cur.r);
+        if (!curHex) break;
+        const curNeighbors = getNeighbors(cur.q, cur.r);
+
+        // Find the neighbor whose angle from current hex is closest to heading
+        let best = null, bestAngleDiff = Infinity;
+        for (const nb of curNeighbors) {
+          // Don't go backwards
+          if (step === 1 && nb.q === q1 && nb.r === r1) continue;
+          if (intermediates.length >= 2) {
+            const prev = intermediates[intermediates.length - 2];
+            if (nb.q === prev.q && nb.r === prev.r) continue;
+          }
+          const nbHex = getHex(nb.q, nb.r);
+          if (!nbHex) continue;
+          const a = Math.atan2(nbHex.y - curHex.y, nbHex.x - curHex.x);
+          let diff = Math.abs(a - heading);
+          if (diff > Math.PI) diff = 2 * Math.PI - diff;
+          if (diff < bestAngleDiff) {
+            bestAngleDiff = diff;
+            best = nb;
+          }
+        }
+
+        // Only continue if the best neighbor is roughly in the same direction
+        if (!best || bestAngleDiff > Math.PI / 6) break; // 30° tolerance
+
+        if (best.q === q2 && best.r === r2) {
+          found = true;
+          break;
+        }
+
+        intermediates.push({ q: best.q, r: best.r });
+        cur = best;
+      }
+
+      if (found) {
+        if (outIntermediates) {
+          for (const h of intermediates) outIntermediates.push(h);
+        }
+        return firstNb.dir;
       }
     }
-    intermediates.sort((a, b) => a.proj - b.proj);
 
-    // Verify the total distance equals roughly (intermediates + 1) * stepDist
-    // (i.e., each step is one hex apart — no gaps in the line)
-    const expectedSteps = intermediates.length + 1;
-    const actualSteps = len / stepDist;
-    if (Math.abs(actualSteps - expectedSteps) > 0.5) return -1;
-
-    // Also verify each intermediate is roughly one stepDist apart
-    const allPoints = [src, ...intermediates.map(h => getHex(h.q, h.r)), dst];
-    for (let i = 1; i < allPoints.length; i++) {
-      const d = Math.hypot(allPoints[i].x - allPoints[i-1].x, allPoints[i].y - allPoints[i-1].y);
-      if (d > stepDist * 1.3 || d < stepDist * 0.5) return -1;
-    }
-
-    // Determine direction bucket from the line angle
-    let angle = Math.atan2(dy, dx) * 180 / Math.PI;
-    if (angle < 0) angle += 360;
-    const dir = Math.round(angle / 60) % 6;
-
-    if (outIntermediates) {
-      for (const h of intermediates) outIntermediates.push(h);
-    }
-    return dir;
+    return -1; // target not on any straight line from source
   }
 
   // ── Image tinting (offscreen canvas cache) ─────────────────────
@@ -495,20 +517,27 @@ const Board = (() => {
       }
     }
 
-    // 4b. Movement highlights (dots style — rendered above terrain/objectives)
+    // 4b. Dots+border highlights (movement, deployment — rendered above terrain/objectives)
     if (state.highlights && state.highlightStyle === 'dots') {
       const s = sz();
       const hlKeys = new Set(state.highlights.keys());
+
+      // Parse base RGB from highlightColor, default to cyan
+      let hr = 0, hg = 160, hb = 200;
+      if (state.highlightColor) {
+        const m = state.highlightColor.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+        if (m) { hr = +m[1]; hg = +m[2]; hb = +m[3]; }
+      }
 
       // A) 20% opacity hex fill
       for (const key of hlKeys) {
         const [q, r] = key.split(',').map(Number);
         const hex = getHex(q, r);
-        if (hex) drawHexShape(hex, 'rgba(0, 160, 200, 0.2)');
+        if (hex) drawHexShape(hex, `rgba(${hr}, ${hg}, ${hb}, 0.2)`);
       }
 
       // B) Opaque dots at each highlighted hex centre
-      ctx.fillStyle = 'rgba(0, 160, 200, 0.9)';
+      ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, 0.9)`;
       for (const key of hlKeys) {
         const [q, r] = key.split(',').map(Number);
         const hex = getHex(q, r);
@@ -551,7 +580,7 @@ const Board = (() => {
           ctx.lineTo(sx + s * Math.cos(a2), sy + s * Math.sin(a2));
         }
       }
-      ctx.strokeStyle = 'rgba(0, 160, 200, 0.85)';
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.85)`;
       ctx.lineWidth = 3;
       ctx.lineJoin = 'round';
       ctx.stroke();
@@ -576,9 +605,9 @@ const Board = (() => {
     if (state.attackTargets && overlayCtx) {
       const oc = overlayCtx;
       const s = sz();
-      const radius = s * 0.5;
-      const notchInner = s * 0.38;
-      const notchOuter = s * 0.62;
+      const radius = s * 0.75;
+      const notchInner = s * 0.63;
+      const notchOuter = s * 0.87;
       for (const [key, info] of state.attackTargets) {
         const [q, r] = key.split(',').map(Number);
         const hex = getHex(q, r);
@@ -650,7 +679,7 @@ const Board = (() => {
 
     // ── Dashed line connecting hex centres ──
     ctx.lineWidth = s * 0.12;
-    ctx.strokeStyle = 'rgba(0, 200, 255, 0.7)';
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.setLineDash([s * 0.3, s * 0.15]);
@@ -672,7 +701,7 @@ const Board = (() => {
       const angle = Math.atan2(curr.y - prev.y, curr.x - prev.x);
       const arrowSize = s * 0.22;
 
-      ctx.fillStyle = 'rgba(0, 200, 255, 0.85)';
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
       ctx.beginPath();
       ctx.moveTo(
         curr.x + arrowSize * Math.cos(angle),
