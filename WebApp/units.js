@@ -404,7 +404,8 @@ const Units = (() => {
     if (!path) return '';
     // Spreadsheet paths are relative to nandeck/ (e.g. "images/unitImages/syli/Puck.png")
     // WebApp is served from a sibling folder, so prefix with ../nandeck/
-    return '../nandeck/' + path;
+    // Lowercase ensures case-sensitive servers (GitHub Pages/Linux) match our lowercase filenames
+    return '../nandeck/' + path.toLowerCase();
   }
 
   function int(val) {
