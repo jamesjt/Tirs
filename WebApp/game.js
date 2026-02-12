@@ -42,6 +42,7 @@ const Game = (() => {
         canUndoAttack:         true,
         crystalCapture:        'activationEnd',  // 'activationEnd' | 'turnEnd' | 'moveOn'
         coreIncrement:         0,                // added to big crystal value each round
+        animSpeed:             45,               // ms per hex step for move animation (0 = instant)
       }, sheetDefaults),
 
       players: {
@@ -439,6 +440,37 @@ const Game = (() => {
     return reachable;
   }
 
+  /** Expose movement ingredients for waypoint path computation in UI. */
+  function getMovementContext() {
+    const act = state.activationState;
+    if (!act) return null;
+    const u = act.unit;
+
+    const blocked = new Set();
+    for (const other of state.units) {
+      if (other.health <= 0) continue;
+      if (other.player !== u.player) blocked.add(`${other.q},${other.r}`);
+    }
+    for (const [key] of state.terrain) {
+      const [tq, tr] = key.split(',').map(Number);
+      if (hasTerrainRule(tq, tr, 'impassable')) blocked.add(key);
+    }
+
+    function moveCost(fromQ, fromR, toQ, toR) {
+      if (hasTerrainRule(toQ, toR, 'flow')) {
+        const td = state.terrain.get(`${toQ},${toR}`);
+        return (td && td.player === u.player) ? 0 : 2;
+      }
+      if (hasTerrainRule(toQ, toR, 'difficult')) return 2;
+      return 1;
+    }
+
+    const isMobile = typeof Abilities !== 'undefined' && Abilities.hasFlag(u, 'mobile');
+    const range = isMobile ? (u.move - act.moveDistance) : u.move;
+
+    return { blocked, moveCost, range, unit: u };
+  }
+
   function getAttackTargets() {
     if (!state.activationState || state.activationState.attacked) return null;
     const act = state.activationState;
@@ -452,11 +484,17 @@ const Game = (() => {
       if (other.player !== u.player) blocked.add(`${other.q},${other.r}`);
     }
 
-    const targets = new Set();
+    const targets = new Map();
+    const atkDmg = getEffective(u, 'damage');
     for (const enemy of state.units) {
       if (enemy.health <= 0 || enemy.player === u.player) continue;
       if (canAttack(u, enemy)) {
-        targets.add(`${enemy.q},${enemy.r}`);
+        let defArm = getEffective(enemy, 'armor');
+        if (typeof Abilities !== 'undefined' && Abilities.hasFlag(u, 'ignoreBaseArmor')) {
+          defArm = defArm - enemy.armor;
+        }
+        const dmg = Math.max(1, atkDmg - defArm);
+        targets.set(`${enemy.q},${enemy.r}`, { damage: dmg });
       }
     }
 
@@ -488,7 +526,7 @@ const Game = (() => {
 
       // If any taunter is reachable (now or after move), restrict targets
       if (tauntKeys.size > 0) {
-        for (const key of [...targets]) {
+        for (const key of [...targets.keys()]) {
           if (!tauntKeys.has(key)) targets.delete(key);
         }
       }
@@ -707,12 +745,12 @@ const Game = (() => {
     const atkType = (attacker.atkType || 'D').toUpperCase();
 
     if (atkType === 'L') {
-      // Line: straight hex line + LoE clear on intermediates
-      const dir = Board.straightLineDir(attacker.q, attacker.r, target.q, target.r);
+      // Line: straight geometric hex line + LoE clear on intermediates
+      const intermediates = [];
+      const dir = Board.straightLineDir(attacker.q, attacker.r, target.q, target.r, intermediates);
       if (dir === -1) return false;
-      const line = Board.getLineHexes(attacker.q, attacker.r, dir, dist);
-      for (let i = 0; i < line.length - 1; i++) {
-        if (isBlockingLoE(line[i].q, line[i].r)) return false;
+      for (const h of intermediates) {
+        if (isBlockingLoE(h.q, h.r)) return false;
       }
       return true;
     }
@@ -1102,6 +1140,11 @@ const Game = (() => {
       startRound();
     } else if (state.phase === PHASE.ROUND_START) {
       state.phase = PHASE.BATTLE;
+      // Skip player with no alive units so they don't get a stuck turn
+      const alive = state.units.filter(u => u.player === state.currentPlayer && u.health > 0);
+      if (alive.length === 0) {
+        nextTurn();
+      }
     }
   }
 
@@ -1303,6 +1346,7 @@ const Game = (() => {
     selectUnit,
     deselectUnit,
     getMoveRange,
+    getMovementContext,
     getAttackTargets,
     moveUnit,
     attackUnit,

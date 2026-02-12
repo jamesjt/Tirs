@@ -16,7 +16,8 @@
       "Bash(git mv:*)",
       "Bash(handle nandeck:*)",
       "Bash(fuser:*)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "Bash(node -e:*)"
     ]
   }
 }

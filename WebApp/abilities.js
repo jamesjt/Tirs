@@ -141,13 +141,11 @@ const Abilities = (() => {
   /** All living units in a straight line between attacker and target (exclusive of both). */
   function unitsInLine(attacker, target) {
     if (!attacker || !target) return [];
-    const dir = Board.straightLineDir(attacker.q, attacker.r, target.q, target.r);
+    const intermediates = [];
+    const dir = Board.straightLineDir(attacker.q, attacker.r, target.q, target.r, intermediates);
     if (dir === -1) return [];
-    const dist = Board.hexDistance(attacker.q, attacker.r, target.q, target.r);
-    const line = Board.getLineHexes(attacker.q, attacker.r, dir, dist);
     const result = [];
-    for (const h of line) {
-      if (h.q === target.q && h.r === target.r) continue; // exclude target itself
+    for (const h of intermediates) {
       const u = Game.state.units.find(
         u => u.q === h.q && u.r === h.r && u.health > 0
       );

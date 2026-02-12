@@ -37,6 +37,7 @@ const Units = (() => {
     'crystal captured when':           { key: 'crystalCapture',   type: 'select',
       values: ['activationEnd', 'turnEnd', 'moveOn'] },
     'turn increment of big crystal':   { key: 'coreIncrement',    type: 'number' },
+    'move anim speed':                  { key: 'animSpeed',        type: 'number' },
   };
 
   // ── PapaParse sheet fetcher ─────────────────────────────────

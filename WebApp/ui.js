@@ -126,6 +126,7 @@ const UI = (() => {
 
   // ── UI State (rendering hints, separate from game logic) ────
   let uiState = freshUiState();
+  let moveAnimating = false;  // true while token is sliding along path
 
   function freshUiState() {
     return {
@@ -133,7 +134,12 @@ const UI = (() => {
       selectedAction: null,     // 'move' | 'attack' | null
       highlights: null,         // Map for rendering highlights
       highlightColor: null,
-      attackTargets: null,      // Set of "q,r" for rendering
+      highlightStyle: null,     // 'dots' for dot+border, null for filled hex
+      attackTargets: null,      // Map of "q,r" -> {damage} for rendering
+      pathPreview: null,        // [{q,r}] — hex sequence for path rendering
+      pathCost: null,           // number — total movement cost of previewed path
+      hoveredHex: null,         // {q,r} — currently hovered hex
+      waypoints: [],            // [{q,r}] — user-placed intermediate waypoints
     };
   }
 
@@ -277,7 +283,7 @@ const UI = (() => {
     // Canvas events
     const c = Board.canvas;
     c.addEventListener('mousedown', onMouseDown);
-    c.addEventListener('contextmenu', e => e.preventDefault());
+    c.addEventListener('contextmenu', onContextMenu);
     c.addEventListener('wheel', onWheel, { passive: false });
     c.addEventListener('click', onClick);
     // Pan tracking on document so dragging beyond canvas edge still works
@@ -672,6 +678,7 @@ const UI = (() => {
       { value: 'moveOn', label: 'Move on' },
     ]);
     html += ruleNumber('coreIncrement', 'Turn increment of big crystal', r.coreIncrement, 0, 10);
+    html += ruleNumber('animSpeed', 'Animation speed (ms/hex)', r.animSpeed, 0, 500);
     html += '</div>';
 
     panel.innerHTML = html;
@@ -738,9 +745,8 @@ const UI = (() => {
         let html = `<h2>Player ${p}</h2>`;
         html += '<div class="faction-grid">';
         for (const f of Units.activeFactions) {
-          const takenByOther = otherFaction === f;
           const cls = 'btn btn-faction';
-          const disabled = takenByOther ? 'disabled' : '';
+          const disabled = '';
           const logo = FACTION_LOGOS[f] || '';
           html += `<button class="${cls}" data-action="pick-faction" data-player="${p}" data-faction="${f}" ${disabled}>`;
           if (logo) html += `<img class="faction-logo" src="${logo}" alt="">`;
@@ -1952,6 +1958,7 @@ const UI = (() => {
   }
 
   function onMouseMove(e) {
+    if (moveAnimating) return;  // block hover during move animation
     if (dragCard) return;  // roster card drag takes priority
     if (isPanning) {
       const dx = e.clientX - panStartX;
@@ -1971,11 +1978,155 @@ const UI = (() => {
         syncRosterCards();
         render();
       }
+      return;
     }
+
+    // Path preview on hover during battle phase with a unit selected
+    if (Game.state.phase === Game.PHASE.BATTLE && uiState.highlights) {
+      const hex = Board.hexAtPixel(e.clientX, e.clientY);
+      const hexKey = hex ? `${hex.q},${hex.r}` : null;
+      const prevKey = uiState.hoveredHex
+        ? `${uiState.hoveredHex.q},${uiState.hoveredHex.r}` : null;
+
+      if (hexKey !== prevKey) {
+        uiState.hoveredHex = hex;
+        if (hex && uiState.highlights.has(hexKey)) {
+          recomputePathPreview(hex.q, hex.r);
+        } else {
+          uiState.pathPreview = null;
+          uiState.pathCost = null;
+        }
+        render();
+      }
+    }
+  }
+
+  /** Rebuild pathPreview from the unit's position to (destQ, destR). */
+  function recomputePathPreview(destQ, destR) {
+    const act = Game.state.activationState;
+    if (!act || !act._parentMap) {
+      uiState.pathPreview = null;
+      uiState.pathCost = null;
+      return;
+    }
+
+    if (uiState.waypoints.length === 0) {
+      // Simple: use existing parentMap from getMoveRange() BFS
+      const path = Board.getPath(act.unit.q, act.unit.r, destQ, destR, act._parentMap);
+      uiState.pathPreview = path;
+      uiState.pathCost = uiState.highlights.get(`${destQ},${destR}`) || 0;
+    } else {
+      // Waypoint routing: chain BFS segments
+      const result = buildWaypointPath(act.unit.q, act.unit.r, uiState.waypoints, destQ, destR);
+      uiState.pathPreview = result.path;
+      uiState.pathCost = result.cost;
+    }
+  }
+
+  /** Build a path through waypoints using per-segment BFS. */
+  function buildWaypointPath(startQ, startR, waypoints, destQ, destR) {
+    const ctx = Game.getMovementContext();
+    if (!ctx) return { path: [], cost: 0, invalid: true };
+
+    const points = [
+      { q: startQ, r: startR },
+      ...waypoints,
+      { q: destQ, r: destR }
+    ];
+
+    let fullPath = [];
+    let totalCost = 0;
+    let remainingRange = ctx.range;
+
+    for (let i = 0; i < points.length - 1; i++) {
+      const from = points[i];
+      const to = points[i + 1];
+      const parentMap = new Map();
+      const reachable = Board.getReachableHexes(
+        from.q, from.r, remainingRange, ctx.blocked, ctx.moveCost, parentMap
+      );
+
+      const toKey = `${to.q},${to.r}`;
+      if (!reachable.has(toKey)) {
+        // Waypoint unreachable with remaining budget — return partial path
+        return { path: fullPath, cost: totalCost, invalid: true };
+      }
+
+      const segment = Board.getPath(from.q, from.r, to.q, to.r, parentMap);
+      const segCost = reachable.get(toKey);
+      fullPath = fullPath.concat(segment);
+      totalCost += segCost;
+      remainingRange -= segCost;
+    }
+
+    return { path: fullPath, cost: totalCost, invalid: false };
+  }
+
+  /**
+   * Animate a token DOM element sliding hex-by-hex along a path.
+   * @param {Object} unit - The unit reference (key into tokenEls)
+   * @param {Array<{q,r}>} path - Ordered hex steps (excluding start)
+   * @param {number} msPerStep - Milliseconds per hex step
+   * @param {Function} onComplete - Called when animation finishes
+   */
+  function animateTokenAlongPath(unit, path, msPerStep, onComplete) {
+    const el = tokenEls.get(unit);
+    if (!el || path.length === 0) { onComplete(); return; }
+
+    const zoom = Board.zoomLevel;
+
+    let step = 0;
+    function tick() {
+      if (step >= path.length) {
+        onComplete();
+        return;
+      }
+      const hex = Board.getHex(path[step].q, path[step].r);
+      if (!hex) { step++; tick(); return; }
+
+      const sx = hex.x * zoom + Board.panX;
+      const sy = hex.y * zoom + Board.panY;
+      el.style.left = sx + 'px';
+      el.style.top = sy + 'px';
+
+      step++;
+      setTimeout(tick, msPerStep);
+    }
+    tick();
   }
 
   function onMouseUp(e) {
     if (e.button === 0) isPanning = false;
+  }
+
+  /** Right-click to toggle waypoints on reachable hexes during battle. */
+  function onContextMenu(e) {
+    e.preventDefault();
+    if (moveAnimating) return;
+    if (Game.state.phase !== Game.PHASE.BATTLE) return;
+    if (!uiState.highlights) return;
+
+    const hex = Board.hexAtPixel(e.clientX, e.clientY);
+    if (!hex) return;
+    const key = `${hex.q},${hex.r}`;
+    if (!uiState.highlights.has(key)) return;
+
+    // Toggle waypoint at this hex
+    const idx = uiState.waypoints.findIndex(w => w.q === hex.q && w.r === hex.r);
+    if (idx !== -1) {
+      uiState.waypoints.splice(idx, 1);
+    } else {
+      uiState.waypoints.push({ q: hex.q, r: hex.r });
+    }
+
+    // Recompute path preview if hovering a valid hex
+    if (uiState.hoveredHex) {
+      const hKey = `${uiState.hoveredHex.q},${uiState.hoveredHex.r}`;
+      if (uiState.highlights.has(hKey)) {
+        recomputePathPreview(uiState.hoveredHex.q, uiState.hoveredHex.r);
+      }
+    }
+    render();
   }
 
   function onClick(e) {
@@ -2260,10 +2411,18 @@ const UI = (() => {
     const targets = Game.getAttackTargets();  // null if already attacked
     uiState.highlights = reachable;
     uiState.highlightColor = reachable ? 'rgba(255,255,0,0.35)' : null;
+    uiState.highlightStyle = reachable ? 'dots' : null;
     uiState.attackTargets = targets;
+    // Clear path preview (reachable set may have changed after move/attack)
+    uiState.pathPreview = null;
+    uiState.pathCost = null;
+    uiState.hoveredHex = null;
+    uiState.waypoints = [];
   }
 
   function handleBattleClick(hex) {
+    // Block input during move animation
+    if (moveAnimating) return;
     // Block input when it's the opponent's turn in online mode
     if (typeof Net !== 'undefined' && Net.isOnline() && !Net.isMyTurn()) return;
 
@@ -2313,9 +2472,51 @@ const UI = (() => {
     if (s.activationState) {
       // Try move (click a yellow move-highlight)
       if (uiState.highlights && uiState.highlights.has(key)) {
+        // Override parentMap if waypoints exist so unit follows the custom path
+        const wps = uiState.waypoints.length > 0 ? [...uiState.waypoints] : null;
+        if (wps) {
+          const act = Game.state.activationState;
+          if (act) {
+            const result = buildWaypointPath(act.unit.q, act.unit.r, wps, hex.q, hex.r);
+            if (result.path.length > 0 && !result.invalid) {
+              const newParentMap = new Map();
+              let prev = `${act.unit.q},${act.unit.r}`;
+              for (const step of result.path) {
+                const k = `${step.q},${step.r}`;
+                newParentMap.set(k, prev);
+                prev = k;
+              }
+              act._parentMap = newParentMap;
+            }
+          }
+        }
+
+        // Capture the animation path BEFORE moveUnit() updates unit position
+        const animUnit = s.activationState.unit;
+        const animPath = Board.getPath(
+          animUnit.q, animUnit.r, hex.q, hex.r, s.activationState._parentMap
+        );
+
         const ok = Game.moveUnit(hex.q, hex.r);
         if (ok) {
-          netSend({ type: 'moveUnit', q: hex.q, r: hex.r });
+          netSend({ type: 'moveUnit', q: hex.q, r: hex.r, waypoints: wps || undefined });
+          const speed = Game.state.rules.animSpeed || 0;
+          if (speed > 0 && animPath.length > 0) {
+            // Animate: slide token along path, then finish
+            moveAnimating = true;
+            animateTokenAlongPath(animUnit, animPath, speed, () => {
+              moveAnimating = false;
+              if (!Game.state.activationState) {
+                resetUiState();
+              } else {
+                showActivationHighlights();
+              }
+              showPhase();
+              render();
+            });
+            return;  // Don't render yet — animation callback will
+          }
+          // speed === 0: instant (existing behavior)
           if (!Game.state.activationState) {
             resetUiState();
           } else {
@@ -2499,6 +2700,7 @@ const UI = (() => {
     }
 
     // Apply opponent's action to local game state
+    let skipRender = false;
     switch (data.type) {
       // ── Faction / Roster ──
       case 'selectFaction':
@@ -2554,14 +2756,58 @@ const UI = (() => {
         Game.deselectUnit();
         resetUiState();
         break;
-      case 'moveUnit':
+      case 'moveUnit': {
+        // Rebuild parentMap for waypoint paths so terrain effects match
+        if (data.waypoints && data.waypoints.length > 0 && Game.state.activationState) {
+          const act = Game.state.activationState;
+          const result = buildWaypointPath(act.unit.q, act.unit.r, data.waypoints, data.q, data.r);
+          if (result.path.length > 0 && !result.invalid) {
+            const newParentMap = new Map();
+            let prev = `${act.unit.q},${act.unit.r}`;
+            for (const step of result.path) {
+              const k = `${step.q},${step.r}`;
+              newParentMap.set(k, prev);
+              prev = k;
+            }
+            act._parentMap = newParentMap;
+          }
+        }
+
+        // Capture animation path before moveUnit updates position
+        let netAnimPath = [];
+        const netAnimUnit = Game.state.activationState ? Game.state.activationState.unit : null;
+        if (netAnimUnit && Game.state.activationState._parentMap) {
+          netAnimPath = Board.getPath(
+            netAnimUnit.q, netAnimUnit.r, data.q, data.r,
+            Game.state.activationState._parentMap
+          );
+        }
+
         Game.moveUnit(data.q, data.r);
-        if (!Game.state.activationState) {
-          resetUiState();
+
+        const netSpeed = Game.state.rules.animSpeed || 0;
+        if (netSpeed > 0 && netAnimPath.length > 0 && netAnimUnit) {
+          moveAnimating = true;
+          animateTokenAlongPath(netAnimUnit, netAnimPath, netSpeed, () => {
+            moveAnimating = false;
+            if (!Game.state.activationState) {
+              resetUiState();
+            } else {
+              showActivationHighlights();
+            }
+            showPhase();
+            render();
+          });
+          skipRender = true;  // prevent the default render at end of handleNetAction
         } else {
-          showActivationHighlights();
+          if (!Game.state.activationState) {
+            resetUiState();
+          } else {
+            showActivationHighlights();
+          }
         }
         break;
+      }
       case 'attackUnit':
         Game.attackUnit(data.q, data.r);
         if (!Game.state.activationState) {
@@ -2622,8 +2868,10 @@ const UI = (() => {
         return;
     }
 
-    showPhase();
-    render();
+    if (!skipRender) {
+      showPhase();
+      render();
+    }
   }
 
   // ── Public API ────────────────────────────────────────────────

@@ -17,6 +17,11 @@ canvas {
   z-index: 0;
 }
 
+#overlayCanvas {
+  z-index: 2;
+  pointer-events: none;
+}
+
 /* ── Unit tokens (HTML overlay on canvas) ────────────────────── */
 
 #unit-tokens {
