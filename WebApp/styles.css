@@ -101,32 +101,14 @@ canvas {
 
 /* ── Theme toggle buttons ───────────────────────────────────── */
 
-.theme-toggle {
+.theme-menu {
   margin-left: auto;
-  display: flex;
-  gap: 4px;
 }
 
-.btn-theme {
-  padding: 4px 10px;
-  border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 3px;
-  background: transparent;
-  color: rgba(255,255,255,0.5);
-  font-size: 11px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.btn-theme:hover {
-  color: rgba(255,255,255,0.8);
-  border-color: rgba(255,255,255,0.3);
-}
-
-.btn-theme.active {
-  color: #ffd700;
-  border-color: rgba(255,215,0,0.5);
-  background: rgba(255,215,0,0.1);
+.theme-menu .debug-dropdown {
+  width: auto;
+  min-width: 120px;
+  flex-direction: column;
 }
 
 /* ── Debug condition menu ────────────────────────────────────── */
@@ -469,6 +451,27 @@ canvas {
   color: #fff;
   text-shadow: 0 0 2px rgba(0,0,0,0.8);
 }
+
+/* Stack count badge on condition icons */
+.cond-stack {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  min-width: 12px;
+  height: 12px;
+  border-radius: 6px;
+  background: #222;
+  border: 1px solid rgba(255,255,255,0.5);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+  text-shadow: none;
+  padding: 0 2px;
+}
+
+.cond-icon { position: relative; }
 
 .cond-strengthened { background: #ff6600; }
 .cond-weakness     { background: #8844aa; }
@@ -815,9 +818,33 @@ p { font-size: 13px; margin: 4px 0; }
   align-items: center;
   width: 100%;
   padding: 8px 10px;
+  gap: 8px;
 }
 
-.unit-name { font-weight: 600; }
+.unit-thumb {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: #333;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.unit-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 30%;
+}
+.unit-thumb .thumb-fallback {
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.unit-name { font-weight: 600; flex: 1; }
 
 .unit-stats {
   font-size: 11px;
@@ -1120,6 +1147,33 @@ p { font-size: 13px; margin: 4px 0; }
 }
 
 /* ── Rules text box ── */
+/* ── Conditions bar on non-enlarged cards ─────────────────────── */
+.card-conditions-bar {
+  display: flex;
+  justify-content: center;
+  gap: 3px;
+  padding: 1px 4px;
+  min-height: 0;
+  z-index: 3;
+}
+.card-conditions-bar:empty { display: none; }
+
+.card-conditions-bar .cond-icon {
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  border-radius: 3px;
+}
+
+.card-conditions-bar .cond-stack {
+  min-width: 10px;
+  height: 10px;
+  font-size: 7px;
+  line-height: 10px;
+  bottom: -3px;
+  right: -3px;
+}
+
 .unit-card .card-rules {
   padding: 4px 7px;
   font-size: 9px;
@@ -1596,10 +1650,12 @@ body.theme-gem-img .unit-card .card-image {
 /* Text content above the frame */
 body.theme-gem-img .unit-card .card-header,
 body.theme-gem-img .unit-card .card-stats,
+body.theme-gem-img .unit-card .card-conditions-bar,
 body.theme-gem-img .unit-card .card-rules {
   z-index: 3;
 }
 
+body.theme-gem-img .unit-card.card-dead::after { display: none; }
 body.theme-gem-img .card-notched::after { display: none; }
 body.theme-gem-img .card-notched::before { display: none; }
 
@@ -1630,12 +1686,16 @@ body.theme-gem-img .unit-card .card-image img {
 
 body.theme-gem-img .unit-card .card-stats {
   background: transparent;
-  margin-top:2px;
+  margin-top: 0;
+  padding: 2px 4px;
+  min-height: 30px;
+  align-items: center;
+  margin-top:-7px;
 }
 
 body.theme-gem-img .stat-icon {
-  width: 20px;
-  height: 20px;
+  width: 28px;
+  height: 28px;
 }
 
 body.theme-gem-img .stat-icon path,
@@ -1648,6 +1708,8 @@ body.theme-gem-img .stat-icon line {
 body.theme-gem-img .stat-num {
   fill: #f0ede6;
   stroke: rgba(26,26,26,0.9);
+  font-size: 20px;
+  stroke-width: 2px;
 }
 
 body.theme-gem-img .unit-card .card-rules {
@@ -1690,12 +1752,13 @@ body .unit-card.enlarged {
 body .unit-card.enlarged .card-header { padding: 6px 36px; margin-bottom: 4px; }
 body .unit-card.enlarged .card-name { font-size: 22px; }
 body .unit-card.enlarged .card-cost { font-size: 24px; left: 6px; width: 36px; height: 36px; }
-body .unit-card.enlarged .card-stats {margin-top: 2px; padding: 2px 0; }
-body .unit-card.enlarged .card-stats svg { width: 44px; height: 44px; }
+body .unit-card.enlarged .card-stats {margin-top: -15px; padding: 2px 0; }
+body .unit-card.enlarged .card-stats svg { width: 55px; height: 55px; }
 body .unit-card.enlarged .card-type { font-size: 16px; padding: 6px 14px; }
 body .unit-card.enlarged .card-rules { padding: 8px 14px; font-size: 16px; margin-top: 2px; }
 body .unit-card.enlarged .rule-name { font-size: 16px; }
 body .unit-card.enlarged .rule-desc { font-size: 14px; }
+body .unit-card.enlarged .card-conditions-bar { display: none; }
 
 /* ── Condition panel (to the left of enlarged card) ──────────── */
 
@@ -1719,6 +1782,7 @@ body .unit-card.enlarged .rule-desc { font-size: 14px; }
 }
 
 .card-cond-icon {
+  position: relative;
   width: 26px;
   height: 26px;
   border-radius: 4px;

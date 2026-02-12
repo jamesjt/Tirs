@@ -6,7 +6,10 @@
       "Bash(dir:*)",
       "Bash(curl:*)",
       "Bash(del \"D:\\\\Projects\\\\Traea\\\\Tirs\\\\WebApp\\\\main.js\")",
-      "Bash(node --check:*)"
+      "Bash(node --check:*)",
+      "Bash(npx serve:*)",
+      "Bash(timeout:*)",
+      "Bash(powershell -Command \"Start-Sleep -Seconds 3; \\(Invoke-WebRequest -Uri ''http://localhost:49291/WebApp/'' -UseBasicParsing\\).StatusCode\")"
     ]
   }
 }

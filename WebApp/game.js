@@ -39,6 +39,7 @@ const Game = (() => {
         canUndoMove:           true,
         canUndoAttack:         true,
         crystalCapture:        'activationEnd',  // 'activationEnd' | 'turnEnd' | 'moveOn'
+        coreIncrement:         0,                // added to big crystal value each round
       },
 
       players: {
@@ -425,7 +426,9 @@ const Game = (() => {
       if (hasTerrainRule(toQ, toR, 'difficult')) return 2;
       return 1;
     }
-    const reachable = Board.getReachableHexes(u.q, u.r, range, blocked, moveCost);
+    const parentMap = new Map();
+    const reachable = Board.getReachableHexes(u.q, u.r, range, blocked, moveCost, parentMap);
+    act._parentMap = parentMap;
     // Remove hexes occupied by allies (can't stop there)
     for (const key of allyOccupied) {
       reachable.delete(key);
@@ -520,11 +523,19 @@ const Game = (() => {
       act.moved = true;
     }
 
-    act.unit.q = toQ;
-    act.unit.r = toR;
+    // Snapshot for undo (terrain effects may change health/conditions during traversal)
+    const prevHealth = act.unit.health;
+    const prevConditions = act.unit.conditions.map(c => ({ ...c }));
 
-    // Terrain entry effects
-    onEnterHex(act.unit, toQ, toR);
+    // Reconstruct shortest path and traverse each hex
+    const path = Board.getPath(fromQ, fromR, toQ, toR, act._parentMap);
+    for (const step of path) {
+      act.unit.q = step.q;
+      act.unit.r = step.r;
+      onEnterHex(act.unit, step.q, step.r);
+      // Stop if consumed or killed by terrain
+      if (act.unit.q === -99 || act.unit.health <= 0) break;
+    }
 
     // Dizzy: moving locks out attacking
     if (hasCondition(act.unit, 'dizzy')) act.attacked = true;
@@ -532,8 +543,8 @@ const Game = (() => {
     // Update objective control
     updateObjectiveControl(act.unit);
 
-    state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ, toR, prevObjControl, prevMoveDistance });
-    log(`${act.unit.name} moved (${fromQ},${fromR}) \u2192 (${toQ},${toR})`, act.unit.player);
+    state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ: act.unit.q, toR: act.unit.r, prevObjControl, prevMoveDistance, prevHealth, prevConditions });
+    log(`${act.unit.name} moved (${fromQ},${fromR}) \u2192 (${act.unit.q},${act.unit.r})`, act.unit.player);
 
     // If both actions used, end activation (unless confirmEndTurn or pending effects)
     if (act.moved && act.attacked && !state.rules.confirmEndTurn) {
@@ -829,6 +840,12 @@ const Game = (() => {
       last.unit.r = last.fromR;
       act.moved = false;
       act.moveDistance = last.prevMoveDistance !== undefined ? last.prevMoveDistance : 0;
+      // Restore health and conditions changed by terrain traversal
+      if (last.prevHealth !== undefined) last.unit.health = last.prevHealth;
+      if (last.prevConditions !== undefined) last.unit.conditions = last.prevConditions;
+      // Undo consuming terrain (remove from consumedUnits if applicable)
+      const cIdx = state.consumedUnits.findIndex(e => e.unit === last.unit);
+      if (cIdx !== -1) state.consumedUnits.splice(cIdx, 1);
       // Dizzy: undoing move also unlocks attack
       if (hasCondition(act.unit, 'dizzy')) act.attacked = false;
       // Restore objective control at destination
@@ -913,7 +930,7 @@ const Game = (() => {
             const key = `${obj.q},${obj.r}`;
             const owner = state.objectiveControl[key];
             if (!owner) continue;
-            const points = obj.type === 'shard' ? 1 : state.round + 1;
+            const points = obj.type === 'shard' ? 1 : 2 + (state.rules.coreIncrement || 0) * (state.round - 1);
             entries.push({ q: obj.q, r: obj.r, type: obj.type, owner, points });
           }
           return entries;

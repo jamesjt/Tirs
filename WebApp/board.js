@@ -201,7 +201,7 @@ const Board = (() => {
    *  blockedHexes: Set of "q,r" strings that cannot be entered.
    *  costFn(fromQ, fromR, toQ, toR): optional, returns movement cost to enter (default 1).
    *  Returns Map<"q,r", distance>. */
-  function getReachableHexes(startQ, startR, moveRange, blockedHexes, costFn) {
+  function getReachableHexes(startQ, startR, moveRange, blockedHexes, costFn, parentMap) {
     const blocked = blockedHexes || new Set();
     const visited = new Map();
     visited.set(`${startQ},${startR}`, 0);
@@ -218,12 +218,27 @@ const Board = (() => {
         if (nd > moveRange) continue;
         if (!visited.has(key) || visited.get(key) > nd) {
           visited.set(key, nd);
+          if (parentMap) parentMap.set(key, `${cur.q},${cur.r}`);
           queue.push({ q: n.q, r: n.r, dist: nd });
         }
       }
     }
     visited.delete(`${startQ},${startR}`);
     return visited;
+  }
+
+  /** Reconstruct shortest path from parentMap. Returns [{q,r}] from start (exclusive) to dest (inclusive). */
+  function getPath(startQ, startR, destQ, destR, parentMap) {
+    const path = [];
+    let key = `${destQ},${destR}`;
+    const startKey = `${startQ},${startR}`;
+    while (key && key !== startKey) {
+      const [q, r] = key.split(',').map(Number);
+      path.push({ q, r });
+      key = parentMap.get(key);
+    }
+    path.reverse();
+    return path;
   }
 
   /** Follow a straight line in direction dir for up to `range` steps. */
@@ -468,6 +483,7 @@ const Board = (() => {
     getNeighbors,
     getNeighborInDir,
     getReachableHexes,
+    getPath,
     getLineHexes,
     hexDistance,
     straightLineDir,

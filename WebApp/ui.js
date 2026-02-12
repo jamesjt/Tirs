@@ -92,12 +92,29 @@ const UI = (() => {
     protected:    '\u25C6',  // ◆ solid diamond (shielded)
     poisoned:     '\u2620',  // ☠ skull
     burning:      '\u2668',  // ♨ hot/fire
-    immobilized:  '\u2298',  // ⊘ prohibition
+    immobilized:  '<svg viewBox="0 0 20 20" width="1em" height="1em" style="vertical-align:middle;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round"><polygon points="10,1 17.8,5.5 17.8,14.5 10,19 2.2,14.5 2.2,5.5" /><line x1="5" y1="5" x2="15" y2="15"/><line x1="15" y1="5" x2="5" y2="15"/></svg>',  // hex with X
     dizzy:        '\u2726',  // ✦ 4-point star
     silenced:     '\u2715',  // ✕ X mark
     disarmed:     '\u2297',  // ⊗ circled X
     taunted:      '\u25CE',  // ◎ bullseye
   };
+
+  /** Group a unit's conditions array by id, returning [{id, count}] */
+  function groupConditions(conditions) {
+    const map = {};
+    for (const c of conditions) {
+      map[c.id] = (map[c.id] || 0) + 1;
+    }
+    return Object.entries(map).map(([id, count]) => ({ id, count }));
+  }
+
+  /** Return HTML for a small circular unit thumbnail (matches board token style) */
+  function thumbHTML(unit) {
+    if (unit.image) {
+      return `<span class="unit-thumb"><img src="${unit.image}" alt=""></span>`;
+    }
+    return `<span class="unit-thumb"><span class="thumb-fallback">${unit.name.charAt(0)}</span></span>`;
+  }
 
   // ── UI State (rendering hints, separate from game logic) ────
   let uiState = freshUiState();
@@ -198,33 +215,39 @@ const UI = (() => {
     targetZoom = Board.zoomLevel;
     Game.reset();
 
-    // ── Theme toggle ──
+    // ── Theme toggle (dropdown) ──
     const nav = document.getElementById('top-nav');
     const themeWrap = document.createElement('div');
-    themeWrap.className = 'theme-toggle';
-    themeWrap.innerHTML =
-      '<button class="btn-theme active" data-theme="">Elegant White</button>' +
-      '<button class="btn-theme" data-theme="theme-dark">Simple Dark</button>' +
-      '<button class="btn-theme" data-theme="theme-gem">Gem CSS</button>' +
-      '<button class="btn-theme" data-theme="theme-gem-img">Gem Image</button>';
+    themeWrap.className = 'debug-menu theme-menu';
+    themeWrap.innerHTML = '<button class="btn-debug-toggle">Themes</button>' +
+      '<div class="debug-dropdown hidden">' +
+      '<button class="btn-debug-cond btn-theme-opt" data-theme="theme-gem-img">Basic</button>' +
+      '<button class="btn-debug-cond btn-theme-opt" data-theme="">Elegant White</button>' +
+      '<button class="btn-debug-cond btn-theme-opt" data-theme="theme-dark">Simple Dark</button>' +
+      '<button class="btn-debug-cond btn-theme-opt" data-theme="theme-gem">Gem CSS</button>' +
+      '</div>';
     nav.appendChild(themeWrap);
 
-    const savedTheme = localStorage.getItem('cardTheme') || '';
-    if (savedTheme) {
-      document.body.classList.add(savedTheme);
-      themeWrap.querySelector('.active').classList.remove('active');
-      themeWrap.querySelector(`[data-theme="${savedTheme}"]`).classList.add('active');
-    }
+    const themeDropdown = themeWrap.querySelector('.debug-dropdown');
+    themeWrap.querySelector('.btn-debug-toggle').addEventListener('click', e => {
+      e.stopPropagation();
+      themeDropdown.classList.toggle('hidden');
+    });
+    document.addEventListener('click', () => themeDropdown.classList.add('hidden'));
+    themeDropdown.addEventListener('click', e => e.stopPropagation());
 
-    themeWrap.addEventListener('click', e => {
-      const btn = e.target.closest('.btn-theme');
-      if (!btn) return;
-      const theme = btn.dataset.theme;
-      document.body.classList.remove('theme-dark', 'theme-gem', 'theme-gem-img');
-      if (theme) document.body.classList.add(theme);
-      localStorage.setItem('cardTheme', theme);
-      themeWrap.querySelectorAll('.btn-theme').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
+    const savedTheme = localStorage.getItem('cardTheme');
+    const defaultTheme = savedTheme !== null ? savedTheme : 'theme-gem-img';
+    if (defaultTheme) document.body.classList.add(defaultTheme);
+
+    themeDropdown.querySelectorAll('.btn-theme-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const theme = btn.dataset.theme;
+        document.body.classList.remove('theme-dark', 'theme-gem', 'theme-gem-img');
+        if (theme) document.body.classList.add(theme);
+        localStorage.setItem('cardTheme', theme);
+        themeDropdown.classList.add('hidden');
+      });
     });
 
     // ── Debug: condition applicator ──
@@ -340,12 +363,15 @@ const UI = (() => {
         hpEl.style.fontSize = (tokenSize * 0.22) + 'px';
       }
 
-      // Condition indicators
+      // Condition indicators (grouped with stack count)
       const condDiv = el.querySelector('.token-conditions');
       if (condDiv) {
-        condDiv.innerHTML = unit.conditions
-          .map(c => `<span class="cond-icon cond-${c.id}" title="${c.id}">${COND_ICONS[c.id] || '?'}</span>`)
-          .join('');
+        condDiv.innerHTML = groupConditions(unit.conditions)
+          .map(g => {
+            const sym = COND_ICONS[g.id] || '?';
+            const badge = g.count > 1 ? `<span class="cond-stack">${g.count}</span>` : '';
+            return `<span class="cond-icon cond-${g.id}" title="${g.id}${g.count > 1 ? ' x' + g.count : ''}">${sym}${badge}</span>`;
+          }).join('');
       }
 
       // State classes
@@ -596,6 +622,7 @@ const UI = (() => {
       { value: 'turnEnd', label: 'Turn end' },
       { value: 'moveOn', label: 'Move on' },
     ]);
+    html += ruleNumber('coreIncrement', 'Turn increment of big crystal', r.coreIncrement, 0, 10);
     html += '</div>';
 
     panel.innerHTML = html;
@@ -687,7 +714,7 @@ const UI = (() => {
           const canAfford = cost + u.cost <= s.rules.rosterPoints;
           const disabled = !canAfford ? 'disabled' : '';
           html += `<button class="btn btn-unit" data-action="add-unit" data-player="${p}" data-name="${u.name}" data-unit-hover="${u.name}" ${disabled}>`;
-          html += `<span class="unit-name">${u.name}</span>`;
+          html += `${thumbHTML(u)}<span class="unit-name">${u.name}</span>`;
           html += `<span class="unit-cost">${u.cost} pts</span>`;
           html += '</button>';
         }
@@ -769,9 +796,9 @@ const UI = (() => {
     for (let i = 0; i < roster.length; i++) {
       const u = roster[i];
       if (u._deployed) continue;
-      html += `<button class="btn btn-unit" data-action="select-deploy-unit" data-index="${i}">`;
-      html += `<span class="unit-name">${u.name}</span>`;
-      html += `<span class="unit-stats">${u.cost}pt | HP:${u.health} Mv:${u.move} ${u.atkType}</span>`;
+      html += `<button class="btn btn-unit" data-action="select-deploy-unit" data-index="${i}" data-unit-hover="${u.name}">`;
+      html += `${thumbHTML(u)}<span class="unit-name">${u.name}</span>`;
+      html += `<span class="unit-cost">${u.cost} pts</span>`;
       html += '</button>';
     }
     html += '</div>';
@@ -781,6 +808,7 @@ const UI = (() => {
     }
 
     panel.innerHTML = html;
+    attachCardHovers(panel, roster);
   }
 
   let hiddenDeployPlayer = 1;  // which player's roster the hex click deploys for
@@ -807,9 +835,9 @@ const UI = (() => {
         for (let i = 0; i < roster.length; i++) {
           const u = roster[i];
           if (u._deployed) continue;
-          html += `<button class="btn btn-unit" data-action="select-deploy-unit" data-player="${p}" data-index="${i}">`;
-          html += `<span class="unit-name">${u.name}</span>`;
-          html += `<span class="unit-stats">${u.cost}pt | HP:${u.health} Mv:${u.move} ${u.atkType}</span>`;
+          html += `<button class="btn btn-unit" data-action="select-deploy-unit" data-player="${p}" data-index="${i}" data-unit-hover="${u.name}">`;
+          html += `${thumbHTML(u)}<span class="unit-name">${u.name}</span>`;
+          html += `<span class="unit-cost">${u.cost} pts</span>`;
           html += '</button>';
         }
         html += '</div>';
@@ -820,6 +848,7 @@ const UI = (() => {
       }
 
       panel.innerHTML = html;
+      attachCardHovers(panel, roster);
     }
   }
 
@@ -1061,8 +1090,9 @@ const UI = (() => {
       // Condition tags
       if (act.unit.conditions.length > 0) {
         html += `<div class="cond-list">`;
-        for (const c of act.unit.conditions) {
-          html += `<span class="cond-tag cond-${c.id}">${c.id}</span>`;
+        for (const g of groupConditions(act.unit.conditions)) {
+          const label = g.count > 1 ? `${g.id} ×${g.count}` : g.id;
+          html += `<span class="cond-tag cond-${g.id}">${label}</span>`;
         }
         html += `</div>`;
       }
@@ -1238,6 +1268,7 @@ const UI = (() => {
         ${svgAtkType(atkShort)}
         ${svgDamage(unit.damage)}
       </div>
+      <div class="card-conditions-bar"></div>
       ${unit.specialRules && unit.specialRules.length > 0 ? `<div class="card-rules card-notched">${unit.specialRules.map(r => `<div class="card-rule"><div class="rule-name">${r.name}</div>${r.text ? `<div class="rule-desc">${r.text}</div>` : ''}</div>`).join('')}</div>` : ''}
     `;
   }
@@ -1441,6 +1472,22 @@ const UI = (() => {
       html += '</div>';
     }
     area.innerHTML = html;
+
+    // Populate condition icons on non-enlarged cards
+    area.querySelectorAll('.roster-card').forEach(card => {
+      const bar = card.querySelector('.card-conditions-bar');
+      if (!bar) return;
+      const uName = card.dataset.rosterUnit;
+      const p = parseInt(card.dataset.player);
+      const deployed = Game.state.units.find(u => u.name === uName && u.player === p);
+      if (!deployed || !deployed.conditions || deployed.conditions.length === 0) return;
+      bar.innerHTML = groupConditions(deployed.conditions)
+        .map(g => {
+          const sym = COND_ICONS[g.id] || '?';
+          const badge = g.count > 1 ? `<span class="cond-stack">${g.count}</span>` : '';
+          return `<span class="cond-icon cond-${g.id}" title="${g.id}${g.count > 1 ? ' x' + g.count : ''}">${sym}${badge}</span>`;
+        }).join('');
+    });
 
     const pd = Game.state.players[player];
     const inRosterBuild = Game.state.phase === Game.PHASE.FACTION_ROSTER && pd.faction && !pd._rosterConfirmed;
@@ -1672,11 +1719,13 @@ const UI = (() => {
       return;
     }
     let html = '';
-    for (const c of unit.conditions) {
-      const sym = COND_ICONS[c.id] || '?';
+    for (const g of groupConditions(unit.conditions)) {
+      const sym = COND_ICONS[g.id] || '?';
+      const badge = g.count > 1 ? `<span class="cond-stack">${g.count}</span>` : '';
+      const label = g.count > 1 ? `${g.id} ×${g.count}` : g.id;
       html += `<div class="card-cond-row">`;
-      html += `<span class="card-cond-icon cond-${c.id}">${sym}</span>`;
-      html += `<span class="card-cond-label">${c.id}</span>`;
+      html += `<span class="card-cond-icon cond-${g.id}">${sym}${badge}</span>`;
+      html += `<span class="card-cond-label">${label}</span>`;
       html += `</div>`;
     }
     panel.innerHTML = html;
