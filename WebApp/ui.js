@@ -330,6 +330,12 @@ const UI = (() => {
     const tokenSize = hs * zoom * 1.4;
     const selectedUnit = uiState.selectedUnit || Game.state.selectedUnit;
 
+    // ONLINE: hide opponent's units during hidden deploy phase
+    const isOnlineHiddenDeploy = typeof Net !== 'undefined' && Net.isOnline() &&
+                           Game.state.phase === Game.PHASE.UNIT_DEPLOY &&
+                           Game.state.rules.hiddenDeploy;
+    const opponentPlayer = isOnlineHiddenDeploy ? (Net.localPlayer === 1 ? 2 : 1) : null;
+
     // Track which units are still alive for cleanup
     const alive = new Set();
 
@@ -338,6 +344,14 @@ const UI = (() => {
         // Remove dead unit tokens
         const el = tokenEls.get(unit);
         if (el) { el.remove(); tokenEls.delete(unit); }
+        continue;
+      }
+
+      // ONLINE: hide opponent units during deploy phase
+      if (opponentPlayer && unit.player === opponentPlayer) {
+        const el = tokenEls.get(unit);
+        if (el) el.style.display = 'none';
+        alive.add(unit);
         continue;
       }
 
@@ -527,6 +541,20 @@ const UI = (() => {
       const winner = s.scores[1] > s.scores[2] ? 'Player 1' :
                      s.scores[2] > s.scores[1] ? 'Player 2' : 'Tie';
       text = `Game Over! P1: ${s.scores[1]} | P2: ${s.scores[2]} | ${winner === 'Tie' ? 'Tie!' : winner + ' wins!'}`;
+    } else if (typeof Net !== 'undefined' && Net.isOnline()) {
+      // ONLINE: context-aware status messages
+      if (s.phase === Game.PHASE.FACTION_ROSTER) {
+        const local = s.players[Net.localPlayer];
+        if (!local.faction) text = 'Pick your faction';
+        else if (!local._rosterConfirmed) text = 'Build your roster';
+        else text = 'Waiting for opponent to finish roster...';
+      } else if (s.phase === Game.PHASE.TERRAIN_DEPLOY || s.phase === Game.PHASE.UNIT_DEPLOY) {
+        text = Net.isMyTurn() || s.rules.hiddenDeploy
+          ? `${phaseLabel(s.phase)} | Your Turn`
+          : `${phaseLabel(s.phase)} | Waiting for opponent...`;
+      } else {
+        text = `${phaseLabel(s.phase)} | Player ${s.currentPlayer}'s Turn`;
+      }
     } else {
       text = `${phaseLabel(s.phase)} | Player ${s.currentPlayer}'s Turn`;
     }
@@ -618,6 +646,12 @@ const UI = (() => {
       return;
     }
 
+    // ONLINE: only host can see/edit rules panel
+    if (typeof Net !== 'undefined' && Net.isOnline() && Net.localPlayer !== 1) {
+      panel.classList.add('hidden');
+      return;
+    }
+
     panel.classList.remove('hidden');
 
     let html = '<h2>Game Rules</h2>';
@@ -681,6 +715,16 @@ const UI = (() => {
     for (const p of [1, 2]) {
       const factionPanel = document.getElementById(`panel-faction-p${p}`);
       const rosterPanel = document.getElementById(`panel-roster-p${p}`);
+
+      // ONLINE: only show local player's faction/roster panel
+      if (typeof Net !== 'undefined' && Net.isOnline() && p !== Net.localPlayer) {
+        factionPanel.classList.add('hidden');
+        rosterPanel.classList.add('hidden');
+        // Also clear opponent's roster cards beside the board
+        clearRosterAreas(p);
+        continue;
+      }
+
       const faction = s.players[p].faction;
       const confirmed = s.players[p]._rosterConfirmed;
 
@@ -758,6 +802,14 @@ const UI = (() => {
 
     const s = Game.state;
     const p = s.currentPlayer;
+
+    // ONLINE: show waiting message when opponent is placing terrain
+    if (typeof Net !== 'undefined' && Net.isOnline() && p !== Net.localPlayer) {
+      panel.innerHTML = `<h2>Deploy Terrain</h2>
+        <p class="hint">Waiting for opponent to place terrain...</p>`;
+      return;
+    }
+
     applyPlayerStyle(panel, p);
     const placed = s.players[p].terrainPlacements;
     const faction = s.players[p].faction;
@@ -802,6 +854,14 @@ const UI = (() => {
     panel.classList.remove('hidden');
 
     const p = s.currentPlayer;
+
+    // ONLINE: show waiting message when opponent is deploying
+    if (typeof Net !== 'undefined' && Net.isOnline() && p !== Net.localPlayer) {
+      panel.innerHTML = `<h2>Deploy Units</h2>
+        <p class="hint">Waiting for opponent to deploy units...</p>`;
+      return;
+    }
+
     applyPlayerStyle(panel, p);
     const roster = s.players[p].roster;
     const undeployed = roster.filter(u => !u._deployed);
@@ -834,6 +894,13 @@ const UI = (() => {
 
     for (const p of [1, 2]) {
       const panel = document.getElementById(`panel-deploy-p${p}`);
+
+      // ONLINE: only show local player's deploy panel
+      if (typeof Net !== 'undefined' && Net.isOnline() && p !== Net.localPlayer) {
+        panel.classList.add('hidden');
+        continue;
+      }
+
       panel.classList.remove('hidden');
       applyPlayerStyle(panel, p);
 
@@ -1609,6 +1676,13 @@ const UI = (() => {
    *  Always rebuilds to ensure drag handlers are attached (they differ by phase). */
   function ensureRosterCardsShown() {
     for (const p of [1, 2]) {
+      // ONLINE hidden deploy: hide opponent's roster cards to not reveal their picks
+      if (typeof Net !== 'undefined' && Net.isOnline() &&
+          Game.state.phase === Game.PHASE.UNIT_DEPLOY &&
+          Game.state.rules.hiddenDeploy &&
+          p !== Net.localPlayer) {
+        continue;
+      }
       const roster = Game.state.players[p].roster;
       if (roster.length > 0) {
         updateRosterCards(p);
@@ -2148,6 +2222,8 @@ const UI = (() => {
   }
 
   function handleTerrainClick(hex) {
+    // ONLINE: block terrain clicks when it's opponent's turn
+    if (typeof Net !== 'undefined' && Net.isOnline() && !Net.isMyTurn()) return;
     if (!selectedSurface) return;
     const p = Game.state.currentPlayer;
     const ok = Game.deployTerrain(p, hex.q, hex.r, selectedSurface);
@@ -2162,6 +2238,8 @@ const UI = (() => {
 
   function handleDeployClick(hex) {
     if (selectedDeployIndex === null) return;
+    // ONLINE: block deploy clicks when opponent's turn (normal deploy)
+    if (typeof Net !== 'undefined' && Net.isOnline() && !Game.state.rules.hiddenDeploy && !Net.isMyTurn()) return;
     const p = Game.state.rules.hiddenDeploy ? hiddenDeployPlayer : Game.state.currentPlayer;
     const ok = Game.deployUnit(p, selectedDeployIndex, hex.q, hex.r);
     if (ok) {
