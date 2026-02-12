@@ -20,6 +20,8 @@ const Game = (() => {
   let state = {};
 
   function freshState() {
+    // Merge spreadsheet defaults over hardcoded defaults (if Units data is loaded)
+    const sheetDefaults = (typeof Units !== 'undefined' && Units.gameRuleDefaults) || {};
     return {
       phase: PHASE.FACTION_ROSTER,
       currentPlayer: 1,
@@ -27,7 +29,7 @@ const Game = (() => {
       firstTurnPlayer: 1,       // who acts first this round
       scores: { 1: 0, 2: 0 },
 
-      rules: {
+      rules: Object.assign({
         allowDuplicates:       false,
         firstPlayerSame:       false,
         numTurns:              4,
@@ -40,7 +42,7 @@ const Game = (() => {
         canUndoAttack:         true,
         crystalCapture:        'activationEnd',  // 'activationEnd' | 'turnEnd' | 'moveOn'
         coreIncrement:         0,                // added to big crystal value each round
-      },
+      }, sheetDefaults),
 
       players: {
         1: { faction: null, roster: [], terrainPlacements: 0 },

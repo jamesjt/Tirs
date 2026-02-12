@@ -20,6 +20,25 @@ const Units = (() => {
   // faction name -> array of unit templates
   const catalog = {};
 
+  // Game rule defaults loaded from "GameRules" spreadsheet tab
+  let gameRuleDefaults = {};
+
+  const RULE_LABEL_MAP = {
+    'allow duplicate units':           { key: 'allowDuplicates',  type: 'boolean' },
+    '1st player same each round':      { key: 'firstPlayerSame',  type: 'boolean' },
+    'hidden deployment':               { key: 'hiddenDeploy',     type: 'boolean' },
+    'confirm end turn':                { key: 'confirmEndTurn',   type: 'boolean' },
+    'can undo move':                   { key: 'canUndoMove',      type: 'boolean' },
+    'can undo attack':                 { key: 'canUndoAttack',    type: 'boolean' },
+    'number of turns':                 { key: 'numTurns',         type: 'number' },
+    'points per roster':               { key: 'rosterPoints',     type: 'number' },
+    '% pts for surviving units':       { key: 'survivalPct',      type: 'number' },
+    'terrain per team':                { key: 'terrainPerTeam',   type: 'number' },
+    'crystal captured when':           { key: 'crystalCapture',   type: 'select',
+      values: ['activationEnd', 'turnEnd', 'moveOn'] },
+    'turn increment of big crystal':   { key: 'coreIncrement',    type: 'number' },
+  };
+
   // ── PapaParse sheet fetcher ─────────────────────────────────
 
   function delay(ms) {
@@ -258,6 +277,33 @@ const Units = (() => {
     }
   }
 
+  // ── Fetch game rule defaults from "GameRules" tab ───────────
+
+  async function fetchGameRules() {
+    try {
+      const rows = await fetchSheet('GameRules', true);
+      for (const row of rows) {
+        const label = col(row, ['game rule']).toLowerCase();
+        const rawVal = col(row, ['default']);
+        const mapping = RULE_LABEL_MAP[label];
+        if (!mapping || rawVal === '') continue;
+        const n = parseFloat(rawVal);
+        if (isNaN(n)) continue;
+
+        if (mapping.type === 'boolean') {
+          gameRuleDefaults[mapping.key] = n !== 0;
+        } else if (mapping.type === 'select') {
+          gameRuleDefaults[mapping.key] = mapping.values[n] || mapping.values[0];
+        } else {
+          gameRuleDefaults[mapping.key] = n;
+        }
+      }
+      console.log('Game rule defaults loaded:', gameRuleDefaults);
+    } catch (err) {
+      console.warn('Failed to fetch GameRules sheet:', err);
+    }
+  }
+
   // ── Fetch everything ────────────────────────────────────────
 
   function setLoadingState(newState, error = null) {
@@ -269,7 +315,7 @@ const Units = (() => {
   async function fetchAll() {
     setLoadingState('loading');
     try {
-      await Promise.all([fetchActiveFactions(), fetchTerrainMap()]);
+      await Promise.all([fetchActiveFactions(), fetchTerrainMap(), fetchGameRules()]);
       if (activeFactions.length === 0) {
         throw new Error('No active factions found. Check your internet connection.');
       }
@@ -376,6 +422,7 @@ const Units = (() => {
     get loadingState() { return loadingState; },
     get loadingError() { return loadingError; },
     get factionRules() { return factionRuleData; },
+    get gameRuleDefaults() { return gameRuleDefaults; },
     setStateChangeCallback(cb) { onStateChange = cb; },
     fetchAll,
     fetchFaction,

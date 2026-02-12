@@ -116,6 +116,14 @@ const UI = (() => {
     return `<span class="unit-thumb"><span class="thumb-fallback">${unit.name.charAt(0)}</span></span>`;
   }
 
+  // ── Network helper — send action to opponent if online ──────
+
+  function netSend(action) {
+    if (typeof Net !== 'undefined' && Net.isOnline()) {
+      Net.send(action);
+    }
+  }
+
   // ── UI State (rendering hints, separate from game logic) ────
   let uiState = freshUiState();
 
@@ -253,8 +261,15 @@ const UI = (() => {
     // ── Debug: condition applicator ──
     buildDebugConditionMenu(nav);
 
-    // Start fetching unit data, then show faction select
+    // Register network action handler + show lobby
+    if (typeof Net !== 'undefined') {
+      Net.setActionHandler(handleNetAction);
+      Net.initLobby();
+    }
+
+    // Start fetching unit data, then apply sheet defaults and show faction select
     Units.fetchAll().then(() => {
+      Game.reset();   // re-init state with spreadsheet rule defaults now available
       showPhase();
       render();
     });
@@ -649,6 +664,7 @@ const UI = (() => {
     }
 
     Game.setRule(key, value);
+    netSend({ type: 'setRule', key, value });
 
     // Rebuild roster panels if points or duplicates changed
     if (key === 'rosterPoints' || key === 'allowDuplicates') {
@@ -1637,6 +1653,7 @@ const UI = (() => {
       if (k.startsWith(`p${p}_`)) delete rosterCardPositions[k];
     }
     Game.removeFromRosterByIndex(p, rosterIdx);
+    netSend({ type: 'removeFromRosterByIndex', player: p, index: rosterIdx });
     showPhase();
   }
 
@@ -1915,10 +1932,19 @@ const UI = (() => {
 
     const action = btn.dataset.action;
 
+    // Block battle-phase actions when it's opponent's turn online
+    const battleActions = ['undo-action','remove-burning','end-activation','skip-consuming',
+      'shift-ride','shift-stay','advance-round-step','use-ability'];
+    if (typeof Net !== 'undefined' && Net.isOnline() && !Net.isMyTurn() &&
+        battleActions.includes(action)) {
+      return;
+    }
+
     if (action === 'pick-faction') {
       const player = parseInt(btn.dataset.player);
       const faction = btn.dataset.faction;
       Game.selectFaction(player, faction);
+      netSend({ type: 'selectFaction', player, faction });
       showPhase();
       render();
     }
@@ -1927,24 +1953,30 @@ const UI = (() => {
       const p = parseInt(btn.dataset.player);
       const faction = Game.state.players[p].faction;
       const unit = (Units.catalog[faction] || []).find(u => u.name === btn.dataset.name);
-      if (unit) Game.addToRoster(p, unit);
+      if (unit) {
+        Game.addToRoster(p, unit);
+        netSend({ type: 'addToRoster', player: p, unitName: unit.name });
+      }
       showPhase();
     }
 
     else if (action === 'remove-unit') {
       const p = parseInt(btn.dataset.player);
+      const name = btn.dataset.name;
       // Clear slot data since indices shift after removal
       rosterSlots[p] = [];
       for (const k of Object.keys(rosterCardPositions)) {
         if (k.startsWith(`p${p}_`)) delete rosterCardPositions[k];
       }
-      Game.removeFromRoster(p, btn.dataset.name);
+      Game.removeFromRoster(p, name);
+      netSend({ type: 'removeFromRoster', player: p, unitName: name });
       showPhase();
     }
 
     else if (action === 'confirm-roster') {
       const p = parseInt(btn.dataset.player);
       Game.confirmRoster(p);
+      netSend({ type: 'confirmRoster', player: p });
       showPhase();
       render();
     }
@@ -1952,6 +1984,7 @@ const UI = (() => {
     else if (action === 'back-to-faction') {
       const p = parseInt(btn.dataset.player);
       Game.unselectFaction(p);
+      netSend({ type: 'unselectFaction', player: p });
       clearRosterAreas(p);
       showPhase();
       render();
@@ -1997,6 +2030,7 @@ const UI = (() => {
     else if (action === 'confirm-deploy') {
       const p = parseInt(btn.dataset.player);
       Game.confirmDeploy(p);
+      netSend({ type: 'confirmDeploy', player: p });
       showPhase();
       render();
     }
@@ -2004,6 +2038,7 @@ const UI = (() => {
     else if (action === 'undo-action') {
       const ok = Game.undoLastAction();
       if (ok) {
+        netSend({ type: 'undoLastAction' });
         resetUiState();
         showActivationHighlights();
         showPhase();
@@ -2014,6 +2049,7 @@ const UI = (() => {
     else if (action === 'remove-burning') {
       const ok = Game.removeBurning();
       if (ok) {
+        netSend({ type: 'removeBurning' });
         if (!Game.state.activationState) {
           resetUiState();
         } else {
@@ -2043,6 +2079,7 @@ const UI = (() => {
 
     else if (action === 'skip-consuming') {
       Game.skipConsumingPlacement();
+      netSend({ type: 'skipConsumingPlacement' });
       showPhase();
       render();
     }
@@ -2051,12 +2088,14 @@ const UI = (() => {
       const index = parseInt(btn.dataset.index);
       const rides = action === 'shift-ride';
       Game.resolveShiftRide(index, rides);
+      netSend({ type: 'resolveShiftRide', index, rides });
       showPhase();
       render();
     }
 
     else if (action === 'advance-round-step') {
       Game.advanceRoundStep();
+      netSend({ type: 'advanceRoundStep' });
       uiState.highlights = null;
       showPhase();
       render();
@@ -2064,6 +2103,7 @@ const UI = (() => {
 
     else if (action === 'end-activation') {
       Game.forceEndActivation();
+      netSend({ type: 'endActivation' });
       resetUiState();
       showPhase();
       render();
@@ -2097,6 +2137,7 @@ const UI = (() => {
       const key = `${hex.q},${hex.r}`;
       if (uiState.highlights && uiState.highlights.has(key)) {
         Game.resolveConsumingPlacement(hex.q, hex.r);
+        netSend({ type: 'resolveConsumingPlacement', q: hex.q, r: hex.r });
         if (Game.allConsumingPlaced()) {
           uiState.highlights = null;
         }
@@ -2111,6 +2152,7 @@ const UI = (() => {
     const p = Game.state.currentPlayer;
     const ok = Game.deployTerrain(p, hex.q, hex.r, selectedSurface);
     if (ok) {
+      netSend({ type: 'deployTerrain', player: p, q: hex.q, r: hex.r, surface: selectedSurface });
       selectedSurface = null;
       uiState.highlights = null;
       showPhase();
@@ -2123,6 +2165,7 @@ const UI = (() => {
     const p = Game.state.rules.hiddenDeploy ? hiddenDeployPlayer : Game.state.currentPlayer;
     const ok = Game.deployUnit(p, selectedDeployIndex, hex.q, hex.r);
     if (ok) {
+      netSend({ type: 'deployUnit', player: p, index: selectedDeployIndex, q: hex.q, r: hex.r });
       selectedDeployIndex = null;
       uiState.highlights = null;
       showPhase();
@@ -2143,6 +2186,9 @@ const UI = (() => {
   }
 
   function handleBattleClick(hex) {
+    // Block input when it's the opponent's turn in online mode
+    if (typeof Net !== 'undefined' && Net.isOnline() && !Net.isMyTurn()) return;
+
     const s = Game.state;
     const key = `${hex.q},${hex.r}`;
 
@@ -2191,6 +2237,7 @@ const UI = (() => {
       if (uiState.highlights && uiState.highlights.has(key)) {
         const ok = Game.moveUnit(hex.q, hex.r);
         if (ok) {
+          netSend({ type: 'moveUnit', q: hex.q, r: hex.r });
           if (!Game.state.activationState) {
             resetUiState();
           } else {
@@ -2206,6 +2253,7 @@ const UI = (() => {
       if (uiState.attackTargets && uiState.attackTargets.has(key)) {
         const ok = Game.attackUnit(hex.q, hex.r);
         if (ok) {
+          netSend({ type: 'attackUnit', q: hex.q, r: hex.r });
           // Check for queued interactive effects (push/pull/move from abilities)
           if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
             enterEffectTargeting();
@@ -2235,6 +2283,7 @@ const UI = (() => {
         if (!s.activationState.moved && !s.activationState.attacked) {
           const selected = Game.selectUnit(unit);
           if (selected) {
+            netSend({ type: 'selectUnit', unitIndex: s.units.indexOf(unit) });
             resetUiState();
             showActivationHighlights();
           }
@@ -2261,6 +2310,7 @@ const UI = (() => {
     if (unit) {
       const selected = Game.selectUnit(unit);
       if (selected) {
+        netSend({ type: 'selectUnit', unitIndex: s.units.indexOf(unit) });
         resetUiState();
         showActivationHighlights();
       }
@@ -2357,6 +2407,145 @@ const UI = (() => {
     render();
     updateStatusBar();
     return true;
+  }
+
+  // ── Network action handler ───────────────────────────────────
+
+  function handleNetAction(data) {
+    // Internal events from lobby
+    if (data.type === '_start-local' || data.type === '_start-online') {
+      // Game already initialized — just ensure UI is showing
+      showPhase();
+      render();
+      return;
+    }
+
+    // Apply opponent's action to local game state
+    switch (data.type) {
+      // ── Faction / Roster ──
+      case 'selectFaction':
+        Game.selectFaction(data.player, data.faction);
+        break;
+      case 'unselectFaction':
+        Game.unselectFaction(data.player);
+        clearRosterAreas(data.player);
+        break;
+      case 'addToRoster': {
+        const faction = Game.state.players[data.player].faction;
+        const units = Units.catalog[faction] || [];
+        const u = units.find(u => u.name === data.unitName);
+        if (u) Game.addToRoster(data.player, u);
+        break;
+      }
+      case 'removeFromRoster':
+        Game.removeFromRoster(data.player, data.unitName);
+        break;
+      case 'removeFromRosterByIndex': {
+        const p = data.player;
+        rosterSlots[p] = [];
+        for (const k of Object.keys(rosterCardPositions)) {
+          if (k.startsWith(`p${p}_`)) delete rosterCardPositions[k];
+        }
+        Game.removeFromRosterByIndex(p, data.index);
+        break;
+      }
+      case 'confirmRoster':
+        Game.confirmRoster(data.player);
+        break;
+
+      // ── Terrain Deploy ──
+      case 'deployTerrain':
+        Game.deployTerrain(data.player, data.q, data.r, data.surface);
+        break;
+
+      // ── Unit Deploy ──
+      case 'deployUnit':
+        Game.deployUnit(data.player, data.index, data.q, data.r);
+        break;
+      case 'confirmDeploy':
+        Game.confirmDeploy(data.player);
+        break;
+
+      // ── Battle ──
+      case 'selectUnit':
+        Game.selectUnit(Game.state.units[data.unitIndex]);
+        resetUiState();
+        showActivationHighlights();
+        break;
+      case 'deselectUnit':
+        Game.deselectUnit();
+        resetUiState();
+        break;
+      case 'moveUnit':
+        Game.moveUnit(data.q, data.r);
+        if (!Game.state.activationState) {
+          resetUiState();
+        } else {
+          showActivationHighlights();
+        }
+        break;
+      case 'attackUnit':
+        Game.attackUnit(data.q, data.r);
+        if (!Game.state.activationState) {
+          resetUiState();
+        } else {
+          showActivationHighlights();
+        }
+        break;
+      case 'skipAction':
+        Game.skipAction(data.action);
+        break;
+      case 'endActivation':
+        Game.forceEndActivation();
+        resetUiState();
+        break;
+      case 'undoLastAction':
+        Game.undoLastAction();
+        resetUiState();
+        showActivationHighlights();
+        break;
+      case 'removeBurning':
+        Game.removeBurning();
+        if (!Game.state.activationState) {
+          resetUiState();
+        } else {
+          showActivationHighlights();
+        }
+        break;
+
+      // ── Round Steps ──
+      case 'advanceRoundStep':
+        Game.advanceRoundStep();
+        uiState.highlights = null;
+        break;
+      case 'resolveShiftRide':
+        Game.resolveShiftRide(data.index, data.rides);
+        break;
+      case 'skipConsumingPlacement':
+        Game.skipConsumingPlacement();
+        break;
+      case 'resolveConsumingPlacement':
+        Game.resolveConsumingPlacement(data.q, data.r);
+        if (Game.allConsumingPlaced()) {
+          uiState.highlights = null;
+        }
+        break;
+
+      // ── Rules sync (host → guest) ──
+      case 'sync-rules':
+        Object.assign(Game.state.rules, data.rules);
+        break;
+      case 'setRule':
+        Game.setRule(data.key, data.value);
+        break;
+
+      default:
+        console.warn('Unknown net action:', data.type);
+        return;
+    }
+
+    showPhase();
+    render();
   }
 
   // ── Public API ────────────────────────────────────────────────

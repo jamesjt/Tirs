@@ -661,6 +661,124 @@ canvas {
   border-radius: 3px;
 }
 
+/* ── Lobby overlay (online/local mode select) ───────────────── */
+
+#lobby-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.88);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 9999;
+}
+#lobby-overlay.hidden { display: none; }
+
+.lobby-panel {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  border: 2px solid #555;
+  border-radius: 16px;
+  padding: 36px 40px;
+  text-align: center;
+  color: #eee;
+  min-width: 340px;
+  max-width: 420px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+.lobby-panel h2 {
+  margin: 0 0 24px;
+  font-size: 22px;
+  color: #ffd700;
+  letter-spacing: 1px;
+}
+
+.lobby-section {
+  margin: 12px 0;
+}
+
+.btn-lobby {
+  padding: 10px 24px;
+  font-size: 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid #555;
+  background: #2a2a4a;
+  color: #eee;
+  transition: background 0.15s;
+}
+.btn-lobby:hover:not(:disabled) {
+  background: #3a3a6a;
+}
+.btn-lobby:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-local-play {
+  background: #2e6b3e;
+  border-color: #4a8;
+  font-size: 16px;
+  padding: 12px 32px;
+}
+.btn-local-play:hover {
+  background: #3a8050;
+}
+
+.lobby-divider {
+  display: flex; align-items: center;
+  margin: 20px 0;
+  color: #888;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.lobby-divider::before,
+.lobby-divider::after {
+  content: '';
+  flex: 1;
+  border-bottom: 1px solid #444;
+}
+.lobby-divider span {
+  padding: 0 12px;
+}
+
+.lobby-input {
+  padding: 8px 12px;
+  margin: 8px 0;
+  width: 200px;
+  border: 1px solid #555;
+  border-radius: 6px;
+  background: #111;
+  color: #eee;
+  font-size: 16px;
+  font-family: monospace;
+  text-align: center;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.room-code-label {
+  font-size: 11px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin: 12px 0 4px;
+}
+.room-code {
+  font-size: 28px;
+  font-weight: 700;
+  font-family: monospace;
+  color: #ffd700;
+  letter-spacing: 3px;
+  margin: 4px 0 8px;
+  user-select: all;
+}
+
+.lobby-status {
+  font-size: 13px;
+  color: #aaa;
+  margin: 8px 0 0;
+}
+
 /* ── Combat log ──────────────────────────────────────────────── */
 
 .combat-log {

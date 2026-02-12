@@ -93,13 +93,42 @@
   <div id="unit-card" class="unit-card hidden"></div>
   <div id="card-conditions" class="card-conditions hidden"></div>
 
+  <!-- Lobby overlay — online / local mode selection -->
+  <div id="lobby-overlay" class="hidden">
+    <div class="lobby-panel">
+      <h2>Tirs of Traea</h2>
+      <div class="lobby-section">
+        <button id="btn-local" class="btn btn-lobby btn-local-play">Play Locally</button>
+      </div>
+      <div class="lobby-divider"><span>or play online</span></div>
+      <div class="lobby-section">
+        <button id="btn-host" class="btn btn-lobby">Host Game</button>
+        <div id="host-info" class="hidden">
+          <p class="room-code-label">Room Code</p>
+          <p class="room-code" id="room-code"></p>
+          <p class="hint">Share this code with your opponent</p>
+          <p id="host-status" class="lobby-status">Waiting for opponent…</p>
+        </div>
+      </div>
+      <div class="lobby-section">
+        <input id="join-code" class="lobby-input" placeholder="Enter room code" />
+        <button id="btn-join" class="btn btn-lobby">Join Game</button>
+        <p id="join-status" class="lobby-status hidden"></p>
+      </div>
+    </div>
+  </div>
+
   <!-- PapaParse for CORS-safe Google Sheets CSV fetching -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
 
-  <!-- Load order matters: board first (no deps), then units, game, abilities, ui -->
+  <!-- PeerJS for peer-to-peer WebRTC connections -->
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+
+  <!-- Load order matters: board first (no deps), then units, game, net, abilities, ui -->
   <script src="board.js"></script>
   <script src="units.js"></script>
   <script src="game.js"></script>
+  <script src="net.js"></script>
   <script src="abilities.js"></script>
   <script src="ui.js"></script>
 </body>
