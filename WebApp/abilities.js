@@ -47,6 +47,7 @@ const Abilities = (() => {
     death:      'afterDeath',
     activation: 'afterSelect',
     action:     'playerAction',
+    movement:   'onMovement',
   };
 
   // Reverse map: trigger string -> ability type
@@ -119,6 +120,21 @@ const Abilities = (() => {
         }
         return result;
       }
+
+      // Movement occupant target types (used by dispatchMovement)
+      case 'enemyoccupant':
+        return ctx.occupant && ctx.unit && ctx.occupant.player !== ctx.unit.player
+          ? [ctx.occupant] : [];
+
+      case 'allyoccupant':
+        return ctx.occupant && ctx.unit && ctx.occupant.player === ctx.unit.player
+          ? [ctx.occupant] : [];
+
+      case 'unitoccupant':
+        return ctx.occupant ? [ctx.occupant] : [];
+
+      case 'terrainoccupant':
+        return [];  // future use
 
       default:
         console.warn(`[Abilities] Unknown target type: "${targetType}"`);
@@ -258,11 +274,13 @@ const Abilities = (() => {
         break;
 
       case 'damage': {
-        const dmg = value === 'unitDamage'
+        const rawDmg = value === 'unitDamage'
           ? Game.getEffective(ctx.unit, 'damage')
           : int(value);
         for (const t of targets) {
           if (!isUnit(t)) continue;
+          const arm = Game.getEffective(t, 'armor');
+          const dmg = Math.max(1, rawDmg - arm);
           Game.damageUnit(t, dmg, ctx.unit);
           const src = ctx.unit ? ctx.unit.name : 'Ability';
           const player = ctx.unit ? ctx.unit.player : 0;
@@ -381,6 +399,73 @@ const Abilities = (() => {
     return effectQueue.length > 0;
   }
 
+  // ── Movement Dispatch (on entering occupied hex) ──────────────
+
+  /** Apply a movement effect. Push/pull originate from the mover's hex (all directions valid). */
+  function applyMovementEffect(targets, effect, value, unit, refQ, refR) {
+    const lower = effect.toLowerCase();
+    if (lower === 'push') {
+      for (const t of targets) {
+        if (!isUnit(t)) continue;
+        // refQ/refR = mover's position (same hex as target) → distance 0 → all 6 directions valid
+        if (isQueuing) {
+          effectQueue.push({ type: 'push', unit: t, refQ, refR, remaining: int(value), noStay: true });
+        } else {
+          Game.pushUnit(t, refQ, refR, int(value));
+        }
+      }
+      return;
+    }
+    if (lower === 'pull') {
+      for (const t of targets) {
+        if (!isUnit(t)) continue;
+        if (isQueuing) {
+          effectQueue.push({ type: 'pull', unit: t, refQ, refR, remaining: int(value), noStay: true });
+        } else {
+          Game.pullUnit(t, refQ, refR, int(value));
+        }
+      }
+      return;
+    }
+    // All other effects: delegate to normal applyEffect
+    applyEffect(targets, effect, value, { unit });
+  }
+
+  /**
+   * Fire movement rules for entering an occupied hex.
+   * APPENDS to effectQueue (does NOT clear it) — safe to call per step.
+   */
+  function dispatchMovement(unit, occupant) {
+    if (!unit || !unit.abilities) return;
+    if (Game.hasCondition(unit, 'silenced')) return;
+
+    isQueuing = true;
+    const ctx = { unit, occupant };
+    // Push/pull reference = unit's current position (same hex as occupant).
+    // Distance 0 means all 6 neighbor directions are valid push destinations.
+    const refQ = unit.q, refR = unit.r;
+
+    for (const ab of unit.abilities) {
+      const relevant = ab.ruleIds.filter(id => atomicRules[id]?.type === 'movement');
+      if (relevant.length === 0) continue;
+      if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
+
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule || rule.type !== 'movement') continue;
+        if (rule.condition && !evaluateCondition(rule.condition, ctx)) continue;
+
+        const targets = resolveTargets(rule.target, ctx, rule);
+        for (const eff of rule.effects) {
+          if (eff.effect) applyMovementEffect(targets, eff.effect, eff.value, unit, refQ, refR);
+        }
+      }
+
+      if (ab.oncePerGame) unit.usedAbilities.add(ab.name);
+    }
+    isQueuing = false;
+  }
+
   // ── Passive Modifier ─────────────────────────────────────────
 
   /** Get the total passive stat modifier for a unit. */
@@ -475,11 +560,19 @@ const Abilities = (() => {
       const rule = atomicRules[ruleId];
       if (rule && rule.type === 'action') {
         const parsed = parseRangeColumn(rule.range);
+        // Extract raw damage from the action rule's effects
+        let rawDamage = 0;
+        for (const eff of rule.effects) {
+          if (eff.effect && eff.effect.toLowerCase() === 'damage') {
+            rawDamage = eff.value === 'unitDamage' ? 0 : int(eff.value);
+          }
+        }
         return {
           range: parsed.range || 6,
           atkType: parsed.atkType,
           los: rule.los !== 'N',
           cost: (rule.action || '').toLowerCase() || null,
+          rawDamage,
         };
       }
     }
@@ -529,8 +622,8 @@ const Abilities = (() => {
     const currentDist = Board.hexDistance(eff.refQ, eff.refR, unit.q, unit.r);
     const valid = new Set();
 
-    // Always allow staying in place (decline the push/pull/move)
-    valid.add(`${unit.q},${unit.r}`);
+    // Allow staying in place (decline the push/pull/move) unless noStay
+    if (!eff.noStay) valid.add(`${unit.q},${unit.r}`);
 
     for (const n of neighbors) {
       if (!Board.getHex(n.q, n.r)) continue;
@@ -625,6 +718,7 @@ const Abilities = (() => {
     setAbilityDefs,
     bindUnit,
     dispatch,
+    dispatchMovement,
     getPassiveMod,
     hasFlag,
     hasDeployRule,

@@ -660,6 +660,8 @@ const Board = (() => {
   // ── Path preview rendering ──────────────────────────────────────
 
   function drawPathPreview(state) {
+    // Draw on overlay canvas (above unit tokens) so arrows show over enemy units
+    const oc = overlayCtx || ctx;
     const unit = state.selectedUnit;
     const path = state.pathPreview;
     const wps = state.waypoints || [];
@@ -675,24 +677,24 @@ const Board = (() => {
     }
     if (points.length < 2) return;
 
-    ctx.save();
+    oc.save();
 
     // ── Dashed line connecting hex centres ──
-    ctx.lineWidth = s * 0.12;
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.setLineDash([s * 0.3, s * 0.15]);
+    oc.lineWidth = s * 0.12;
+    oc.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+    oc.lineCap = 'round';
+    oc.lineJoin = 'round';
+    oc.setLineDash([s * 0.3, s * 0.15]);
 
-    ctx.beginPath();
+    oc.beginPath();
     const p0 = px(points[0]);
-    ctx.moveTo(p0.x, p0.y);
+    oc.moveTo(p0.x, p0.y);
     for (let i = 1; i < points.length; i++) {
       const p = px(points[i]);
-      ctx.lineTo(p.x, p.y);
+      oc.lineTo(p.x, p.y);
     }
-    ctx.stroke();
-    ctx.setLineDash([]);
+    oc.stroke();
+    oc.setLineDash([]);
 
     // ── Directional arrows at each path hex ──
     for (let i = 1; i < points.length; i++) {
@@ -701,22 +703,22 @@ const Board = (() => {
       const angle = Math.atan2(curr.y - prev.y, curr.x - prev.x);
       const arrowSize = s * 0.22;
 
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
-      ctx.beginPath();
-      ctx.moveTo(
+      oc.fillStyle = 'rgba(0, 0, 0, 0.85)';
+      oc.beginPath();
+      oc.moveTo(
         curr.x + arrowSize * Math.cos(angle),
         curr.y + arrowSize * Math.sin(angle)
       );
-      ctx.lineTo(
+      oc.lineTo(
         curr.x + arrowSize * Math.cos(angle + 2.5),
         curr.y + arrowSize * Math.sin(angle + 2.5)
       );
-      ctx.lineTo(
+      oc.lineTo(
         curr.x + arrowSize * Math.cos(angle - 2.5),
         curr.y + arrowSize * Math.sin(angle - 2.5)
       );
-      ctx.closePath();
-      ctx.fill();
+      oc.closePath();
+      oc.fill();
     }
 
     // ── Waypoint markers (orange diamonds) ──
@@ -728,17 +730,17 @@ const Board = (() => {
           if (!h) continue;
           const { x, y } = px(h);
           const d = s * 0.28;
-          ctx.fillStyle = 'rgba(255, 165, 0, 0.9)';
-          ctx.strokeStyle = '#fff';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(x, y - d);
-          ctx.lineTo(x + d, y);
-          ctx.lineTo(x, y + d);
-          ctx.lineTo(x - d, y);
-          ctx.closePath();
-          ctx.fill();
-          ctx.stroke();
+          oc.fillStyle = 'rgba(255, 165, 0, 0.9)';
+          oc.strokeStyle = '#fff';
+          oc.lineWidth = 2;
+          oc.beginPath();
+          oc.moveTo(x, y - d);
+          oc.lineTo(x + d, y);
+          oc.lineTo(x, y + d);
+          oc.lineTo(x - d, y);
+          oc.closePath();
+          oc.fill();
+          oc.stroke();
         }
       }
     }
@@ -758,11 +760,11 @@ const Board = (() => {
           const h = getHex(p.q, p.r);
           if (!h) continue;
           const { x, y } = px(h);
-          ctx.fillStyle = 'rgba(255, 50, 50, 0.9)';
-          ctx.font = `bold ${s * 0.4}px sans-serif`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText('\u26A0', x + s * 0.45, y - s * 0.45);
+          oc.fillStyle = 'rgba(255, 50, 50, 0.9)';
+          oc.font = `bold ${s * 0.4}px sans-serif`;
+          oc.textAlign = 'center';
+          oc.textBaseline = 'middle';
+          oc.fillText('\u26A0', x + s * 0.45, y - s * 0.45);
         }
       }
     }
@@ -772,18 +774,18 @@ const Board = (() => {
       const dest = points[points.length - 1];
       const { x, y } = px(dest);
       const badgeR = s * 0.3;
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
-      ctx.beginPath();
-      ctx.arc(x, y - s * 0.75, badgeR, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#fff';
-      ctx.font = `bold ${s * 0.3}px sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(state.pathCost, x, y - s * 0.75);
+      oc.fillStyle = 'rgba(0, 0, 0, 0.75)';
+      oc.beginPath();
+      oc.arc(x, y - s * 0.75, badgeR, 0, Math.PI * 2);
+      oc.fill();
+      oc.fillStyle = '#fff';
+      oc.font = `bold ${s * 0.3}px sans-serif`;
+      oc.textAlign = 'center';
+      oc.textBaseline = 'middle';
+      oc.fillText(state.pathCost, x, y - s * 0.75);
     }
 
-    ctx.restore();
+    oc.restore();
   }
 
   // ── Public API ──────────────────────────────────────────────────

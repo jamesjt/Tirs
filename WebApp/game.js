@@ -393,6 +393,7 @@ const Game = (() => {
     if (!act) return null;
 
     const isMobile = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'mobile');
+    const canMoveIntoEnemies = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'moveintoenemies');
 
     if (isMobile) {
       if (act.unit.move - act.moveDistance <= 0) return null;
@@ -407,7 +408,7 @@ const Game = (() => {
     const blocked = new Set();
     for (const other of state.units) {
       if (other.health <= 0) continue;
-      if (other.player !== u.player) {
+      if (other.player !== u.player && !canMoveIntoEnemies) {
         blocked.add(`${other.q},${other.r}`);
       }
     }
@@ -415,7 +416,7 @@ const Game = (() => {
       const [tq, tr] = key.split(',').map(Number);
       if (hasTerrainRule(tq, tr, 'impassable')) blocked.add(key);
     }
-    // Also block hexes occupied by allies (can move through but not stop)
+    // Hexes occupied by allies: can move through but not stop
     const allyOccupied = new Set();
     for (const other of state.units) {
       if (other === u || other.health <= 0) continue;
@@ -449,11 +450,12 @@ const Game = (() => {
     const act = state.activationState;
     if (!act) return null;
     const u = act.unit;
+    const canMoveIntoEnemies = typeof Abilities !== 'undefined' && Abilities.hasFlag(u, 'moveintoenemies');
 
     const blocked = new Set();
     for (const other of state.units) {
       if (other.health <= 0) continue;
-      if (other.player !== u.player) blocked.add(`${other.q},${other.r}`);
+      if (other.player !== u.player && !canMoveIntoEnemies) blocked.add(`${other.q},${other.r}`);
     }
     for (const [key] of state.terrain) {
       const [tq, tr] = key.split(',').map(Number);
@@ -580,12 +582,26 @@ const Game = (() => {
     // Snapshot for undo (terrain effects may change health/conditions during traversal)
     const prevHealth = act.unit.health;
     const prevConditions = act.unit.conditions.map(c => ({ ...c }));
+    // Snapshot other unit positions for movement-trigger push undo
+    const otherUnitPositions = state.units
+      .filter(u => u !== act.unit && u.health > 0)
+      .map(u => ({ unit: u, q: u.q, r: u.r }));
 
     // Reconstruct shortest path and traverse each hex
+    if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
     const path = Board.getPath(fromQ, fromR, toQ, toR, act._parentMap);
     for (const step of path) {
       act.unit.q = step.q;
       act.unit.r = step.r;
+      // Fire movement triggers if hex is occupied by another unit
+      if (typeof Abilities !== 'undefined') {
+        const occupant = state.units.find(
+          u => u !== act.unit && u.q === step.q && u.r === step.r && u.health > 0
+        );
+        if (occupant) {
+          Abilities.dispatchMovement(act.unit, occupant);
+        }
+      }
       onEnterHex(act.unit, step.q, step.r);
       // Stop if consumed or killed by terrain
       if (act.unit.q === -99 || act.unit.health <= 0) break;
@@ -597,7 +613,7 @@ const Game = (() => {
     // Update objective control
     updateObjectiveControl(act.unit);
 
-    state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ: act.unit.q, toR: act.unit.r, prevObjControl, prevMoveDistance, prevHealth, prevConditions });
+    state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ: act.unit.q, toR: act.unit.r, prevObjControl, prevMoveDistance, prevHealth, prevConditions, otherUnitPositions });
     log(`${act.unit.name} moved (${fromQ},${fromR}) \u2192 (${act.unit.q},${act.unit.r})`, act.unit.player);
 
     // If both actions used, end activation (unless confirmEndTurn or pending effects)
@@ -910,6 +926,13 @@ const Game = (() => {
       // Restore health and conditions changed by terrain traversal
       if (last.prevHealth !== undefined) last.unit.health = last.prevHealth;
       if (last.prevConditions !== undefined) last.unit.conditions = last.prevConditions;
+      // Restore other units pushed by movement triggers (Impactful, etc.)
+      if (last.otherUnitPositions) {
+        for (const snap of last.otherUnitPositions) {
+          snap.unit.q = snap.q;
+          snap.unit.r = snap.r;
+        }
+      }
       // Undo consuming terrain (remove from consumedUnits if applicable)
       const cIdx = state.consumedUnits.findIndex(e => e.unit === last.unit);
       if (cIdx !== -1) state.consumedUnits.splice(cIdx, 1);

@@ -18,7 +18,15 @@
       "Bash(fuser:*)",
       "Bash(awk:*)",
       "Bash(node -e:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(git -C \"D:\\\\Projects\\\\Traea\\\\Tirs\" status)",
+      "Bash(git -C \"D:\\\\Projects\\\\Traea\\\\Tirs\" diff --stat)",
+      "Bash(git -C \"D:\\\\Projects\\\\Traea\\\\Tirs\" add WebApp/abilities.js WebApp/game.js WebApp/ui.js WebApp/units.js)",
+      "Bash(git -C \"D:\\\\Projects\\\\Traea\\\\Tirs\" commit -m \"$\\(cat <<''EOF''\nAdd action ability system with targeting, cost tracking, and undo\n\nImplement action-type abilities \\(Thump pattern\\) with D/L/P targeting\nvalidation, move/attack cost system, hit rules firing after actions,\nunitsAroundTarget splash resolution, health snapshot undo, and battle\npanel integration with cost labels and availability checks.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C \"D:\\\\Projects\\\\Traea\\\\Tirs\" push origin main)",
+      "Bash(findstr:*)",
+      "Bash(echo:*)",
+      "Bash(powershell:*)"
     ]
   }
 }

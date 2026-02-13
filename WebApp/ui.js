@@ -156,17 +156,24 @@ const UI = (() => {
   function enterAbilityTargeting(abilityName, unit, targeting, actionCost) {
     const valid = new Set();
     const overrides = { atkType: targeting.atkType, range: targeting.range };
+    const atkTargets = new Map();
     for (const enemy of Game.state.units) {
       if (enemy.health <= 0 || enemy.player === unit.player) continue;
       if (Board.hexDistance(unit.q, unit.r, enemy.q, enemy.r) > targeting.range) continue;
       if (!Game.canAttack(unit, enemy, overrides)) continue;
-      valid.add(`${enemy.q},${enemy.r}`);
+      const key = `${enemy.q},${enemy.r}`;
+      valid.add(key);
+      // Compute damage after armor for reticle display
+      const rawDmg = targeting.rawDamage || 0;
+      const arm = Game.getEffective(enemy, 'armor');
+      const dmg = rawDmg > 0 ? Math.max(1, rawDmg - arm) : null;
+      atkTargets.set(key, { damage: dmg });
     }
     abilityTargeting = { abilityName, unit, validTargets: valid, actionCost: actionCost || null };
-    // Show purple highlights for ability targeting
-    uiState.highlights = new Map([...valid].map(k => [k, 1]));
-    uiState.highlightColor = 'rgba(180, 80, 255, 0.35)';
-    uiState.attackTargets = null;
+    // Show red attack reticles (same as normal attacks)
+    uiState.highlights = null;
+    uiState.highlightColor = null;
+    uiState.attackTargets = atkTargets;
     render();
   }
 
@@ -499,6 +506,19 @@ const UI = (() => {
       hideUnitCard();
     });
     el.addEventListener('mousemove', e => {
+      // Path preview when hovering over this unit's hex (for moveIntoEnemies paths)
+      if (Game.state.phase === Game.PHASE.BATTLE && uiState.highlights) {
+        const hexKey = `${unit.q},${unit.r}`;
+        const prevKey = uiState.hoveredHex
+          ? `${uiState.hoveredHex.q},${uiState.hoveredHex.r}` : null;
+        if (hexKey !== prevKey) {
+          if (uiState.highlights.has(hexKey)) {
+            uiState.hoveredHex = { q: unit.q, r: unit.r };
+            recomputePathPreview(unit.q, unit.r);
+            render();
+          }
+        }
+      }
       if (e.ctrlKey && hoveredTokenUnit === unit) {
         const card = document.getElementById('unit-card');
         if (!card.classList.contains('enlarged')) {
@@ -519,8 +539,11 @@ const UI = (() => {
     // Wheel → zoom pass-through
     el.addEventListener('wheel', onWheel, { passive: false });
 
-    // Suppress right-click context menu
-    el.addEventListener('contextmenu', e => e.preventDefault());
+    // Forward right-click to canvas handler (waypoint placement), suppress browser menu
+    el.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      onContextMenu(e);
+    });
 
     return el;
   }
@@ -2620,6 +2643,12 @@ const UI = (() => {
             moveAnimating = true;
             animateTokenAlongPath(animUnit, animPath, speed, () => {
               moveAnimating = false;
+              if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+                enterEffectTargeting();
+                showPhase();
+                render();
+                return;
+              }
               if (!Game.state.activationState) {
                 resetUiState();
               } else {
@@ -2631,6 +2660,12 @@ const UI = (() => {
             return;  // Don't render yet — animation callback will
           }
           // speed === 0: instant (existing behavior)
+          if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+            enterEffectTargeting();
+            showPhase();
+            render();
+            return;
+          }
           if (!Game.state.activationState) {
             resetUiState();
           } else {
@@ -2906,6 +2941,12 @@ const UI = (() => {
           moveAnimating = true;
           animateTokenAlongPath(netAnimUnit, netAnimPath, netSpeed, () => {
             moveAnimating = false;
+            if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+              enterEffectTargeting();
+              showPhase();
+              render();
+              return;
+            }
             if (!Game.state.activationState) {
               resetUiState();
             } else {
@@ -2916,7 +2957,9 @@ const UI = (() => {
           });
           skipRender = true;  // prevent the default render at end of handleNetAction
         } else {
-          if (!Game.state.activationState) {
+          if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+            enterEffectTargeting();
+          } else if (!Game.state.activationState) {
             resetUiState();
           } else {
             showActivationHighlights();
