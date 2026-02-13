@@ -98,6 +98,7 @@ const UI = (() => {
     disarmed:     '\u2297',  // ⊗ circled X
     taunted:      '\u25CE',  // ◎ bullseye
     break:       '\u2B07',  // ⬇ armor stripped
+    arcfire:      '\uD83D\uDD25',  // 🔥 fire
   };
 
   /** Group a unit's conditions array by id, returning [{id, count}] */
@@ -150,6 +151,8 @@ const UI = (() => {
     effectTargeting = null;
     tossTargeting = null;
     toterTargeting = null;
+    hotSuitTargeting = false;
+    delayedTargeting = false;
     hideLevelChoiceOverlay();
     levelTargeting = null;
     if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
@@ -198,6 +201,33 @@ const UI = (() => {
   let levelTargeting = null;
   // { phase: 1|2, unit, terrainHexes: [{q,r,surface}], data: object,
   //   selectedHex: {q,r,surface}|null }
+
+  // ── Delayed Targeting Mode (space-targeting attack for delayed effect) ──
+  let delayedTargeting = false;
+
+  function enterDelayedTargeting() {
+    const act = Game.state.activationState;
+    if (!act || act.attacked) return;
+    delayedTargeting = true;
+    const targets = Game.getDelayedTargetHexes();
+    uiState.highlights = null;
+    uiState.highlightColor = null;
+    uiState.attackTargets = targets;
+    uiState.pathPreview = null;
+    uiState.pathCost = null;
+    showPhase();
+    render();
+  }
+
+  function cancelDelayedTargeting() {
+    delayedTargeting = false;
+    showActivationHighlights();
+    showPhase();
+    render();
+  }
+
+  // ── Hot Suit Targeting Mode (post-attack: redirect burning damage) ──
+  let hotSuitTargeting = false;
 
   // ── Toter Targeting Mode (post-move: pick ally, then destination) ──
   let toterTargeting = null;
@@ -284,6 +314,41 @@ const UI = (() => {
       dests.set(`${n.q},${n.r}`, 1);
     }
     return dests;
+  }
+
+  /** Check for Hot Suit burning redirect after attack; enter targeting if applicable. */
+  function checkBurningRedirect() {
+    const act = Game.state.activationState;
+    if (!act || !act.pendingBurningRedirect) return false;
+    const targets = Game.getHotSuitTargets();
+    if (!targets || targets.size === 0) {
+      // No adjacent units — take damage normally
+      Game.skipBurningRedirect();
+      return false;
+    }
+    hotSuitTargeting = true;
+    uiState.highlights = new Map([...targets.keys()].map(k => [k, 1]));
+    uiState.highlightColor = 'rgba(255, 100, 0, 0.4)';
+    uiState.attackTargets = null;
+    showPhase();
+    render();
+    return true;
+  }
+
+  /** Finish post-attack flow after burning redirect resolved. */
+  function finishPostAttack() {
+    hotSuitTargeting = false;
+    const act = Game.state.activationState;
+    if (!act) {
+      resetUiState();
+    } else if (act.moved && act.attacked && !Game.state.rules.confirmEndTurn) {
+      Game.endActivation();
+      resetUiState();
+    } else {
+      showActivationHighlights();
+    }
+    showPhase();
+    render();
   }
 
   /** Continue normal post-move flow (effects, end activation, etc.). */
@@ -376,6 +441,9 @@ const UI = (() => {
   function finishEffectQueue() {
     effectTargeting = null;
     if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
+
+    // After effects resolve, check for burning redirect (Hot Suit)
+    if (checkBurningRedirect()) return;
 
     const act = Game.state.activationState;
     if (!act) {
@@ -650,6 +718,7 @@ const UI = (() => {
       else if (phase === Game.PHASE.UNIT_DEPLOY) handleDeployClick(hex);
       else if (phase === Game.PHASE.BATTLE) handleBattleClick(hex);
       else if (phase === Game.PHASE.ROUND_END) handleRoundEndClick(hex);
+      else if (phase === Game.PHASE.ROUND_START) handleRoundStartClick(hex);
     });
 
     // Mousedown → start panning so left-drag through tokens still pans
@@ -758,6 +827,9 @@ const UI = (() => {
         } else {
           text = `Place ${toterTargeting.selectedAlly.name} adjacent to ${toterTargeting.unit.name} (ESC to go back)`;
         }
+      // Hot Suit targeting messages
+      } else if (hotSuitTargeting) {
+        text = 'Redirect burning damage to adjacent unit (ESC to take it)';
       // Toss targeting messages
       } else if (tossTargeting) {
         if (tossTargeting.phase === 1) {
@@ -767,6 +839,9 @@ const UI = (() => {
             ? tossTargeting.tossSource.unit.name : tossTargeting.tossSource.surface;
           text = `Choose where to toss ${name} (ESC to go back)`;
         }
+      // Delayed targeting mode
+      } else if (delayedTargeting) {
+        text = 'Target a space for delayed attack (ESC to cancel)';
       } else {
         // HUD handles scores/turn during battle — status bar just shows activation hint
         const act = s.activationState;
@@ -1269,6 +1344,27 @@ const UI = (() => {
       if (Game.allConsumingPlaced()) {
         html += `<button class="btn btn-confirm" data-action="advance-round-step">Continue</button>`;
       }
+    } else if (step.id === 'arcfire-resolve') {
+      const { bearers, currentIndex } = step.data;
+      for (let i = 0; i < currentIndex; i++) {
+        html += `<p class="step-done">${bearers[i].unit.name}: Resolved</p>`;
+      }
+      if (currentIndex < bearers.length) {
+        const entry = bearers[currentIndex];
+        html += `<p>Arc Fire on <strong>${entry.unit.name}</strong> (P${entry.unit.player})</p>`;
+        html += `<p class="step-pending">Choose a unit within 2 spaces to receive the token.</p>`;
+        const valid = Game.getArcFireTargets();
+        if (valid && valid.size > 0) {
+          uiState.highlights = new Map([...valid.keys()].map(k => [k, 1]));
+          uiState.highlightColor = 'rgba(255, 100, 0, 0.4)';
+        } else {
+          html += `<p>No units in range — token removed.</p>`;
+          html += `<button class="btn btn-back" data-action="skip-arcfire">Skip</button>`;
+        }
+      }
+      if (Game.allArcFireResolved()) {
+        html += `<button class="btn btn-confirm" data-action="advance-round-step">Continue</button>`;
+      }
     } else {
       // Generic non-auto step
       html += `<button class="btn btn-confirm" data-action="advance-round-step">Continue</button>`;
@@ -1433,7 +1529,13 @@ const UI = (() => {
       }
 
       html += `<span class="done-label">${act.moved ? 'Moved' : 'Click yellow hex to move'}</span>`;
-      html += `<span class="done-label">${act.attacked ? 'Attacked' : 'Click red target to attack'}</span>`;
+      const delayedHint = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'delayedattack');
+      html += `<span class="done-label">${act.attacked ? 'Attacked' : (delayedHint ? 'Place delayed attack' : 'Click red target to attack')}</span>`;
+
+      // Delayed Attack targeting button
+      if (delayedHint && !act.attacked && !act.moved && !Game.hasCondition(act.unit, 'disarmed')) {
+        html += `<button class="btn btn-action" data-action="delayed-target">Target Space (uses attack)</button>`;
+      }
 
       // Quench Burning button
       if (!act.attacked && Game.hasCondition(act.unit, 'burning')) {
@@ -2188,12 +2290,29 @@ const UI = (() => {
             e.preventDefault();
             return;
           }
+          if (checkBurningRedirect()) { e.preventDefault(); return; }
           if (!Game.state.activationState) { resetUiState(); }
           else { showActivationHighlights(); }
         }
       }
       showPhase();
       render();
+      e.preventDefault();
+      return;
+    }
+
+    // ESC: cancel delayed targeting mode — return to normal activation
+    if (key === 'escape' && delayedTargeting) {
+      cancelDelayedTargeting();
+      e.preventDefault();
+      return;
+    }
+
+    // ESC: hot suit — take burning damage yourself instead of redirecting
+    if (key === 'escape' && hotSuitTargeting) {
+      Game.skipBurningRedirect();
+      netSend({ type: 'skipBurningRedirect' });
+      finishPostAttack();
       e.preventDefault();
       return;
     }
@@ -2540,6 +2659,8 @@ const UI = (() => {
       handleBattleClick(hex);
     } else if (phase === Game.PHASE.ROUND_END) {
       handleRoundEndClick(hex);
+    } else if (phase === Game.PHASE.ROUND_START) {
+      handleRoundStartClick(hex);
     }
   }
 
@@ -2550,8 +2671,8 @@ const UI = (() => {
     const action = btn.dataset.action;
 
     // Block battle-phase actions when it's opponent's turn online
-    const battleActions = ['undo-action','remove-burning','end-activation','skip-consuming',
-      'shift-ride','shift-stay','advance-round-step','use-ability'];
+    const battleActions = ['undo-action','remove-burning','end-activation','skip-consuming','skip-arcfire',
+      'shift-ride','shift-stay','advance-round-step','use-ability','delayed-target'];
     if (typeof Net !== 'undefined' && Net.isOnline() && !Net.isMyTurn() &&
         battleActions.includes(action)) {
       return;
@@ -2678,6 +2799,10 @@ const UI = (() => {
       }
     }
 
+    else if (action === 'delayed-target') {
+      enterDelayedTargeting();
+    }
+
     else if (action === 'use-ability') {
       const abilityName = btn.dataset.ability;
       const actionCost = btn.dataset.cost || null;
@@ -2712,6 +2837,13 @@ const UI = (() => {
     else if (action === 'skip-consuming') {
       Game.skipConsumingPlacement();
       netSend({ type: 'skipConsumingPlacement' });
+      showPhase();
+      render();
+    }
+
+    else if (action === 'skip-arcfire') {
+      Game.skipArcFire();
+      netSend({ type: 'skipArcFire' });
       showPhase();
       render();
     }
@@ -2764,6 +2896,29 @@ const UI = (() => {
   }
 
   // ── Phase-specific click handlers ─────────────────────────────
+
+  function handleRoundStartClick(hex) {
+    const s = Game.state;
+    const step = s.roundStepQueue[s.roundStepIndex];
+    if (!step) return;
+
+    if (step.id === 'arcfire-resolve') {
+      const key = `${hex.q},${hex.r}`;
+      if (uiState.highlights && uiState.highlights.has(key)) {
+        const targets = Game.getArcFireTargets();
+        const targetUnit = targets ? targets.get(key) : null;
+        if (targetUnit) {
+          Game.resolveArcFire(targetUnit);
+          netSend({ type: 'resolveArcFire', q: hex.q, r: hex.r });
+          if (Game.allArcFireResolved()) {
+            uiState.highlights = null;
+          }
+          showPhase();
+          render();
+        }
+      }
+    }
+  }
 
   function handleRoundEndClick(hex) {
     const s = Game.state;
@@ -2821,7 +2976,14 @@ const UI = (() => {
     if (!act) return;
     uiState.selectedUnit = act.unit;
     const reachable = Game.getMoveRange();    // null if already moved
-    const targets = Game.getAttackTargets();  // null if already attacked
+    let targets = Game.getAttackTargets();  // null if already attacked
+    // Delayed Effect: target hexes instead of units
+    const isDelayed = !act.attacked && typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'delayedattack');
+    if (isDelayed) {
+      // After move: show reticles automatically (no ambiguity)
+      // Before move: don't show reticles (use button to enter targeting mode)
+      targets = act.moved ? Game.getDelayedTargetHexes() : null;
+    }
     uiState.highlights = reachable;
     uiState.highlightColor = reachable ? 'rgba(255,255,0,0.35)' : null;
     uiState.highlightStyle = reachable ? 'dots' : null;
@@ -2912,6 +3074,17 @@ const UI = (() => {
       return;
     }
 
+    // Hot Suit targeting mode (redirect burning damage to adjacent unit)
+    if (hotSuitTargeting) {
+      const key = `${hex.q},${hex.r}`;
+      if (uiState.highlights && uiState.highlights.has(key)) {
+        Game.resolveBurningRedirect(hex.q, hex.r);
+        netSend({ type: 'resolveBurningRedirect', q: hex.q, r: hex.r });
+        finishPostAttack();
+      }
+      return;
+    }
+
     // Toter targeting mode (phase 1: select ally, phase 2: select destination)
     if (toterTargeting && toterTargeting.phase === 1) {
       const ally = toterTargeting.allies.find(u => u.q === hex.q && u.r === hex.r);
@@ -2986,6 +3159,7 @@ const UI = (() => {
               enterEffectTargeting();
               return;
             }
+            if (checkBurningRedirect()) return;
             if (!Game.state.activationState) { resetUiState(); }
             else { showActivationHighlights(); }
           }
@@ -3003,6 +3177,37 @@ const UI = (() => {
         enterEffectTargeting(); // next step or finish
       }
       // Ignore clicks on invalid hexes
+      return;
+    }
+
+    // Delayed targeting mode: click attack target to place, else cancel
+    if (delayedTargeting) {
+      if (uiState.attackTargets && uiState.attackTargets.has(key)) {
+        delayedTargeting = false;
+        const ok = Game.attackUnit(hex.q, hex.r);
+        if (ok) {
+          netSend({ type: 'attackUnit', q: hex.q, r: hex.r });
+          if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+            enterEffectTargeting();
+            return;
+          }
+          if (checkBurningRedirect()) return;
+          if (!Game.state.activationState) {
+            resetUiState();
+          } else {
+            uiState.attackTargets = null;
+            const reachable = Game.getMoveRange();
+            uiState.highlights = reachable;
+            uiState.highlightColor = reachable ? 'rgba(255,255,0,0.35)' : null;
+            uiState.selectedUnit = Game.state.activationState.unit;
+          }
+          showPhase();
+          render();
+          return;
+        }
+      }
+      // Clicking non-target cancels delayed targeting
+      cancelDelayedTargeting();
       return;
     }
 
@@ -3062,8 +3267,10 @@ const UI = (() => {
       // Try attack (click a red attack-target)
       if (uiState.attackTargets && uiState.attackTargets.has(key)) {
         // Check for onAttack abilities (Toss) — enter toss targeting before dealing damage
+        // Skip for Delayed Effect (targets spaces, no pre-attack interactions)
         const act = s.activationState;
-        if (typeof Abilities !== 'undefined' && Abilities.hasOnAttackRules(act.unit)) {
+        const isDelayedAtk = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'delayedattack');
+        if (!isDelayedAtk && typeof Abilities !== 'undefined' && Abilities.hasOnAttackRules(act.unit)) {
           const sources = Abilities.getTossSourceHexes(act.unit);
           if (sources.size > 0) {
             const bonusDamage = Abilities.getOnAttackBonusDamage(act.unit);
@@ -3089,6 +3296,7 @@ const UI = (() => {
             enterEffectTargeting();
             return;
           }
+          if (checkBurningRedirect()) return;
 
           if (!Game.state.activationState) {
             resetUiState();
@@ -3115,7 +3323,11 @@ const UI = (() => {
           if (selected) {
             netSend({ type: 'selectUnit', unitIndex: s.units.indexOf(unit) });
             resetUiState();
-            showActivationHighlights();
+            if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+              enterEffectTargeting();
+            } else {
+              showActivationHighlights();
+            }
           }
           showPhase();
           render();
@@ -3142,7 +3354,11 @@ const UI = (() => {
       if (selected) {
         netSend({ type: 'selectUnit', unitIndex: s.units.indexOf(unit) });
         resetUiState();
-        showActivationHighlights();
+        if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+          enterEffectTargeting();
+        } else {
+          showActivationHighlights();
+        }
       }
       showPhase();
       render();
@@ -3164,6 +3380,7 @@ const UI = (() => {
     { id: 'disarmed',     duration: 'endOfActivation' },
     { id: 'taunted',      duration: 'endOfActivation' },
     { id: 'break',       duration: 'permanent' },
+    { id: 'arcfire',      duration: 'permanent' },
   ];
 
   let debugSelectedCondition = null;
@@ -3369,7 +3586,11 @@ const UI = (() => {
       case 'selectUnit':
         Game.selectUnit(Game.state.units[data.unitIndex]);
         resetUiState();
-        showActivationHighlights();
+        if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+          enterEffectTargeting();
+        } else {
+          showActivationHighlights();
+        }
         break;
       case 'deselectUnit':
         Game.deselectUnit();
@@ -3512,6 +3733,28 @@ const UI = (() => {
       case 'skipConsumingPlacement':
         Game.skipConsumingPlacement();
         break;
+      case 'resolveArcFire': {
+        const targets = Game.getArcFireTargets();
+        if (targets) {
+          const target = targets.get(`${data.q},${data.r}`);
+          if (target) Game.resolveArcFire(target);
+        }
+        if (Game.allArcFireResolved()) uiState.highlights = null;
+        showPhase(); render(); break;
+      }
+      case 'skipArcFire':
+        Game.skipArcFire();
+        showPhase(); render(); break;
+      case 'resolveBurningRedirect':
+        Game.resolveBurningRedirect(data.q, data.r);
+        if (!Game.state.activationState) { resetUiState(); }
+        else { showActivationHighlights(); }
+        showPhase(); render(); break;
+      case 'skipBurningRedirect':
+        Game.skipBurningRedirect();
+        if (!Game.state.activationState) { resetUiState(); }
+        else { showActivationHighlights(); }
+        showPhase(); render(); break;
       case 'resolveConsumingPlacement':
         Game.resolveConsumingPlacement(data.q, data.r);
         if (Game.allConsumingPlaced()) {

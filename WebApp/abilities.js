@@ -38,6 +38,7 @@ const Abilities = (() => {
     strengthened: 'untilAttack',
     weakness:     'endOfActivation',
     break:       'permanent',
+    arcfire:      'permanent',
   };
 
   // ── Trigger Type Mapping ─────────────────────────────────────
@@ -234,7 +235,9 @@ const Abilities = (() => {
     if (CONDITION_DEFAULTS[lower]) {
       for (const t of targets) {
         if (!isUnit(t)) continue;
-        Game.addCondition(t, lower, CONDITION_DEFAULTS[lower]);
+        // Burning doesn't stack — skip if already burning
+        if (lower === 'burning' && t.conditions.some(c => c.id === 'burning')) continue;
+        Game.addCondition(t, lower, CONDITION_DEFAULTS[lower], ctx.unit ? ctx.unit.player : null);
         const src = ctx.unit ? ctx.unit.name : 'Effect';
         const player = ctx.unit ? ctx.unit.player : 0;
         if (ctx.unit && ctx.unit === t) {

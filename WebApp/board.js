@@ -1184,6 +1184,46 @@ const Board = (() => {
       }
     }
 
+    // 7b. Delayed effect markers — persistent crosshairs on target hexes
+    if (state.delayedEffects && state.delayedEffects.length > 0 && overlayCtx) {
+      const oc = overlayCtx;
+      const s = sz();
+      for (const de of state.delayedEffects) {
+        if (de.unit.health <= 0) continue;
+        const hex = getHex(de.targetQ, de.targetR);
+        if (!hex) continue;
+        const { x, y } = px(hex);
+        const color = de.player === 1 ? 'rgba(0, 100, 255, 0.7)' : 'rgba(255, 50, 50, 0.7)';
+        // Dashed circle
+        oc.beginPath();
+        oc.arc(x, y, s * 0.6, 0, Math.PI * 2);
+        oc.setLineDash([6, 4]);
+        oc.strokeStyle = color;
+        oc.lineWidth = 2.5;
+        oc.stroke();
+        oc.setLineDash([]);
+        // Crosshair lines (horizontal + vertical, short)
+        const len = s * 0.3;
+        oc.beginPath();
+        oc.moveTo(x - len, y); oc.lineTo(x + len, y);
+        oc.moveTo(x, y - len); oc.lineTo(x, y + len);
+        oc.strokeStyle = color;
+        oc.lineWidth = 2;
+        oc.stroke();
+        // Damage number (small, offset below)
+        const fontSize = Math.max(10, s * 0.35);
+        oc.font = `bold ${fontSize}px sans-serif`;
+        oc.textAlign = 'center';
+        oc.textBaseline = 'top';
+        oc.strokeStyle = '#000';
+        oc.lineWidth = 3;
+        oc.lineJoin = 'round';
+        oc.strokeText(de.atkDmg, x, y + s * 0.15);
+        oc.fillStyle = color;
+        oc.fillText(de.atkDmg, x, y + s * 0.15);
+      }
+    }
+
     // 8. Path preview (movement route line + arrows + cost badge)
     if (state.pathPreview && state.pathPreview.length > 0 && state.selectedUnit) {
       drawPathPreview(state);

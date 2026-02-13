@@ -53,6 +53,7 @@ const Game = (() => {
       units: [],                // deployed Unit objects
       terrain: new Map(),       // "q,r" -> { surface, player }
       consumedUnits: [],        // [{ unit, fromQ, fromR }] — units swallowed by consuming terrain
+      delayedEffects: [],       // [{ unit, player, targetQ, targetR, atkDmg, round }]
       objectiveControl: {},     // "q,r" -> player (1|2|0)
 
       // Per-activation tracking
@@ -368,6 +369,36 @@ const Game = (() => {
     state._logIndexAtSelect = state.combatLog.length;
     log(`${unit.name} activated`, unit.player);
 
+    // Resolve delayed effects from this unit's previous turn
+    const pendingDE = state.delayedEffects.filter(de => de.unit === unit);
+    for (const de of pendingDE) {
+      const target = state.units.find(u => u.q === de.targetQ && u.r === de.targetR && u.health > 0);
+      let dmg = 0;
+      if (target) {
+        let defArm = getEffective(target, 'armor');
+        if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'ignoreBaseArmor')) {
+          defArm = defArm - target.armor;
+        }
+        dmg = Math.max(1, de.atkDmg - defArm);
+        target.health -= dmg;
+        const killText = target.health <= 0 ? ' \u2620 KILLED' : ` (${target.health}/${target.maxHealth} HP)`;
+        log(`${unit.name}'s delayed attack hits ${target.name} for ${dmg} dmg${killText}`, de.player);
+      } else {
+        log(`${unit.name}'s delayed attack at [${de.targetQ},${de.targetR}] hits nothing`, de.player);
+      }
+      // Always dispatch afterAttack — Piercing damages units on the line even if target hex is empty
+      if (typeof Abilities !== 'undefined') {
+        const dispatchTarget = target || { q: de.targetQ, r: de.targetR };
+        Abilities.dispatch('afterAttack', { unit, target: dispatchTarget, damage: dmg });
+        if (target && target.health <= 0) {
+          Abilities.dispatch('afterDeath', { unit: target, killer: unit });
+        }
+      }
+    }
+    if (pendingDE.length > 0) {
+      state.delayedEffects = state.delayedEffects.filter(de => !pendingDE.includes(de));
+    }
+
     // Invigorating terrain: heal 1 or gain strengthened if full
     if (hasTerrainRule(unit.q, unit.r, 'invigorating')) {
       if (unit.health < unit.maxHealth) {
@@ -668,6 +699,43 @@ const Game = (() => {
     const act = state.activationState;
     if (!act || act.attacked) return false;
 
+    // Delayed Effect: store effect instead of dealing damage
+    const isDelayed = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'delayedattack');
+    if (isDelayed) {
+      if (!canAttackHex(act.unit, targetQ, targetR)) return false;
+      const prevAttackerHealth = act.unit.health;
+      const atkDmg = getEffective(act.unit, 'damage') + (bonusDamage || 0);
+      state.delayedEffects.push({
+        unit: act.unit, player: act.unit.player,
+        targetQ, targetR, atkDmg, round: state.round,
+      });
+      act.attacked = true;
+      if (hasCondition(act.unit, 'dizzy')) act.moved = true;
+      clearConditions(act.unit, 'untilAttack');
+      if (hasCondition(act.unit, 'burning')) {
+        if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'hotsuit')) {
+          act.pendingBurningRedirect = true;
+        } else {
+          act.unit.health -= 1;
+        }
+      }
+      state.actionHistory.push({
+        type: 'attack', delayed: true,
+        targetQ, targetR, atkDmg, prevAttackerHealth,
+        tossData: tossData || null,
+      });
+      log(`${act.unit.name} targets space [${targetQ},${targetR}] (delayed)`, act.unit.player);
+      if (hasCondition(act.unit, 'burning') && !act.pendingBurningRedirect && prevAttackerHealth !== act.unit.health) {
+        log(`${act.unit.name} takes 1 burning self-damage (${act.unit.health}/${act.unit.maxHealth} HP)`, act.unit.player);
+      }
+      if (act.moved && act.attacked && !state.rules.confirmEndTurn) {
+        if ((typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) && !act.pendingBurningRedirect) {
+          endActivation();
+        }
+      }
+      return true;
+    }
+
     const target = state.units.find(
       u => u.q === targetQ && u.r === targetR && u.health > 0 && u.player !== act.unit.player
     );
@@ -695,8 +763,20 @@ const Game = (() => {
     clearConditions(act.unit, 'untilAttack');
 
     // Burning: attacker takes 1 self-damage after attacking
+    // Hot Suit: can redirect burning damage to adjacent unit instead
     if (hasCondition(act.unit, 'burning')) {
-      act.unit.health -= 1;
+      if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'hotsuit')) {
+        act.pendingBurningRedirect = true;
+      } else {
+        act.unit.health -= 1;
+      }
+    }
+
+    // Snapshot other units' health before ability dispatch (Piercing, Explosive, etc.)
+    const healthSnapshots = [];
+    for (const u of state.units) {
+      if (u.health <= 0 || u === target || u === act.unit) continue;
+      healthSnapshots.push({ unit: u, prevHealth: u.health });
     }
 
     // Ability dispatch: afterAttack + afterDeath
@@ -709,17 +789,18 @@ const Game = (() => {
 
     state.actionHistory.push({
       type: 'attack', target, prevHealth, prevAttackerHealth,
+      healthSnapshots,
       tossData: tossData || null,
     });
     const killText = target.health <= 0 ? ' \u2620 KILLED' : ` (${target.health}/${target.maxHealth} HP)`;
     log(`${act.unit.name} attacks ${target.name} for ${dmg} dmg${killText}`, act.unit.player);
-    if (hasCondition(act.unit, 'burning') && prevAttackerHealth !== act.unit.health) {
+    if (hasCondition(act.unit, 'burning') && !act.pendingBurningRedirect && prevAttackerHealth !== act.unit.health) {
       log(`${act.unit.name} takes 1 burning self-damage (${act.unit.health}/${act.unit.maxHealth} HP)`, act.unit.player);
     }
 
-    // If both actions used, end activation (unless confirmEndTurn or pending effects)
+    // If both actions used, end activation (unless confirmEndTurn, pending effects, or burning redirect)
     if (act.moved && act.attacked && !state.rules.confirmEndTurn) {
-      if (typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) {
+      if ((typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) && !act.pendingBurningRedirect) {
         endActivation();
       }
     }
@@ -843,6 +924,57 @@ const Game = (() => {
 
     // Direct: in range + LoS + not hidden (all checked above)
     return true;
+  }
+
+  /** Validate a hex as attack target (for Delayed Effect space-targeting).
+   *  Like canAttack but skips target-unit checks (hidden).
+   *  Units do NOT block LoE for space targeting — only terrain does. */
+  function canAttackHex(attacker, q, r) {
+    const dist = Board.hexDistance(attacker.q, attacker.r, q, r);
+    if (dist > attacker.range || dist === 0) return false;
+    if (!hasLoS(attacker.q, attacker.r, q, r)) return false;
+    const atkType = (attacker.atkType || 'D').toUpperCase();
+    if (atkType === 'L') {
+      const intermediates = [];
+      const dir = Board.straightLineDir(attacker.q, attacker.r, q, r, intermediates);
+      if (dir === -1) return false;
+      // Only cover terrain blocks LoE for hex targeting (units don't block)
+      for (const h of intermediates) { if (hasTerrainRule(h.q, h.r, 'cover')) return false; }
+      return true;
+    }
+    if (atkType === 'P') { return hasFreePath(attacker.q, attacker.r, q, r, dist); }
+    return true; // Direct
+  }
+
+  /** Return valid target hexes for Delayed Effect attack. */
+  function getDelayedTargetHexes() {
+    if (!state.activationState || state.activationState.attacked) return null;
+    const act = state.activationState;
+    const u = act.unit;
+    if (hasCondition(u, 'disarmed')) return null;
+    const atkDmg = getEffective(u, 'damage');
+    const targets = new Map();
+    for (const hex of Board.hexes) {
+      if (hex.q === u.q && hex.r === u.r) continue;
+      if (canAttackHex(u, hex.q, hex.r)) {
+        targets.set(`${hex.q},${hex.r}`, { damage: atkDmg, delayed: true });
+      }
+    }
+    // Taunted: restrict to taunter hexes if any taunter is in range
+    const taunters = u.conditions
+      .filter(c => c.id === 'taunted' && c.source && c.source.health > 0)
+      .map(c => c.source);
+    if (taunters.length > 0) {
+      const tauntKeys = new Set(
+        taunters.filter(t => targets.has(`${t.q},${t.r}`)).map(t => `${t.q},${t.r}`)
+      );
+      if (tauntKeys.size > 0) {
+        for (const key of [...targets.keys()]) {
+          if (!tauntKeys.has(key)) targets.delete(key);
+        }
+      }
+    }
+    return targets;
   }
 
   /** Check if a terrain hex has a specific rule (e.g. 'cover', 'difficult'). */
@@ -1011,14 +1143,35 @@ const Game = (() => {
       last.ally.conditions = last.prevConditions;
       if (last.abilityName) last.unit.usedAbilities.delete(last.abilityName);
     } else if (last.type === 'attack') {
+      // Delayed attack undo: remove from delayedEffects
+      if (last.delayed) {
+        const idx = state.delayedEffects.findIndex(
+          de => de.unit === act.unit && de.targetQ === last.targetQ && de.targetR === last.targetR
+        );
+        if (idx !== -1) state.delayedEffects.splice(idx, 1);
+        if (last.prevAttackerHealth !== undefined) act.unit.health = last.prevAttackerHealth;
+        act.attacked = false;
+        if (hasCondition(act.unit, 'dizzy')) act.moved = false;
+        return true;
+      }
       last.target.health = last.prevHealth;
       // Restore attacker health (Burning self-damage)
       if (last.prevAttackerHealth !== undefined) {
         act.unit.health = last.prevAttackerHealth;
       }
+      // Restore other units' health (Piercing, Explosive, etc.)
+      if (last.healthSnapshots) {
+        for (const snap of last.healthSnapshots) {
+          snap.unit.health = snap.prevHealth;
+        }
+      }
       act.attacked = false;
       // Dizzy: undoing attack also unlocks move
       if (hasCondition(act.unit, 'dizzy')) act.moved = false;
+      // Undo burning redirect (Hot Suit)
+      if (last.burningRedirect) {
+        last.burningRedirect.target.health = last.burningRedirect.prevHealth;
+      }
       // Undo toss (Toss ability)
       if (last.tossData) {
         if (last.tossData.type === 'unit') {
@@ -1233,6 +1386,9 @@ const Game = (() => {
 
   /** Transition into ROUND_START phase with a step queue. */
   function startRound() {
+    // Clean up delayed effects from dead source units
+    state.delayedEffects = state.delayedEffects.filter(de => de.unit.health > 0);
+
     log(`\u2501\u2501 Round ${state.round} Start \u2501\u2501`);
     state.summaryLog.push({ text: `\u2501\u2501 Round ${state.round} Start \u2501\u2501`, player: 0, round: state.round });
     state.roundStepQueue = [
@@ -1257,6 +1413,20 @@ const Game = (() => {
           state.currentPlayer = state.firstTurnPlayer;
         },
       },
+      (() => {
+        const bearers = [];
+        for (const u of state.units) {
+          if (u.health <= 0) continue;
+          const af = u.conditions.find(c => c.id === 'arcfire');
+          if (af) bearers.push({ unit: u, player: af.source || 0 });
+        }
+        return {
+          id: 'arcfire-resolve',
+          label: 'Arc Fire spreads',
+          auto: bearers.length === 0,
+          data: { bearers, currentIndex: 0 },
+        };
+      })(),
       {
         id: 'abilityRoundStart',
         label: 'Ability effects',
@@ -1561,6 +1731,124 @@ const Game = (() => {
     return step.data.currentIndex >= step.data.pending.length;
   }
 
+  // ── Hot Suit helpers (burning redirect) ──────────────────────
+
+  /** Get living units adjacent to the active unit for burning redirect. */
+  function getHotSuitTargets() {
+    const act = state.activationState;
+    if (!act || !act.pendingBurningRedirect) return null;
+    const valid = new Map();
+    for (const u of state.units) {
+      if (u.health <= 0 || u === act.unit) continue;
+      if (Board.hexDistance(act.unit.q, act.unit.r, u.q, u.r) === 1) {
+        valid.set(`${u.q},${u.r}`, u);
+      }
+    }
+    return valid;
+  }
+
+  /** Redirect burning damage to an adjacent unit. */
+  function resolveBurningRedirect(targetQ, targetR) {
+    const act = state.activationState;
+    if (!act || !act.pendingBurningRedirect) return false;
+    const target = state.units.find(
+      u => u.q === targetQ && u.r === targetR && u.health > 0 && u !== act.unit
+    );
+    if (!target) return false;
+    const prevHealth = target.health;
+    damageUnit(target, 1, act.unit);
+    const last = state.actionHistory[state.actionHistory.length - 1];
+    if (last && last.type === 'attack') {
+      last.burningRedirect = { target, prevHealth };
+    }
+    act.pendingBurningRedirect = false;
+    const killText = target.health <= 0 ? ' \u2620' : '';
+    log(`${act.unit.name} redirects burning to ${target.name}${killText}`, act.unit.player);
+    return true;
+  }
+
+  /** Take burning self-damage (skip redirect). */
+  function skipBurningRedirect() {
+    const act = state.activationState;
+    if (!act || !act.pendingBurningRedirect) return false;
+    act.unit.health -= 1;
+    act.pendingBurningRedirect = false;
+    log(`${act.unit.name} takes 1 burning self-damage (${act.unit.health}/${act.unit.maxHealth} HP)`, act.unit.player);
+    return true;
+  }
+
+  // ── Arc Fire helpers ─────────────────────────────────────────
+
+  /** Get valid units within 2 spaces of the current arcfire bearer. */
+  function getArcFireTargets() {
+    const step = state.roundStepQueue[state.roundStepIndex];
+    if (!step || step.id !== 'arcfire-resolve') return null;
+    const { bearers, currentIndex } = step.data;
+    if (currentIndex >= bearers.length) return null;
+    const bearer = bearers[currentIndex].unit;
+    const valid = new Map();
+    for (const u of state.units) {
+      if (u.health <= 0) continue;
+      if (Board.hexDistance(bearer.q, bearer.r, u.q, u.r) <= 2) {
+        valid.set(`${u.q},${u.r}`, u);
+      }
+    }
+    return valid;
+  }
+
+  /** Transfer arcfire token to target; deal 1 damage to both if different unit. */
+  function resolveArcFire(targetUnit) {
+    const step = state.roundStepQueue[state.roundStepIndex];
+    if (!step || step.id !== 'arcfire-resolve') return false;
+    const { bearers, currentIndex } = step.data;
+    if (currentIndex >= bearers.length) return false;
+    const entry = bearers[currentIndex];
+    const oldBearer = entry.unit;
+    const player = entry.player;
+
+    // Remove arcfire from old bearer
+    const idx = oldBearer.conditions.findIndex(c => c.id === 'arcfire');
+    if (idx !== -1) oldBearer.conditions.splice(idx, 1);
+
+    // Place arcfire on target
+    addCondition(targetUnit, 'arcfire', 'permanent', player);
+
+    // If different unit, deal 1 damage to both
+    if (targetUnit !== oldBearer) {
+      damageUnit(oldBearer, 1, 'Arc Fire');
+      damageUnit(targetUnit, 1, 'Arc Fire');
+      const killOld = oldBearer.health <= 0 ? ' \u2620' : '';
+      const killNew = targetUnit.health <= 0 ? ' \u2620' : '';
+      log(`Arc Fire jumps from ${oldBearer.name}${killOld} to ${targetUnit.name}${killNew} (1 dmg each)`, player);
+    } else {
+      log(`Arc Fire stays on ${oldBearer.name}`, player);
+    }
+
+    step.data.currentIndex++;
+    return true;
+  }
+
+  /** Skip arcfire resolution — token removed, no damage. */
+  function skipArcFire() {
+    const step = state.roundStepQueue[state.roundStepIndex];
+    if (!step || step.id !== 'arcfire-resolve') return false;
+    const { bearers, currentIndex } = step.data;
+    if (currentIndex >= bearers.length) return false;
+    const entry = bearers[currentIndex];
+    const idx = entry.unit.conditions.findIndex(c => c.id === 'arcfire');
+    if (idx !== -1) entry.unit.conditions.splice(idx, 1);
+    log(`Arc Fire on ${entry.unit.name} fizzles (no targets)`, entry.player);
+    step.data.currentIndex++;
+    return true;
+  }
+
+  /** Check if all arcfire bearers have been resolved. */
+  function allArcFireResolved() {
+    const step = state.roundStepQueue[state.roundStepIndex];
+    if (!step || step.id !== 'arcfire-resolve') return true;
+    return step.data.currentIndex >= step.data.bearers.length;
+  }
+
   // ── Public API ────────────────────────────────────────────────
 
   return {
@@ -1639,5 +1927,20 @@ const Game = (() => {
     resolveConsumingPlacement,
     skipConsumingPlacement,
     allConsumingPlaced,
+
+    // Hot Suit helpers
+    getHotSuitTargets,
+    resolveBurningRedirect,
+    skipBurningRedirect,
+
+    // Arc Fire helpers
+    getArcFireTargets,
+    resolveArcFire,
+    skipArcFire,
+    allArcFireResolved,
+
+    // Delayed Effect helpers
+    getDelayedTargetHexes,
+    canAttackHex,
   };
 })();
