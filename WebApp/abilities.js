@@ -39,6 +39,7 @@ const Abilities = (() => {
     weakness:     'endOfActivation',
     break:       'permanent',
     arcfire:      'permanent',
+    moveintoenemies: 'endOfActivation',
   };
 
   // ── Trigger Type Mapping ─────────────────────────────────────
@@ -101,6 +102,18 @@ const Abilities = (() => {
 
       case 'selfandadjacent':
         return hexesAtAndAdjacent(ctx.unit);
+
+      case 'spacesownandaround': {
+        if (!ctx.unit) return [];
+        const radius = rule ? (parseInt(rule.range, 10) || 1) : 1;
+        const result = [];
+        for (const hex of Board.hexes) {
+          if (Board.hexDistance(ctx.unit.q, ctx.unit.r, hex.q, hex.r) <= radius) {
+            result.push({ q: hex.q, r: hex.r });
+          }
+        }
+        return result;
+      }
 
       case 'linetotarget': {
         // If an attack path is stored (Piercing + Path), find units along that path
@@ -254,7 +267,11 @@ const Abilities = (() => {
         if (!isUnit(t)) continue;
         // Burning doesn't stack — skip if already burning
         if (lower === 'burning' && t.conditions.some(c => c.id === 'burning')) continue;
-        Game.addCondition(t, lower, CONDITION_DEFAULTS[lower], ctx.unit ? ctx.unit.player : null);
+        // Duration override: value="turn" → endOfActivation, value="permanent" → permanent, else default
+        const dur = (value && value.toLowerCase() === 'turn') ? 'endOfActivation'
+                  : (value && value.toLowerCase() === 'permanent') ? 'permanent'
+                  : CONDITION_DEFAULTS[lower];
+        Game.addCondition(t, lower, dur, ctx.unit ? ctx.unit.player : null);
         const src = ctx.unit ? ctx.unit.name : 'Effect';
         const player = ctx.unit ? ctx.unit.player : 0;
         if (ctx.unit && ctx.unit === t) {
@@ -269,7 +286,9 @@ const Abilities = (() => {
     // Terrain creation: effect name matches a known terrain type
     if (Units.terrainRules[lower]) {
       const owner = ctx.unit ? ctx.unit.player : 0;
-      if (isQueuing && targets.length > 0) {
+      // Dead units can't make interactive choices, so place immediately (Volatile, etc.)
+      const isDeath = ctx.unit && ctx.unit.health <= 0;
+      if (isQueuing && targets.length > 0 && !isDeath) {
         const hexes = new Set(targets.map(t => `${t.q},${t.r}`));
         effectQueue.push({ type: 'create', surface: lower, validHexes: hexes, unit: ctx.unit, player: owner });
       } else {
@@ -327,7 +346,9 @@ const Abilities = (() => {
           if (!isUnit(t)) continue;
           const arm = Game.getEffective(t, 'armor');
           const dmg = Math.max(1, rawDmg - arm);
-          Game.damageUnit(t, dmg, ctx.unit);
+          Game.damageUnit(t, dmg, ctx.unit, 'ability');
+          // Track damaged units for allDamaged target type (Gassy, etc.)
+          if (ctx.damagedUnits) ctx.damagedUnits.push(t);
           const src = ctx.unit ? ctx.unit.name : 'Ability';
           const player = ctx.unit ? ctx.unit.player : 0;
           const killText = t.health <= 0 ? ' \u2620 KILLED' : '';
@@ -338,7 +359,7 @@ const Abilities = (() => {
 
       case 'bonusdamage':
         if (ctx.target && isUnit(ctx.target)) {
-          Game.damageUnit(ctx.target, int(value), ctx.unit);
+          Game.damageUnit(ctx.target, int(value), ctx.unit, 'ability');
           const src = ctx.unit ? ctx.unit.name : 'Ability';
           const player = ctx.unit ? ctx.unit.player : 0;
           const killText = ctx.target.health <= 0 ? ' \u2620 KILLED' : '';
@@ -394,6 +415,13 @@ const Abilities = (() => {
       return ctx.unit && !Game.hasCondition(ctx.unit, condId);
     }
 
+    // "ifHasX" — unit HAS condition X (e.g. ifHasGlider for Glider movement rules)
+    const hasMatch = lower.match(/^ifhas(.+)$/);
+    if (hasMatch) {
+      const condId = hasMatch[1].trim();
+      return ctx.unit && Game.hasCondition(ctx.unit, condId);
+    }
+
     console.warn(`[Abilities] Unknown condition: "${condStr}"`);
     return true;
   }
@@ -419,10 +447,14 @@ const Abilities = (() => {
   function dispatch(trigger, ctx) {
     const unit = ctx.unit;
     if (!unit || !unit.abilities) return false;
-    if (Game.hasCondition(unit, 'silenced')) return false;
+    // Death triggers bypass silenced (e.g. Volatile still fires if unit dies while silenced)
+    if (trigger !== 'afterDeath' && Game.hasCondition(unit, 'silenced')) return false;
 
     const triggerType = TRIGGER_TO_TYPE[trigger];
     if (!triggerType) return false;
+
+    // Initialize damagedUnits tracking (for allDamaged target type)
+    if (!ctx.damagedUnits) ctx.damagedUnits = [];
 
     // Enable queuing: push/pull/move effects get collected instead of executing
     effectQueue = [];
@@ -531,9 +563,14 @@ const Abilities = (() => {
     return mod;
   }
 
-  /** Check if a unit has a passive flag (e.g. 'mobile'). */
+  /** Check if a unit has a passive flag (e.g. 'mobile').
+   *  Also checks conditions — allows temporary flags (e.g. Glider granting MoveIntoEnemies). */
   function hasFlag(unit, flag) {
-    if (!unit || !unit.abilities) return false;
+    if (!unit) return false;
+    // Check conditions (temporary flags like Glider's MoveIntoEnemies)
+    if (unit.conditions && Game.hasCondition(unit, flag)) return true;
+    // Check passive rules (permanent flags like Impactful's MoveIntoEnemies)
+    if (!unit.abilities) return false;
     for (const ab of unit.abilities) {
       for (const ruleId of ab.ruleIds) {
         const rule = atomicRules[ruleId];
