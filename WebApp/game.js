@@ -389,7 +389,7 @@ const Game = (() => {
       // Always dispatch afterAttack — Piercing damages units on the line even if target hex is empty
       if (typeof Abilities !== 'undefined') {
         const dispatchTarget = target || { q: de.targetQ, r: de.targetR };
-        Abilities.dispatch('afterAttack', { unit, target: dispatchTarget, damage: dmg });
+        Abilities.dispatch('afterAttack', { unit, target: dispatchTarget, damage: dmg, damagedUnits: target ? [target] : [] });
         if (target && target.health <= 0) {
           Abilities.dispatch('afterDeath', { unit: target, killer: unit });
         }
@@ -716,7 +716,7 @@ const Game = (() => {
         if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'hotsuit')) {
           act.pendingBurningRedirect = true;
         } else {
-          act.unit.health -= 1;
+          damageUnit(act.unit, 1, null, 'burning');
         }
       }
       state.actionHistory.push({
@@ -768,7 +768,7 @@ const Game = (() => {
       if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'hotsuit')) {
         act.pendingBurningRedirect = true;
       } else {
-        act.unit.health -= 1;
+        damageUnit(act.unit, 1, null, 'burning');
       }
     }
 
@@ -781,7 +781,7 @@ const Game = (() => {
 
     // Ability dispatch: afterAttack + afterDeath
     if (typeof Abilities !== 'undefined') {
-      Abilities.dispatch('afterAttack', { unit: act.unit, target, damage: dmg });
+      Abilities.dispatch('afterAttack', { unit: act.unit, target, damage: dmg, damagedUnits: [target] });
       if (target.health <= 0) {
         Abilities.dispatch('afterDeath', { unit: target, killer: act.unit });
       }
@@ -841,7 +841,7 @@ const Game = (() => {
 
       // Poisoned: take damage equal to spaces moved
       if (hasCondition(act.unit, 'poisoned') && act.moveDistance > 0) {
-        act.unit.health -= act.moveDistance;
+        damageUnit(act.unit, act.moveDistance, null, 'poison');
         log(`${act.unit.name} takes ${act.moveDistance} poison damage (${act.unit.health}/${act.unit.maxHealth} HP)`, act.unit.player);
       }
       act.unit.activated = true;
@@ -999,7 +999,9 @@ const Game = (() => {
     const ignores = typeof Abilities !== 'undefined'
       ? (rule) => Abilities.ignoresTerrainRule(unit, rule, q, r) : () => false;
     if (hasTerrainRule(q, r, 'dangerous') && !ignores('dangerous')) {
-      unit.health -= 1;
+      const td = state.terrain.get(`${q},${r}`);
+      const surface = td ? td.surface : '';
+      damageUnit(unit, 1, null, surface === 'cinder' ? 'terrain-cinder' : 'terrain');
       log(`${unit.name} takes 1 terrain damage (${unit.health}/${unit.maxHealth} HP)`, unit.player);
     }
     if (hasTerrainRule(q, r, 'poisonous') && !ignores('poisonous')) {
@@ -1637,11 +1639,31 @@ const Game = (() => {
     });
   }
 
-  /** Deal damage to a unit from a source. */
-  function damageUnit(unit, amount, source) {
+  /** Deal damage to a unit from a source.
+   *  sourceType: 'ability' | 'terrain' | 'terrain-cinder' | 'burning' | 'poison' | 'arcfire' | undefined */
+  function damageUnit(unit, amount, source, sourceType) {
     if (!unit || amount <= 0) return;
-    unit.health -= amount;
-    // Future: trigger Fire Charged check here
+
+    // Protective Gear: reduce non-attack damage to 0
+    let actualAmount = amount;
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'protectivegear')) {
+      if (sourceType !== 'directAttack') {
+        actualAmount = 0;
+      }
+    }
+    unit.health -= actualAmount;
+
+    // Fire Charged: refresh once-per-game abilities on cinder terrain or ally ability damage
+    // Triggers even at 0 actual damage (Protective Gear + ally/cinder still refreshes)
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'firecharged')) {
+      const isCinder = sourceType === 'terrain-cinder';
+      const isAllyAbility = sourceType === 'ability' && source &&
+                            typeof source === 'object' && source.player === unit.player;
+      if (isCinder || isAllyAbility) {
+        unit.usedAbilities.clear();
+        log(`Fire Charged! ${unit.name}'s abilities refreshed`, unit.player);
+      }
+    }
   }
 
   // ── Shifting / Consuming round-step helpers ──────────────────
@@ -1756,7 +1778,7 @@ const Game = (() => {
     );
     if (!target) return false;
     const prevHealth = target.health;
-    damageUnit(target, 1, act.unit);
+    damageUnit(target, 1, act.unit, 'ability');
     const last = state.actionHistory[state.actionHistory.length - 1];
     if (last && last.type === 'attack') {
       last.burningRedirect = { target, prevHealth };
@@ -1771,7 +1793,7 @@ const Game = (() => {
   function skipBurningRedirect() {
     const act = state.activationState;
     if (!act || !act.pendingBurningRedirect) return false;
-    act.unit.health -= 1;
+    damageUnit(act.unit, 1, null, 'burning');
     act.pendingBurningRedirect = false;
     log(`${act.unit.name} takes 1 burning self-damage (${act.unit.health}/${act.unit.maxHealth} HP)`, act.unit.player);
     return true;
@@ -1815,8 +1837,8 @@ const Game = (() => {
 
     // If different unit, deal 1 damage to both
     if (targetUnit !== oldBearer) {
-      damageUnit(oldBearer, 1, 'Arc Fire');
-      damageUnit(targetUnit, 1, 'Arc Fire');
+      damageUnit(oldBearer, 1, 'Arc Fire', 'arcfire');
+      damageUnit(targetUnit, 1, 'Arc Fire', 'arcfire');
       const killOld = oldBearer.health <= 0 ? ' \u2620' : '';
       const killNew = targetUnit.health <= 0 ? ' \u2620' : '';
       log(`Arc Fire jumps from ${oldBearer.name}${killOld} to ${targetUnit.name}${killNew} (1 dmg each)`, player);
