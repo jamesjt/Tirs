@@ -140,8 +140,11 @@ const UI = (() => {
       attackTargets: null,      // Map of "q,r" -> {damage} for rendering
       pathPreview: null,        // [{q,r}] — hex sequence for path rendering
       pathCost: null,           // number — total movement cost of previewed path
+      pathPreviewColor: null,   // null = black (movement), string = custom (attack path)
       hoveredHex: null,         // {q,r} — currently hovered hex
       waypoints: [],            // [{q,r}] — user-placed intermediate waypoints
+      attackWaypoints: [],      // [{q,r}] — waypoints for Piercing attack path routing
+      attackPathHighlights: null, // Map of hexes reachable by attack BFS (for waypoint placement)
     };
   }
 
@@ -2489,7 +2492,7 @@ const UI = (() => {
     }
 
     // Path preview on hover during battle phase with a unit selected
-    if (Game.state.phase === Game.PHASE.BATTLE && uiState.highlights) {
+    if (Game.state.phase === Game.PHASE.BATTLE && (uiState.highlights || uiState.attackTargets)) {
       const hex = Board.hexAtPixel(e.clientX, e.clientY);
       const hexKey = hex ? `${hex.q},${hex.r}` : null;
       const prevKey = uiState.hoveredHex
@@ -2497,11 +2500,18 @@ const UI = (() => {
 
       if (hexKey !== prevKey) {
         uiState.hoveredHex = hex;
-        if (hex && uiState.highlights.has(hexKey)) {
+        const act = Game.state.activationState;
+        if (hex && uiState.highlights && uiState.highlights.has(hexKey)) {
+          uiState.pathPreviewColor = null;
           recomputePathPreview(hex.q, hex.r);
+        } else if (hex && uiState.attackTargets && uiState.attackTargets.has(hexKey)
+                   && act && act._attackParentMap) {
+          // Piercing + Path: show attack path preview
+          recomputeAttackPathPreview(hex.q, hex.r);
         } else {
           uiState.pathPreview = null;
           uiState.pathCost = null;
+          uiState.pathPreviewColor = null;
         }
         render();
       }
@@ -2572,6 +2582,48 @@ const UI = (() => {
     return { path: fullPath, cost: totalCost, invalid: false };
   }
 
+  /** Rebuild attack path preview from unit position to attack target (Piercing + Path). */
+  function recomputeAttackPathPreview(destQ, destR) {
+    const act = Game.state.activationState;
+    if (!act || !act._attackParentMap) {
+      uiState.pathPreview = null;
+      uiState.pathPreviewColor = null;
+      return;
+    }
+    uiState.pathPreviewColor = 'rgba(180, 30, 30, 0.7)';
+    if (uiState.attackWaypoints.length === 0) {
+      uiState.pathPreview = Board.getPath(act.unit.q, act.unit.r, destQ, destR, act._attackParentMap);
+    } else {
+      const result = buildAttackWaypointPath(act.unit.q, act.unit.r, uiState.attackWaypoints, destQ, destR);
+      uiState.pathPreview = result.invalid ? null : result.path;
+    }
+    uiState.pathCost = null; // no cost badge for attacks
+  }
+
+  /** Build an attack path through waypoints using per-segment BFS (cover terrain only). */
+  function buildAttackWaypointPath(startQ, startR, waypoints, destQ, destR) {
+    const blocked = new Set();
+    for (const [key] of Game.state.terrain) {
+      const [tq, tr] = key.split(',').map(Number);
+      if (Game.hasTerrainRule(tq, tr, 'cover')) blocked.add(key);
+    }
+    const points = [{ q: startQ, r: startR }, ...waypoints, { q: destQ, r: destR }];
+    let fullPath = [];
+    for (let i = 0; i < points.length - 1; i++) {
+      const from = points[i];
+      const to = points[i + 1];
+      const parentMap = new Map();
+      Board.getReachableHexes(from.q, from.r, 15, blocked, null, parentMap);
+      const toKey = `${to.q},${to.r}`;
+      if (!parentMap.has(toKey) && !(to.q === from.q && to.r === from.r)) {
+        return { path: fullPath, invalid: true };
+      }
+      const segment = Board.getPath(from.q, from.r, to.q, to.r, parentMap);
+      fullPath = fullPath.concat(segment);
+    }
+    return { path: fullPath, invalid: false };
+  }
+
   /**
    * Animate a token DOM element sliding hex-by-hex along a path.
    * @param {Object} unit - The unit reference (key into tokenEls)
@@ -2614,29 +2666,46 @@ const UI = (() => {
     e.preventDefault();
     if (moveAnimating) return;
     if (Game.state.phase !== Game.PHASE.BATTLE) return;
-    if (!uiState.highlights) return;
 
     const hex = Board.hexAtPixel(e.clientX, e.clientY);
     if (!hex) return;
     const key = `${hex.q},${hex.r}`;
-    if (!uiState.highlights.has(key)) return;
 
-    // Toggle waypoint at this hex
-    const idx = uiState.waypoints.findIndex(w => w.q === hex.q && w.r === hex.r);
-    if (idx !== -1) {
-      uiState.waypoints.splice(idx, 1);
-    } else {
-      uiState.waypoints.push({ q: hex.q, r: hex.r });
-    }
-
-    // Recompute path preview if hovering a valid hex
-    if (uiState.hoveredHex) {
-      const hKey = `${uiState.hoveredHex.q},${uiState.hoveredHex.r}`;
-      if (uiState.highlights.has(hKey)) {
-        recomputePathPreview(uiState.hoveredHex.q, uiState.hoveredHex.r);
+    // Priority 1: Movement waypoints (on movement-highlighted hexes)
+    if (uiState.highlights && uiState.highlights.has(key)) {
+      const idx = uiState.waypoints.findIndex(w => w.q === hex.q && w.r === hex.r);
+      if (idx !== -1) {
+        uiState.waypoints.splice(idx, 1);
+      } else {
+        uiState.waypoints.push({ q: hex.q, r: hex.r });
       }
+      if (uiState.hoveredHex) {
+        const hKey = `${uiState.hoveredHex.q},${uiState.hoveredHex.r}`;
+        if (uiState.highlights.has(hKey)) {
+          recomputePathPreview(uiState.hoveredHex.q, uiState.hoveredHex.r);
+        }
+      }
+      render();
+      return;
     }
-    render();
+
+    // Priority 2: Attack waypoints (non-movement hex in attack BFS area, for Piercing+Path)
+    if (uiState.attackPathHighlights && uiState.attackPathHighlights.has(key)) {
+      const idx = uiState.attackWaypoints.findIndex(w => w.q === hex.q && w.r === hex.r);
+      if (idx !== -1) {
+        uiState.attackWaypoints.splice(idx, 1);
+      } else {
+        uiState.attackWaypoints.push({ q: hex.q, r: hex.r });
+      }
+      if (uiState.hoveredHex && uiState.attackTargets) {
+        const hKey = `${uiState.hoveredHex.q},${uiState.hoveredHex.r}`;
+        if (uiState.attackTargets.has(hKey)) {
+          recomputeAttackPathPreview(uiState.hoveredHex.q, uiState.hoveredHex.r);
+        }
+      }
+      render();
+      return;
+    }
   }
 
   function onClick(e) {
@@ -2991,8 +3060,24 @@ const UI = (() => {
     // Clear path preview (reachable set may have changed after move/attack)
     uiState.pathPreview = null;
     uiState.pathCost = null;
+    uiState.pathPreviewColor = null;
     uiState.hoveredHex = null;
     uiState.waypoints = [];
+    uiState.attackWaypoints = [];
+
+    // Compute attack path BFS for Piercing + Path units
+    const isPiercingPath = !act.attacked
+      && (act.unit.atkType || '').toUpperCase() === 'P'
+      && typeof Abilities !== 'undefined'
+      && Abilities.hasFlag(act.unit, 'piercing');
+    if (isPiercingPath) {
+      const { parentMap, reachable } = Game.getAttackPathBFS(act.unit.q, act.unit.r, act.unit.range);
+      act._attackParentMap = parentMap;
+      uiState.attackPathHighlights = reachable;
+    } else {
+      act._attackParentMap = null;
+      uiState.attackPathHighlights = null;
+    }
   }
 
   function handleBattleClick(hex) {
@@ -3288,9 +3373,25 @@ const UI = (() => {
             return;
           }
         }
-        const ok = Game.attackUnit(hex.q, hex.r);
+        // Build attack path for Piercing + Path attacks
+        let attackPath = null;
+        if (act._attackParentMap && typeof Abilities !== 'undefined'
+            && Abilities.hasFlag(act.unit, 'piercing')
+            && (act.unit.atkType || '').toUpperCase() === 'P') {
+          let path;
+          if (uiState.attackWaypoints.length > 0) {
+            const result = buildAttackWaypointPath(act.unit.q, act.unit.r, uiState.attackWaypoints, hex.q, hex.r);
+            path = result.invalid ? null : result.path;
+          } else {
+            path = Board.getPath(act.unit.q, act.unit.r, hex.q, hex.r, act._attackParentMap);
+          }
+          if (path && path.length > 0) {
+            attackPath = [{ q: act.unit.q, r: act.unit.r }, ...path];
+          }
+        }
+        const ok = Game.attackUnit(hex.q, hex.r, 0, null, attackPath);
         if (ok) {
-          netSend({ type: 'attackUnit', q: hex.q, r: hex.r });
+          netSend({ type: 'attackUnit', q: hex.q, r: hex.r, attackPath: attackPath || undefined });
           // Check for queued interactive effects (push/pull/move from abilities)
           if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
             enterEffectTargeting();
@@ -3694,7 +3795,7 @@ const UI = (() => {
         break;
       }
       case 'attackUnit':
-        Game.attackUnit(data.q, data.r, data.bonusDamage || 0, data.tossData || null);
+        Game.attackUnit(data.q, data.r, data.bonusDamage || 0, data.tossData || null, data.attackPath || null);
         if (!Game.state.activationState) {
           resetUiState();
         } else {

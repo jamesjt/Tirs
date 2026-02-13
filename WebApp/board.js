@@ -1253,8 +1253,12 @@ const Board = (() => {
     oc.save();
 
     // ── Dashed line connecting hex centres ──
+    const pathColor = state.pathPreviewColor || 'rgba(0, 0, 0, 0.7)';
+    const arrowColor = state.pathPreviewColor
+      ? state.pathPreviewColor.replace(/[\d.]+\)$/, '0.85)')
+      : 'rgba(0, 0, 0, 0.85)';
     oc.lineWidth = s * 0.12;
-    oc.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+    oc.strokeStyle = pathColor;
     oc.lineCap = 'round';
     oc.lineJoin = 'round';
     oc.setLineDash([s * 0.3, s * 0.15]);
@@ -1276,7 +1280,7 @@ const Board = (() => {
       const angle = Math.atan2(curr.y - prev.y, curr.x - prev.x);
       const arrowSize = s * 0.22;
 
-      oc.fillStyle = 'rgba(0, 0, 0, 0.85)';
+      oc.fillStyle = arrowColor;
       oc.beginPath();
       oc.moveTo(
         curr.x + arrowSize * Math.cos(angle),
@@ -1304,6 +1308,31 @@ const Board = (() => {
           const { x, y } = px(h);
           const d = s * 0.28;
           oc.fillStyle = 'rgba(255, 165, 0, 0.9)';
+          oc.strokeStyle = '#fff';
+          oc.lineWidth = 2;
+          oc.beginPath();
+          oc.moveTo(x, y - d);
+          oc.lineTo(x + d, y);
+          oc.lineTo(x, y + d);
+          oc.lineTo(x - d, y);
+          oc.closePath();
+          oc.fill();
+          oc.stroke();
+        }
+      }
+    }
+
+    // ── Attack waypoint markers (red diamonds) ──
+    const atkWps = state.attackWaypoints || [];
+    if (atkWps.length > 0) {
+      const atkWpSet = new Set(atkWps.map(w => `${w.q},${w.r}`));
+      for (const p of path) {
+        if (atkWpSet.has(`${p.q},${p.r}`)) {
+          const h = getHex(p.q, p.r);
+          if (!h) continue;
+          const { x, y } = px(h);
+          const d = s * 0.28;
+          oc.fillStyle = 'rgba(200, 50, 50, 0.9)';
           oc.strokeStyle = '#fff';
           oc.lineWidth = 2;
           oc.beginPath();
@@ -1347,7 +1376,9 @@ const Board = (() => {
       const dest = points[points.length - 1];
       const { x, y } = px(dest);
       const badgeR = s * 0.3;
-      oc.fillStyle = 'rgba(0, 0, 0, 0.75)';
+      oc.fillStyle = state.pathPreviewColor
+        ? state.pathPreviewColor.replace(/[\d.]+\)$/, '0.75)')
+        : 'rgba(0, 0, 0, 0.75)';
       oc.beginPath();
       oc.arc(x, y - s * 0.75, badgeR, 0, Math.PI * 2);
       oc.fill();

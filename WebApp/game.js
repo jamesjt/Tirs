@@ -388,11 +388,14 @@ const Game = (() => {
       }
       // Always dispatch afterAttack — Piercing damages units on the line even if target hex is empty
       if (typeof Abilities !== 'undefined') {
+        // Temporarily set attackPath for Piercing + Path resolution
+        if (de.attackPath) state.activationState.attackPath = de.attackPath;
         const dispatchTarget = target || { q: de.targetQ, r: de.targetR };
         Abilities.dispatch('afterAttack', { unit, target: dispatchTarget, damage: dmg });
         if (target && target.health <= 0) {
           Abilities.dispatch('afterDeath', { unit: target, killer: unit });
         }
+        delete state.activationState.attackPath;
       }
     }
     if (pendingDE.length > 0) {
@@ -695,7 +698,7 @@ const Game = (() => {
     return true;
   }
 
-  function attackUnit(targetQ, targetR, bonusDamage, tossData) {
+  function attackUnit(targetQ, targetR, bonusDamage, tossData, attackPath) {
     const act = state.activationState;
     if (!act || act.attacked) return false;
 
@@ -708,6 +711,7 @@ const Game = (() => {
       state.delayedEffects.push({
         unit: act.unit, player: act.unit.player,
         targetQ, targetR, atkDmg, round: state.round,
+        attackPath: attackPath || null,
       });
       act.attacked = true;
       if (hasCondition(act.unit, 'dizzy')) act.moved = true;
@@ -779,6 +783,9 @@ const Game = (() => {
       healthSnapshots.push({ unit: u, prevHealth: u.health });
     }
 
+    // Store attack path for Piercing + Path resolution
+    if (attackPath) act.attackPath = attackPath;
+
     // Ability dispatch: afterAttack + afterDeath
     if (typeof Abilities !== 'undefined') {
       Abilities.dispatch('afterAttack', { unit: act.unit, target, damage: dmg });
@@ -791,6 +798,7 @@ const Game = (() => {
       type: 'attack', target, prevHealth, prevAttackerHealth,
       healthSnapshots,
       tossData: tossData || null,
+      attackPath: attackPath || null,
     });
     const killText = target.health <= 0 ? ' \u2620 KILLED' : ` (${target.health}/${target.maxHealth} HP)`;
     log(`${act.unit.name} attacks ${target.name} for ${dmg} dmg${killText}`, act.unit.player);
@@ -911,14 +919,18 @@ const Game = (() => {
       const intermediates = [];
       const dir = Board.straightLineDir(attacker.q, attacker.r, target.q, target.r, intermediates);
       if (dir === -1) return false;
+      const isPiercing = typeof Abilities !== 'undefined' && Abilities.hasFlag(attacker, 'piercing');
       for (const h of intermediates) {
-        if (isBlockingLoE(h.q, h.r)) return false;
+        // Piercing: only cover terrain blocks LoE (attacks pass through units)
+        if (isPiercing ? hasTerrainRule(h.q, h.r, 'cover') : isBlockingLoE(h.q, h.r)) return false;
       }
       return true;
     }
 
     if (atkType === 'P') {
       // Path: at least one shortest path with LoE clear on intermediates
+      const isPiercing = typeof Abilities !== 'undefined' && Abilities.hasFlag(attacker, 'piercing');
+      if (isPiercing) return hasFreePathTerrainOnly(attacker.q, attacker.r, target.q, target.r, dist);
       return hasFreePath(attacker.q, attacker.r, target.q, target.r, dist);
     }
 
@@ -1077,6 +1089,40 @@ const Game = (() => {
     return false;
   }
 
+  /** BFS path check blocking only on cover terrain (not units). For Piercing + Path. */
+  function hasFreePathTerrainOnly(q1, r1, q2, r2, maxDist) {
+    const target = `${q2},${r2}`;
+    const visited = new Map();
+    visited.set(`${q1},${r1}`, 0);
+    const queue = [{ q: q1, r: r1, dist: 0 }];
+    while (queue.length > 0) {
+      const cur = queue.shift();
+      if (cur.dist >= maxDist) continue;
+      for (const n of Board.getNeighbors(cur.q, cur.r)) {
+        const key = `${n.q},${n.r}`;
+        const nd = cur.dist + 1;
+        if (key === target) return true;
+        if (visited.has(key)) continue;
+        if (hasTerrainRule(n.q, n.r, 'cover')) continue;
+        visited.set(key, nd);
+        queue.push({ q: n.q, r: n.r, dist: nd });
+      }
+    }
+    return false;
+  }
+
+  /** BFS from attacker, blocking only on cover terrain. Returns parentMap + reachable for Piercing path selection. */
+  function getAttackPathBFS(startQ, startR, range) {
+    const blocked = new Set();
+    for (const [key] of state.terrain) {
+      const [tq, tr] = key.split(',').map(Number);
+      if (hasTerrainRule(tq, tr, 'cover')) blocked.add(key);
+    }
+    const parentMap = new Map();
+    const reachable = Board.getReachableHexes(startQ, startR, range, blocked, null, parentMap);
+    return { parentMap, reachable };
+  }
+
   // ── Undo ─────────────────────────────────────────────────────
 
   function undoLastAction() {
@@ -1165,6 +1211,7 @@ const Game = (() => {
           snap.unit.health = snap.prevHealth;
         }
       }
+      delete act.attackPath;
       act.attacked = false;
       // Dizzy: undoing attack also unlocks move
       if (hasCondition(act.unit, 'dizzy')) act.moved = false;
@@ -1942,5 +1989,8 @@ const Game = (() => {
     // Delayed Effect helpers
     getDelayedTargetHexes,
     canAttackHex,
+
+    // Piercing path helpers
+    getAttackPathBFS,
   };
 })();

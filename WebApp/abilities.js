@@ -102,8 +102,14 @@ const Abilities = (() => {
       case 'selfandadjacent':
         return hexesAtAndAdjacent(ctx.unit);
 
-      case 'linetotarget':
+      case 'linetotarget': {
+        // If an attack path is stored (Piercing + Path), find units along that path
+        const act = Game.state.activationState;
+        if (act && act.attackPath && act.attackPath.length > 2) {
+          return unitsOnPath(act.attackPath);
+        }
         return unitsInLine(ctx.unit, ctx.target);
+      }
 
       case 'alldamaged':
         return ctx.damagedUnits || (ctx.target ? [ctx.target] : []);
@@ -220,6 +226,17 @@ const Abilities = (() => {
       const u = Game.state.units.find(
         u => u.q === h.q && u.r === h.r && u.health > 0
       );
+      if (u) result.push(u);
+    }
+    return result;
+  }
+
+  /** Living units on intermediate hexes of a stored attack path (exclusive of endpoints). */
+  function unitsOnPath(path) {
+    const result = [];
+    for (let i = 1; i < path.length - 1; i++) {
+      const h = path[i];
+      const u = Game.state.units.find(u => u.q === h.q && u.r === h.r && u.health > 0);
       if (u) result.push(u);
     }
     return result;
