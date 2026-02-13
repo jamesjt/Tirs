@@ -338,7 +338,7 @@ canvas {
   cursor: pointer;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  width:50px
+  width:60px
 }
 .btn-log-filter:hover { border-color: rgba(255,255,255,0.3); color: #aaa; }
 .btn-log-filter.active {  }
