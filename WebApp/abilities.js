@@ -37,6 +37,7 @@ const Abilities = (() => {
     protected:    'endOfRound',
     strengthened: 'untilAttack',
     weakness:     'endOfActivation',
+    break:       'permanent',
   };
 
   // ── Trigger Type Mapping ─────────────────────────────────────
@@ -48,6 +49,8 @@ const Abilities = (() => {
     activation: 'afterSelect',
     action:     'playerAction',
     movement:   'onMovement',
+    onAttack:   'onAttack',
+    afterMove:  'afterMove',
   };
 
   // Reverse map: trigger string -> ability type
@@ -135,6 +138,29 @@ const Abilities = (() => {
 
       case 'terrainoccupant':
         return [];  // future use
+
+      // unitOrTerrain: adjacent allies + adjacent dangerous/difficult terrain
+      case 'unitorterrain': {
+        if (!ctx.unit) return [];
+        const results = [];
+        const neighbors = Board.getNeighbors(ctx.unit.q, ctx.unit.r);
+        // Adjacent living allies (not self)
+        for (const u of Game.state.units) {
+          if (u.health <= 0 || u === ctx.unit || u.player !== ctx.unit.player) continue;
+          if (Board.hexDistance(ctx.unit.q, ctx.unit.r, u.q, u.r) !== 1) continue;
+          results.push({ type: 'unit', unit: u, q: u.q, r: u.r });
+        }
+        // Adjacent terrain with dangerous or difficult rules
+        for (const n of neighbors) {
+          if (Game.hasTerrainRule(n.q, n.r, 'dangerous') || Game.hasTerrainRule(n.q, n.r, 'difficult')) {
+            const td = Game.state.terrain.get(`${n.q},${n.r}`);
+            if (td && td.surface) {
+              results.push({ type: 'terrain', q: n.q, r: n.r, surface: td.surface });
+            }
+          }
+        }
+        return results;
+      }
 
       default:
         console.warn(`[Abilities] Unknown target type: "${targetType}"`);
@@ -500,6 +526,52 @@ const Abilities = (() => {
     return false;
   }
 
+  // ── Terrain Immunity ─────────────────────────────────────────
+
+  /** Collect all comma-separated values from a passive effect by name. */
+  function getPassiveList(unit, effectName) {
+    if (!unit || !unit.abilities) return [];
+    const lower = effectName.toLowerCase();
+    const items = [];
+    for (const ab of unit.abilities) {
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule || rule.type !== 'passive') continue;
+        if (rule.condition && !evaluateCondition(rule.condition, { unit })) continue;
+        for (const eff of rule.effects) {
+          if (eff.effect && eff.effect.toLowerCase() === lower && eff.value) {
+            items.push(...eff.value.toLowerCase().split(',').map(s => s.trim()));
+          }
+        }
+      }
+    }
+    return items;
+  }
+
+  // Terrain rules considered "negative" for ignoreTerrain surface immunity
+  const NEGATIVE_TERRAIN_RULES = ['difficult', 'impassable', 'dangerous', 'poisonous', 'revealing'];
+
+  /**
+   * Check if a unit ignores a specific terrain rule at a hex.
+   * Checks both ignoreTerrainRule (global) and ignoreTerrain (surface-specific).
+   */
+  function ignoresTerrainRule(unit, ruleName, q, r) {
+    if (!unit) return false;
+    const rLower = ruleName.toLowerCase();
+
+    // ignoreTerrainRule: unit ignores this rule on ALL terrain
+    const ignoredRules = getPassiveList(unit, 'ignoreterrainrule');
+    if (ignoredRules.includes(rLower)) return true;
+
+    // ignoreTerrain: unit ignores negative effects of specific surfaces
+    if (!NEGATIVE_TERRAIN_RULES.includes(rLower)) return false;
+    const ignoredSurfaces = getPassiveList(unit, 'ignoreterrain');
+    if (ignoredSurfaces.length === 0) return false;
+    const td = Game.state.terrain.get(`${q},${r}`);
+    if (!td || !td.surface) return false;
+    return ignoredSurfaces.includes(td.surface.toLowerCase());
+  }
+
   // ── Unit Binding ─────────────────────────────────────────────
 
   /** Attach resolved ability definitions to a unit instance. */
@@ -509,6 +581,11 @@ const Abilities = (() => {
       .filter(Boolean);
     unit.usedAbilities = new Set();
     unit.mana = 0;
+
+    // Auto-apply faction-wide ability (ability named after the faction)
+    if (unit.faction && abilityDefs[unit.faction]) {
+      unit.abilities.push(abilityDefs[unit.faction]);
+    }
 
     // Warn about unresolved abilities
     for (const r of (unit.specialRules || [])) {
@@ -536,6 +613,137 @@ const Abilities = (() => {
       }
     }
     return false;
+  }
+
+  // ── On-Attack Helpers (Toss and similar pre-attack abilities) ──
+
+  /** Check if a unit has any onAttack rules (e.g. Toss). */
+  function hasOnAttackRules(unit) {
+    if (!unit || !unit.abilities) return false;
+    if (Game.hasCondition(unit, 'silenced')) return false;
+    for (const ab of unit.abilities) {
+      if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
+      if (ab.ruleIds.some(id => atomicRules[id]?.type === 'onAttack')) return true;
+    }
+    return false;
+  }
+
+  /** Get valid toss sources (adjacent allies + qualifying terrain). */
+  function getTossSourceHexes(unit) {
+    const sources = new Map();
+    if (!unit || !unit.abilities) return sources;
+    for (const ab of unit.abilities) {
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule || rule.type !== 'onAttack') continue;
+        const targets = resolveTargets(rule.target, { unit }, rule);
+        for (const t of targets) {
+          sources.set(`${t.q},${t.r}`, t);
+        }
+      }
+    }
+    return sources;
+  }
+
+  /** Get valid toss destinations (unoccupied hexes adjacent to attack target). */
+  function getTossDestHexes(targetQ, targetR) {
+    const dests = new Set();
+    const neighbors = Board.getNeighbors(targetQ, targetR);
+    for (const n of neighbors) {
+      if (!Board.getHex(n.q, n.r)) continue;
+      if (Game.state.units.some(u => u.q === n.q && u.r === n.r && u.health > 0)) continue;
+      if (Game.hasTerrainRule(n.q, n.r, 'impassable')) continue;
+      dests.add(`${n.q},${n.r}`);
+    }
+    return dests;
+  }
+
+  /** Read bonus damage value from onAttack rule effects. */
+  function getOnAttackBonusDamage(unit) {
+    if (!unit || !unit.abilities) return 0;
+    for (const ab of unit.abilities) {
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule || rule.type !== 'onAttack') continue;
+        for (const eff of rule.effects) {
+          if (eff.effect && eff.effect.toLowerCase() === 'bonusdamage') return int(eff.value);
+        }
+      }
+    }
+    return 0;
+  }
+
+  // ── After-Move Helpers (Level and similar post-move abilities) ──
+
+  /** Check if a unit has any afterMove rules (e.g. Level). */
+  function hasAfterMoveRules(unit) {
+    if (!unit || !unit.abilities) return false;
+    if (Game.hasCondition(unit, 'silenced')) return false;
+    for (const ab of unit.abilities) {
+      if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
+      if (ab.ruleIds.some(id => atomicRules[id]?.type === 'afterMove')) return true;
+    }
+    return false;
+  }
+
+  /** Get afterMove ability data: replacement terrain options + ability name. */
+  function getAfterMoveData(unit) {
+    if (!unit || !unit.abilities) return null;
+    for (const ab of unit.abilities) {
+      if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule || rule.type !== 'afterMove') continue;
+        const terrainOptions = [];
+        for (const eff of rule.effects) {
+          if (eff.effect && eff.effect.toLowerCase() === 'replaceterrain' && eff.value) {
+            terrainOptions.push(...eff.value.toLowerCase().split(',').map(s => s.trim()));
+          }
+        }
+        return { abilityName: ab.name, terrainOptions, oncePerGame: ab.oncePerGame };
+      }
+    }
+    return null;
+  }
+
+  /** Mark an ability as used (for once-per-game tracking outside dispatch). */
+  function markAbilityUsed(unit, abilityName) {
+    if (unit) unit.usedAbilities.add(abilityName);
+  }
+
+  /** Check if unit has Toter-type afterMove rules (teleportAlly effect). */
+  function hasToterRules(unit) {
+    if (!unit || !unit.abilities) return false;
+    if (Game.hasCondition(unit, 'silenced')) return false;
+    for (const ab of unit.abilities) {
+      if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule || rule.type !== 'afterMove') continue;
+        for (const eff of rule.effects) {
+          if (eff.effect && eff.effect.toLowerCase() === 'teleportally') return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Get Toter ability data for a unit. */
+  function getToterData(unit) {
+    if (!unit || !unit.abilities) return null;
+    for (const ab of unit.abilities) {
+      if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule || rule.type !== 'afterMove') continue;
+        for (const eff of rule.effects) {
+          if (eff.effect && eff.effect.toLowerCase() === 'teleportally') {
+            return { abilityName: ab.name, oncePerGame: ab.oncePerGame };
+          }
+        }
+      }
+    }
+    return null;
   }
 
   // ── Targeted Actions (player-activated abilities) ────────────
@@ -722,6 +930,16 @@ const Abilities = (() => {
     getPassiveMod,
     hasFlag,
     hasDeployRule,
+    ignoresTerrainRule,
+    hasOnAttackRules,
+    getTossSourceHexes,
+    getTossDestHexes,
+    getOnAttackBonusDamage,
+    hasAfterMoveRules,
+    getAfterMoveData,
+    markAbilityUsed,
+    hasToterRules,
+    getToterData,
     getActions,
     getTargeting,
     executeAction,

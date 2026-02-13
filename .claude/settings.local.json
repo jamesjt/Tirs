@@ -26,7 +26,8 @@
       "Bash(git -C \"D:\\\\Projects\\\\Traea\\\\Tirs\" push origin main)",
       "Bash(findstr:*)",
       "Bash(echo:*)",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Bash(Select-String -Pattern \"ignore\" -SimpleMatch)"
     ]
   }
 }

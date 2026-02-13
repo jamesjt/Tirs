@@ -141,6 +141,7 @@ const Game = (() => {
     vulnerable:   { armor: -1 },
     strengthened: { damage: 1 },
     weakness:     { damage: -1 },
+    break:       { armor: -1 },
   };
 
   /** Get effective stat value after condition + ability modifiers. */
@@ -154,7 +155,7 @@ const Game = (() => {
       val += Abilities.getPassiveMod(unit, stat);
     }
     if (stat === 'damage' && val < 1) val = 1;
-    if (stat === 'armor') { /* armor can go negative via vulnerable */ }
+    if (stat === 'armor' && val < 0) val = 0;
     return val;
   }
 
@@ -412,9 +413,11 @@ const Game = (() => {
         blocked.add(`${other.q},${other.r}`);
       }
     }
+    const ignoresTerrain = typeof Abilities !== 'undefined'
+      ? (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r) : () => false;
     for (const [key] of state.terrain) {
       const [tq, tr] = key.split(',').map(Number);
-      if (hasTerrainRule(tq, tr, 'impassable')) blocked.add(key);
+      if (hasTerrainRule(tq, tr, 'impassable') && !ignoresTerrain('impassable', tq, tr)) blocked.add(key);
     }
     // Hexes occupied by allies: can move through but not stop
     const allyOccupied = new Set();
@@ -431,7 +434,7 @@ const Game = (() => {
         const td = state.terrain.get(`${toQ},${toR}`);
         return (td && td.player === u.player) ? 0 : 2;
       }
-      if (hasTerrainRule(toQ, toR, 'difficult')) return 2;
+      if (hasTerrainRule(toQ, toR, 'difficult') && !ignoresTerrain('difficult', toQ, toR)) return 2;
       return 1;
     }
     const parentMap = new Map();
@@ -451,6 +454,8 @@ const Game = (() => {
     if (!act) return null;
     const u = act.unit;
     const canMoveIntoEnemies = typeof Abilities !== 'undefined' && Abilities.hasFlag(u, 'moveintoenemies');
+    const ignoresTerrain = typeof Abilities !== 'undefined'
+      ? (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r) : () => false;
 
     const blocked = new Set();
     for (const other of state.units) {
@@ -459,7 +464,7 @@ const Game = (() => {
     }
     for (const [key] of state.terrain) {
       const [tq, tr] = key.split(',').map(Number);
-      if (hasTerrainRule(tq, tr, 'impassable')) blocked.add(key);
+      if (hasTerrainRule(tq, tr, 'impassable') && !ignoresTerrain('impassable', tq, tr)) blocked.add(key);
     }
 
     function moveCost(fromQ, fromR, toQ, toR) {
@@ -467,7 +472,7 @@ const Game = (() => {
         const td = state.terrain.get(`${toQ},${toR}`);
         return (td && td.player === u.player) ? 0 : 2;
       }
-      if (hasTerrainRule(toQ, toR, 'difficult')) return 2;
+      if (hasTerrainRule(toQ, toR, 'difficult') && !ignoresTerrain('difficult', toQ, toR)) return 2;
       return 1;
     }
 
@@ -590,6 +595,34 @@ const Game = (() => {
     // Reconstruct shortest path and traverse each hex
     if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
     const path = Board.getPath(fromQ, fromR, toQ, toR, act._parentMap);
+
+    // Track terrain hexes left during movement (for Level-type abilities)
+    act.terrainHexesLeft = [];
+    const startTd = state.terrain.get(`${fromQ},${fromR}`);
+    if (startTd && startTd.surface) {
+      act.terrainHexesLeft.push({ q: fromQ, r: fromR, surface: startTd.surface });
+    }
+    for (let i = 0; i < path.length - 1; i++) {
+      const td = state.terrain.get(`${path[i].q},${path[i].r}`);
+      if (td && td.surface) {
+        act.terrainHexesLeft.push({ q: path[i].q, r: path[i].r, surface: td.surface });
+      }
+    }
+
+    // Track allies adjacent to path hexes (for Toter-type abilities)
+    act.alliesPassedDuringMove = [];
+    const passedSet = new Set();
+    for (const step of path) {
+      for (const u of state.units) {
+        if (u.health <= 0 || u === act.unit || u.player !== act.unit.player) continue;
+        if (passedSet.has(u)) continue;
+        if (Board.hexDistance(step.q, step.r, u.q, u.r) === 1) {
+          passedSet.add(u);
+          act.alliesPassedDuringMove.push(u);
+        }
+      }
+    }
+
     for (const step of path) {
       act.unit.q = step.q;
       act.unit.r = step.r;
@@ -616,16 +649,22 @@ const Game = (() => {
     state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ: act.unit.q, toR: act.unit.r, prevObjControl, prevMoveDistance, prevHealth, prevConditions, otherUnitPositions });
     log(`${act.unit.name} moved (${fromQ},${fromR}) \u2192 (${act.unit.q},${act.unit.r})`, act.unit.player);
 
-    // If both actions used, end activation (unless confirmEndTurn or pending effects)
+    // If both actions used, end activation (unless confirmEndTurn, pending effects,
+    // or afterMove abilities like Level still need to resolve)
     if (act.moved && act.attacked && !state.rules.confirmEndTurn) {
-      if (typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) {
+      const hasPending = typeof Abilities !== 'undefined' && Abilities.hasPendingEffects();
+      const hasAfterMove = typeof Abilities !== 'undefined'
+        && Abilities.hasAfterMoveRules(act.unit)
+        && ((act.terrainHexesLeft && act.terrainHexesLeft.length > 0)
+          || (act.alliesPassedDuringMove && act.alliesPassedDuringMove.length > 0));
+      if (!hasPending && !hasAfterMove) {
         endActivation();
       }
     }
     return true;
   }
 
-  function attackUnit(targetQ, targetR) {
+  function attackUnit(targetQ, targetR, bonusDamage, tossData) {
     const act = state.activationState;
     if (!act || act.attacked) return false;
 
@@ -638,7 +677,7 @@ const Game = (() => {
     // Deal damage using effective stats (conditions applied)
     const prevHealth = target.health;
     const prevAttackerHealth = act.unit.health;
-    const atkDmg = getEffective(act.unit, 'damage');
+    const atkDmg = getEffective(act.unit, 'damage') + (bonusDamage || 0);
     let defArm = getEffective(target, 'armor');
     // Precise: ignore target's base armor (only condition-granted armor applies)
     if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'ignoreBaseArmor')) {
@@ -668,7 +707,10 @@ const Game = (() => {
       }
     }
 
-    state.actionHistory.push({ type: 'attack', target, prevHealth, prevAttackerHealth });
+    state.actionHistory.push({
+      type: 'attack', target, prevHealth, prevAttackerHealth,
+      tossData: tossData || null,
+    });
     const killText = target.health <= 0 ? ' \u2620 KILLED' : ` (${target.health}/${target.maxHealth} HP)`;
     log(`${act.unit.name} attacks ${target.name} for ${dmg} dmg${killText}`, act.unit.player);
     if (hasCondition(act.unit, 'burning') && prevAttackerHealth !== act.unit.health) {
@@ -822,15 +864,17 @@ const Game = (() => {
   /** Handle terrain effects when a unit enters a hex. */
   function onEnterHex(unit, q, r) {
     if (!unit || unit.health <= 0) return;
-    if (hasTerrainRule(q, r, 'dangerous')) {
+    const ignores = typeof Abilities !== 'undefined'
+      ? (rule) => Abilities.ignoresTerrainRule(unit, rule, q, r) : () => false;
+    if (hasTerrainRule(q, r, 'dangerous') && !ignores('dangerous')) {
       unit.health -= 1;
       log(`${unit.name} takes 1 terrain damage (${unit.health}/${unit.maxHealth} HP)`, unit.player);
     }
-    if (hasTerrainRule(q, r, 'poisonous')) {
+    if (hasTerrainRule(q, r, 'poisonous') && !ignores('poisonous')) {
       addCondition(unit, 'poisoned', 'endOfActivation');
       log(`${unit.name} poisoned by terrain`, unit.player);
     }
-    if (hasTerrainRule(q, r, 'revealing')) {
+    if (hasTerrainRule(q, r, 'revealing') && !ignores('revealing')) {
       addCondition(unit, 'vulnerable', 'endOfRound', 'revealing');
       log(`${unit.name} revealed (vulnerable)`, unit.player);
     }
@@ -910,6 +954,8 @@ const Game = (() => {
 
     const last = state.actionHistory[state.actionHistory.length - 1];
     if (last.type === 'move' && !state.rules.canUndoMove) return false;
+    if (last.type === 'level' && !state.rules.canUndoMove) return false;
+    if (last.type === 'toter' && !state.rules.canUndoMove) return false;
     if (last.type === 'attack' && !state.rules.canUndoAttack) return false;
     if (last.type === 'ability') {
       if (last.actionCost === 'move' && !state.rules.canUndoMove) return false;
@@ -943,6 +989,27 @@ const Game = (() => {
       if (destKey in state.objectiveControl) {
         state.objectiveControl[destKey] = last.prevObjControl !== undefined ? last.prevObjControl : 0;
       }
+    } else if (last.type === 'level') {
+      // Restore original terrain
+      if (last.prevSurface) {
+        state.terrain.set(`${last.hexQ},${last.hexR}`,
+          { surface: last.prevSurface, player: last.prevPlayer });
+      } else {
+        state.terrain.delete(`${last.hexQ},${last.hexR}`);
+      }
+      // Remove permanent strengthened from Level
+      const cIdx2 = last.unit.conditions.findIndex(
+        c => c.id === 'strengthened' && c.source === 'Level'
+      );
+      if (cIdx2 !== -1) last.unit.conditions.splice(cIdx2, 1);
+      // Un-mark ability as used
+      if (last.abilityName) last.unit.usedAbilities.delete(last.abilityName);
+    } else if (last.type === 'toter') {
+      last.ally.q = last.fromQ;
+      last.ally.r = last.fromR;
+      last.ally.health = last.prevHealth;
+      last.ally.conditions = last.prevConditions;
+      if (last.abilityName) last.unit.usedAbilities.delete(last.abilityName);
     } else if (last.type === 'attack') {
       last.target.health = last.prevHealth;
       // Restore attacker health (Burning self-damage)
@@ -952,6 +1019,20 @@ const Game = (() => {
       act.attacked = false;
       // Dizzy: undoing attack also unlocks move
       if (hasCondition(act.unit, 'dizzy')) act.moved = false;
+      // Undo toss (Toss ability)
+      if (last.tossData) {
+        if (last.tossData.type === 'unit') {
+          last.tossData.unit.q = last.tossData.fromQ;
+          last.tossData.unit.r = last.tossData.fromR;
+          last.tossData.unit.usedAbilities = last.tossData.prevUsedAbilities;
+          if (last.tossData.prevHealth !== undefined) last.tossData.unit.health = last.tossData.prevHealth;
+          if (last.tossData.prevConditions) last.tossData.unit.conditions = last.tossData.prevConditions;
+        } else if (last.tossData.type === 'terrain') {
+          state.terrain.set(`${last.tossData.fromQ},${last.tossData.fromR}`,
+            { surface: last.tossData.surface, player: last.tossData.player });
+          state.terrain.set(`${last.tossData.toQ},${last.tossData.toR}`, { surface: null });
+        }
+      }
     } else if (last.type === 'ability') {
       // Restore all affected unit healths
       for (const snap of last.healthSnapshots) {
@@ -1314,6 +1395,78 @@ const Game = (() => {
     return true;
   }
 
+  /** Teleport a unit or terrain (for Toss ability). Returns undo data. */
+  function executeToss(source, destQ, destR) {
+    if (source.type === 'unit') {
+      const u = source.unit;
+      const fromQ = u.q, fromR = u.r;
+      const prevHealth = u.health;
+      const prevConditions = u.conditions.map(c => ({ ...c }));
+      const prevUsedAbilities = new Set(u.usedAbilities);
+      u.q = destQ;
+      u.r = destR;
+      // Refresh once-per-game abilities
+      u.usedAbilities.clear();
+      // Trigger terrain entry effects at destination
+      onEnterHex(u, destQ, destR);
+      updateObjectiveControl(u);
+      log(`${u.name} is tossed to (${destQ},${destR})`, u.player);
+      return { type: 'unit', unit: u, fromQ, fromR, toQ: destQ, toR: destR,
+        prevUsedAbilities, prevHealth, prevConditions };
+    } else if (source.type === 'terrain') {
+      const fromQ = source.q, fromR = source.r;
+      const td = state.terrain.get(`${fromQ},${fromR}`);
+      const surface = td.surface;
+      const player = td.player || 0;
+      // Remove from source
+      state.terrain.set(`${fromQ},${fromR}`, { surface: null });
+      // Place at destination
+      state.terrain.set(`${destQ},${destR}`, { surface, player });
+      const tName = (Units.terrainRules[surface] || {}).displayName || surface;
+      log(`${tName} terrain tossed (${fromQ},${fromR}) \u2192 (${destQ},${destR})`, 0);
+      return { type: 'terrain', fromQ, fromR, toQ: destQ, toR: destR, surface, player };
+    }
+  }
+
+  /** Execute Level ability: replace terrain and grant permanent +1 damage. */
+  function executeLevel(unit, hexQ, hexR, newSurface, abilityName) {
+    const td = state.terrain.get(`${hexQ},${hexR}`);
+    const prevSurface = td ? td.surface : null;
+    const prevPlayer = td ? (td.player || 0) : 0;
+
+    // Replace terrain with player-owned new surface
+    placeTerrain(hexQ, hexR, newSurface, unit.player);
+
+    // Permanent +1 damage
+    addCondition(unit, 'strengthened', 'permanent', 'Level');
+
+    const oldName = prevSurface
+      ? ((Units.terrainRules[prevSurface] || {}).displayName || prevSurface) : 'empty';
+    const newName = (Units.terrainRules[newSurface] || {}).displayName || newSurface;
+    log(`${unit.name} levels ${oldName} \u2192 ${newName}, damage +1!`, unit.player);
+
+    state.actionHistory.push({
+      type: 'level', unit, hexQ, hexR,
+      prevSurface, prevPlayer, newSurface, abilityName,
+    });
+  }
+
+  /** Execute Toter ability: teleport an ally to a hex adjacent to unit. */
+  function executeToter(unit, ally, destQ, destR, abilityName) {
+    const fromQ = ally.q, fromR = ally.r;
+    const prevHealth = ally.health;
+    const prevConditions = ally.conditions.map(c => ({ ...c }));
+    ally.q = destQ;
+    ally.r = destR;
+    onEnterHex(ally, destQ, destR);
+    updateObjectiveControl(ally);
+    log(`${unit.name} toters ${ally.name} to (${destQ},${destR})`, unit.player);
+    state.actionHistory.push({
+      type: 'toter', unit, ally, fromQ, fromR, toQ: destQ, toR: destR,
+      abilityName, prevHealth, prevConditions,
+    });
+  }
+
   /** Deal damage to a unit from a source. */
   function damageUnit(unit, amount, source) {
     if (!unit || amount <= 0) return;
@@ -1463,6 +1616,9 @@ const Game = (() => {
     pushUnit,
     pullUnit,
     placeTerrain,
+    executeToss,
+    executeLevel,
+    executeToter,
     damageUnit,
     updateObjectiveControl,
     onEnterHex,

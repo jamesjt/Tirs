@@ -48,7 +48,7 @@ const Units = (() => {
 
   /** Fetch a single sheet by exact name (with retries for transient errors). */
   async function fetchSheetExact(sheetName, useHeader, retries = 0) {
-    const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+    const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent(sheetName)}`;
 
     return new Promise((resolve, reject) => {
       Papa.parse(url, {

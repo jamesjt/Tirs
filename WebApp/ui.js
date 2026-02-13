@@ -97,6 +97,7 @@ const UI = (() => {
     silenced:     '\u2715',  // ✕ X mark
     disarmed:     '\u2297',  // ⊗ circled X
     taunted:      '\u25CE',  // ◎ bullseye
+    break:       '\u2B07',  // ⬇ armor stripped
   };
 
   /** Group a unit's conditions array by id, returning [{id, count}] */
@@ -147,6 +148,10 @@ const UI = (() => {
     uiState = freshUiState();
     abilityTargeting = null;
     effectTargeting = null;
+    tossTargeting = null;
+    toterTargeting = null;
+    hideLevelChoiceOverlay();
+    levelTargeting = null;
     if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
   }
 
@@ -184,6 +189,20 @@ const UI = (() => {
     render();
   }
 
+  // ── Toss Targeting Mode (pre-attack: pick source, then destination) ──
+  let tossTargeting = null;
+  // { phase: 1|2, unit, targetQ, targetR, sources: Map, destinations: Set,
+  //   tossSource: object|null, bonusDamage: number }
+
+  // ── Level Targeting Mode (post-move: pick terrain hex, then replacement) ──
+  let levelTargeting = null;
+  // { phase: 1|2, unit, terrainHexes: [{q,r,surface}], data: object,
+  //   selectedHex: {q,r,surface}|null }
+
+  // ── Toter Targeting Mode (post-move: pick ally, then destination) ──
+  let toterTargeting = null;
+  // { phase: 1|2, unit, allies: [unit], data: object, selectedAlly: unit|null }
+
   // ── Effect Targeting Mode (interactive push/pull/move) ────────
   let effectTargeting = null;  // { validHexes: Set<"q,r">, effect: object }
 
@@ -211,6 +230,147 @@ const UI = (() => {
 
     showPhase();
     render();
+  }
+
+  /** Check for Level ability after movement; enter targeting if applicable. */
+  function checkLevelAfterMove() {
+    const act = Game.state.activationState;
+    if (!act || !act.terrainHexesLeft || act.terrainHexesLeft.length === 0) return false;
+    if (typeof Abilities === 'undefined' || !Abilities.hasAfterMoveRules(act.unit)) return false;
+    const data = Abilities.getAfterMoveData(act.unit);
+    if (!data || data.terrainOptions.length === 0) return false;
+
+    levelTargeting = {
+      phase: 1, unit: act.unit,
+      terrainHexes: act.terrainHexesLeft,
+      data, selectedHex: null,
+    };
+    uiState.highlights = new Map(
+      act.terrainHexesLeft.map(h => [`${h.q},${h.r}`, 1])
+    );
+    uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
+    uiState.attackTargets = null;
+    showPhase();
+    render();
+    return true;
+  }
+
+  /** Check for Toter ability after movement; enter targeting if applicable. */
+  function checkToterAfterMove() {
+    const act = Game.state.activationState;
+    if (!act || !act.alliesPassedDuringMove || act.alliesPassedDuringMove.length === 0) return false;
+    if (typeof Abilities === 'undefined' || !Abilities.hasToterRules(act.unit)) return false;
+    const data = Abilities.getToterData(act.unit);
+    if (!data) return false;
+    const allies = act.alliesPassedDuringMove.filter(u => u.health > 0);
+    if (allies.length === 0) return false;
+    toterTargeting = { phase: 1, unit: act.unit, allies, data, selectedAlly: null };
+    uiState.highlights = new Map(allies.map(u => [`${u.q},${u.r}`, 1]));
+    uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
+    uiState.attackTargets = null;
+    showPhase();
+    render();
+    return true;
+  }
+
+  /** Get unoccupied hexes adjacent to unit for Toter placement. */
+  function getToterDestinations(unit) {
+    const neighbors = Board.getNeighbors(unit.q, unit.r);
+    const dests = new Map();
+    for (const n of neighbors) {
+      if (!Board.getHex(n.q, n.r)) continue;
+      if (Game.state.units.some(u => u.q === n.q && u.r === n.r && u.health > 0)) continue;
+      if (Game.hasTerrainRule(n.q, n.r, 'impassable')) continue;
+      dests.set(`${n.q},${n.r}`, 1);
+    }
+    return dests;
+  }
+
+  /** Continue normal post-move flow (effects, end activation, etc.). */
+  function finishPostMove() {
+    if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+      enterEffectTargeting();
+      return;
+    }
+    const act = Game.state.activationState;
+    if (!act) {
+      resetUiState();
+    } else if (act.moved && act.attacked && !Game.state.rules.confirmEndTurn) {
+      Game.endActivation();
+      resetUiState();
+    } else {
+      showActivationHighlights();
+    }
+    showPhase();
+    render();
+  }
+
+  /** Show clickable terrain choice icons at the selected Level hex. */
+  function showLevelChoiceOverlay() {
+    hideLevelChoiceOverlay();
+    if (!levelTargeting || !levelTargeting.selectedHex) return;
+    const hex = Board.getHex(levelTargeting.selectedHex.q, levelTargeting.selectedHex.r);
+    if (!hex) return;
+
+    const container = document.getElementById('unit-tokens');
+    const overlay = document.createElement('div');
+    overlay.className = 'level-choice-overlay';
+    overlay.style.cssText = 'position:absolute;pointer-events:auto;display:flex;gap:8px;z-index:10;transform:translate(-50%,-50%);';
+
+    const zoom = Board.zoomLevel;
+    overlay.style.left = (hex.x * zoom + Board.panX) + 'px';
+    overlay.style.top = (hex.y * zoom + Board.panY) + 'px';
+
+    for (const surface of levelTargeting.data.terrainOptions) {
+      const color = Board.SURFACE_COLORS[surface] || '#999';
+      const btn = document.createElement('div');
+      btn.textContent = surface.charAt(0).toUpperCase() + surface.slice(1);
+      btn.style.cssText = `backbreak:${color};color:#fff;padding:4px 12px;`
+        + 'border-radius:14px;border:2px solid #fff;cursor:pointer;'
+        + 'font-weight:bold;font-size:13px;text-shadow:0 1px 2px rgba(0,0,0,0.7);'
+        + 'box-shadow:0 2px 6px rgba(0,0,0,0.5);user-select:none;transition:transform .1s;';
+      btn.addEventListener('click', e => { e.stopPropagation(); executeLevelChoice(surface); });
+      btn.addEventListener('mouseenter', () => { btn.style.transform = 'scale(1.15)'; });
+      btn.addEventListener('mouseleave', () => { btn.style.transform = ''; });
+      overlay.appendChild(btn);
+    }
+
+    container.appendChild(overlay);
+    levelTargeting.overlayEl = overlay;
+  }
+
+  function hideLevelChoiceOverlay() {
+    if (levelTargeting && levelTargeting.overlayEl) {
+      levelTargeting.overlayEl.remove();
+      levelTargeting.overlayEl = null;
+    }
+    document.querySelectorAll('.level-choice-overlay').forEach(el => el.remove());
+  }
+
+  /** Re-position Level choice overlay on zoom/pan. */
+  function updateLevelOverlayPosition() {
+    if (!levelTargeting || !levelTargeting.overlayEl || !levelTargeting.selectedHex) return;
+    const hex = Board.getHex(levelTargeting.selectedHex.q, levelTargeting.selectedHex.r);
+    if (!hex) return;
+    const zoom = Board.zoomLevel;
+    levelTargeting.overlayEl.style.left = (hex.x * zoom + Board.panX) + 'px';
+    levelTargeting.overlayEl.style.top = (hex.y * zoom + Board.panY) + 'px';
+  }
+
+  /** Execute the Level terrain replacement from overlay click or keyboard. */
+  function executeLevelChoice(newSurface) {
+    if (!levelTargeting) return;
+    const sh = levelTargeting.selectedHex;
+    const abilityName = levelTargeting.data.abilityName;
+    Game.executeLevel(levelTargeting.unit, sh.q, sh.r, newSurface, abilityName);
+    if (levelTargeting.data.oncePerGame) {
+      Abilities.markAbilityUsed(levelTargeting.unit, abilityName);
+    }
+    netSend({ type: 'executeLevel', hexQ: sh.q, hexR: sh.r, newSurface, abilityName });
+    hideLevelChoiceOverlay();
+    levelTargeting = null;
+    if (checkToterAfterMove()) return;
+    finishPostMove();
   }
 
   function finishEffectQueue() {
@@ -274,6 +434,7 @@ const UI = (() => {
 
     // ── Debug: condition applicator ──
     buildDebugConditionMenu(nav);
+    buildDebugTerrainMenu(nav);
 
     // Register network action handler + show lobby
     if (typeof Net !== 'undefined') {
@@ -354,6 +515,7 @@ const UI = (() => {
   function render() {
     Board.render({ ...Game.state, ...uiState });
     renderTokens();
+    updateLevelOverlayPosition();
     syncRosterCardActivation();
     updateStatusBar();
     renderGameLog();
@@ -482,6 +644,7 @@ const UI = (() => {
       const hex = Board.getHex(unit.q, unit.r);
       if (!hex) return;
       if (debugPickingUnit && handleDebugClick(hex)) return;
+      if (debugPickingTerrain && handleDebugTerrainClick(hex)) return;
       const phase = Game.state.phase;
       if (phase === Game.PHASE.TERRAIN_DEPLOY) handleTerrainClick(hex);
       else if (phase === Game.PHASE.UNIT_DEPLOY) handleDeployClick(hex);
@@ -499,8 +662,11 @@ const UI = (() => {
       }
     });
 
-    // Hover → track for Ctrl-inspect
-    el.addEventListener('mouseenter', () => { hoveredTokenUnit = unit; });
+    // Hover → show enlarged card (bottom-left for P1, bottom-right for P2)
+    el.addEventListener('mouseenter', () => {
+      hoveredTokenUnit = unit;
+      showHoverCard(unit);
+    });
     el.addEventListener('mouseleave', () => {
       if (hoveredTokenUnit === unit) hoveredTokenUnit = null;
       hideUnitCard();
@@ -518,21 +684,6 @@ const UI = (() => {
             render();
           }
         }
-      }
-      if (e.ctrlKey && hoveredTokenUnit === unit) {
-        const card = document.getElementById('unit-card');
-        if (!card.classList.contains('enlarged')) {
-          card.className = 'unit-card enlarged ' + factionClass(unit.faction);
-          card.innerHTML = buildCardHTML(unit);
-          const cardLeft = window.innerWidth / 2 - 240;
-          const cardTop = window.innerHeight / 2 - 336;
-          card.style.left = cardLeft + 'px';
-          card.style.top = cardTop + 'px';
-          showCardConditions(unit, cardLeft, cardTop);
-        }
-      } else if (!e.ctrlKey) {
-        const card = document.getElementById('unit-card');
-        if (card.classList.contains('enlarged')) hideUnitCard();
       }
     });
 
@@ -593,9 +744,34 @@ const UI = (() => {
     let text = '';
 
     if (s.phase === Game.PHASE.BATTLE) {
-      // HUD handles scores/turn during battle — status bar just shows activation hint
-      const act = s.activationState;
-      text = act ? `${act.unit.name} activated` : 'Select a unit to activate';
+      // Level targeting messages
+      if (levelTargeting) {
+        if (levelTargeting.phase === 1) {
+          text = 'Level: choose terrain to replace (ESC to skip)';
+        } else {
+          text = 'Click a replacement terrain (ESC to go back)';
+        }
+      // Toter targeting messages
+      } else if (toterTargeting) {
+        if (toterTargeting.phase === 1) {
+          text = 'Toter: select an ally to teleport (ESC to skip)';
+        } else {
+          text = `Place ${toterTargeting.selectedAlly.name} adjacent to ${toterTargeting.unit.name} (ESC to go back)`;
+        }
+      // Toss targeting messages
+      } else if (tossTargeting) {
+        if (tossTargeting.phase === 1) {
+          text = 'Toss an adjacent ally or terrain? (ESC to skip)';
+        } else {
+          const name = tossTargeting.tossSource.type === 'unit'
+            ? tossTargeting.tossSource.unit.name : tossTargeting.tossSource.surface;
+          text = `Choose where to toss ${name} (ESC to go back)`;
+        }
+      } else {
+        // HUD handles scores/turn during battle — status bar just shows activation hint
+        const act = s.activationState;
+        text = act ? `${act.unit.name} activated` : 'Select a unit to activate';
+      }
     } else if (s.phase === Game.PHASE.GAME_OVER) {
       const winner = s.scores[1] > s.scores[2] ? 'Player 1' :
                      s.scores[2] > s.scores[1] ? 'Player 2' : 'Tie';
@@ -1866,6 +2042,24 @@ const UI = (() => {
     card.style.top = finalY + 'px';
   }
 
+  function showHoverCard(unit) {
+    const card = document.getElementById('unit-card');
+    card.className = 'unit-card enlarged ' + factionClass(unit.faction);
+    card.innerHTML = buildCardHTML(unit);
+    const margin = 16;
+    const cardW = 480, cardH = 672;
+    let cardLeft, cardTop;
+    if (unit.player === 2) {
+      cardLeft = window.innerWidth - cardW - margin;
+    } else {
+      cardLeft = margin;
+    }
+    cardTop = window.innerHeight - cardH - margin;
+    card.style.left = cardLeft + 'px';
+    card.style.top = cardTop + 'px';
+    showCardConditions(unit, cardLeft, cardTop);
+  }
+
   function hideUnitCard() {
     document.getElementById('unit-card').className = 'unit-card hidden';
     document.getElementById('card-conditions').className = 'card-conditions hidden';
@@ -1901,9 +2095,16 @@ const UI = (() => {
     }
     panel.innerHTML = html;
     panel.className = 'card-conditions';
-    // Position to the left of the enlarged card
+    // Position conditions panel beside the enlarged card
     const panelWidth = 140;
-    panel.style.left = (cardLeft - panelWidth - 12) + 'px';
+    const cardW = 480;
+    if (unit.player === 2) {
+      // P2 card is on the right — put conditions to its left
+      panel.style.left = (cardLeft - panelWidth - 12) + 'px';
+    } else {
+      // P1 card is on the left — put conditions to its right
+      panel.style.left = (cardLeft + cardW + 12) + 'px';
+    }
     panel.style.top = cardTop + 'px';
   }
 
@@ -1917,6 +2118,86 @@ const UI = (() => {
   function onKeyDown(e) {
     const key = e.key.toLowerCase();
 
+    // Level targeting — click overlay or number keys for terrain choice, ESC to skip/go back
+    if (levelTargeting) {
+      if (levelTargeting.phase === 2) {
+        // Number keys as keyboard shortcut for terrain choice
+        const num = parseInt(key, 10);
+        if (num >= 1 && num <= levelTargeting.data.terrainOptions.length) {
+          executeLevelChoice(levelTargeting.data.terrainOptions[num - 1]);
+          e.preventDefault();
+          return;
+        }
+        if (key === 'escape') {
+          // Go back to phase 1
+          hideLevelChoiceOverlay();
+          levelTargeting.phase = 1;
+          levelTargeting.selectedHex = null;
+          uiState.highlights = new Map(
+            levelTargeting.terrainHexes.map(h => [`${h.q},${h.r}`, 1])
+          );
+          uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
+          showPhase();
+          render();
+          e.preventDefault();
+          return;
+        }
+      } else if (key === 'escape') {
+        // Skip Level — check for Toter, then normal post-move flow
+        hideLevelChoiceOverlay();
+        levelTargeting = null;
+        if (!checkToterAfterMove()) finishPostMove();
+        e.preventDefault();
+        return;
+      }
+    }
+
+    // ESC: toter targeting — phase 2 goes back to phase 1, phase 1 skips
+    if (key === 'escape' && toterTargeting) {
+      if (toterTargeting.phase === 2) {
+        toterTargeting.phase = 1;
+        toterTargeting.selectedAlly = null;
+        uiState.highlights = new Map(toterTargeting.allies.map(u => [`${u.q},${u.r}`, 1]));
+        uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
+        showPhase();
+        render();
+      } else {
+        toterTargeting = null;
+        finishPostMove();
+      }
+      e.preventDefault();
+      return;
+    }
+
+    // ESC: toss targeting — phase 2 goes back to phase 1, phase 1 skips toss
+    if (key === 'escape' && tossTargeting) {
+      if (tossTargeting.phase === 2) {
+        tossTargeting.phase = 1;
+        tossTargeting.tossSource = null;
+        uiState.highlights = new Map([...tossTargeting.sources.keys()].map(k => [k, 1]));
+        uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
+      } else {
+        // Skip toss — attack with no bonus
+        const tQ = tossTargeting.targetQ, tR = tossTargeting.targetR;
+        tossTargeting = null;
+        const ok = Game.attackUnit(tQ, tR);
+        if (ok) {
+          netSend({ type: 'attackUnit', q: tQ, r: tR });
+          if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+            enterEffectTargeting();
+            e.preventDefault();
+            return;
+          }
+          if (!Game.state.activationState) { resetUiState(); }
+          else { showActivationHighlights(); }
+        }
+      }
+      showPhase();
+      render();
+      e.preventDefault();
+      return;
+    }
+
     // ESC: skip current effect targeting step (push/pull/move)
     if (key === 'escape' && effectTargeting) {
       Abilities.skipEffect();
@@ -1928,6 +2209,17 @@ const UI = (() => {
     // ESC: cancel ability targeting
     if (key === 'escape' && abilityTargeting) {
       cancelAbilityTargeting();
+      e.preventDefault();
+      return;
+    }
+
+    // ESC: cancel debug picking modes
+    if (key === 'escape' && (debugPickingUnit || debugPickingTerrain)) {
+      debugPickingUnit = false;
+      debugSelectedCondition = null;
+      debugPickingTerrain = false;
+      debugSelectedTerrain = null;
+      updateStatusBar();
       e.preventDefault();
       return;
     }
@@ -2031,6 +2323,28 @@ const UI = (() => {
     }
   }
 
+  function updateTerrainTooltip(e) {
+    const tip = document.getElementById('terrain-tooltip');
+    const hex = Board.hexAtPixel(e.clientX, e.clientY);
+    if (!hex) { tip.classList.add('hidden'); return; }
+    const td = Game.state.terrain.get(`${hex.q},${hex.r}`);
+    if (!td || !td.surface) { tip.classList.add('hidden'); return; }
+    const info = Units.terrainRules[td.surface];
+    const name = info ? (info.displayName || td.surface) : td.surface;
+    const element = info && info.element ? info.element : '';
+    const rules = info && info.rules && info.rules.length
+      ? info.rules.join(', ') : 'none';
+    tip.innerHTML = `<div class="tt-name">${name}${element ? ` <span class="tt-element">(${element})</span>` : ''}</div><div class="tt-rules">${rules}</div>`;
+    tip.classList.remove('hidden');
+    const pad = 14;
+    let tx = e.clientX + pad;
+    let ty = e.clientY + pad;
+    if (tx + tip.offsetWidth > window.innerWidth) tx = e.clientX - tip.offsetWidth - pad;
+    if (ty + tip.offsetHeight > window.innerHeight) ty = e.clientY - tip.offsetHeight - pad;
+    tip.style.left = tx + 'px';
+    tip.style.top = ty + 'px';
+  }
+
   function onMouseMove(e) {
     if (moveAnimating) return;  // block hover during move animation
     if (dragCard) return;  // roster card drag takes priority
@@ -2073,6 +2387,9 @@ const UI = (() => {
         render();
       }
     }
+
+    // Terrain tooltip on any hex hover
+    updateTerrainTooltip(e);
   }
 
   /** Rebuild pathPreview from the unit's position to (destQ, destR). */
@@ -2209,8 +2526,9 @@ const UI = (() => {
     const hex = Board.hexAtPixel(e.clientX, e.clientY);
     if (!hex) return;
 
-    // Debug condition picking intercepts all clicks
+    // Debug picking intercepts all clicks
     if (debugPickingUnit && handleDebugClick(hex)) return;
+    if (debugPickingTerrain && handleDebugTerrainClick(hex)) return;
 
     const phase = Game.state.phase;
 
@@ -2594,6 +2912,90 @@ const UI = (() => {
       return;
     }
 
+    // Toter targeting mode (phase 1: select ally, phase 2: select destination)
+    if (toterTargeting && toterTargeting.phase === 1) {
+      const ally = toterTargeting.allies.find(u => u.q === hex.q && u.r === hex.r);
+      if (ally) {
+        toterTargeting.selectedAlly = ally;
+        toterTargeting.phase = 2;
+        uiState.highlights = getToterDestinations(toterTargeting.unit);
+        uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
+        showPhase();
+        render();
+      }
+      return;
+    }
+    if (toterTargeting && toterTargeting.phase === 2) {
+      if (uiState.highlights.has(key)) {
+        const data = toterTargeting.data;
+        Game.executeToter(toterTargeting.unit, toterTargeting.selectedAlly, hex.q, hex.r, data.abilityName);
+        if (data.oncePerGame) Abilities.markAbilityUsed(toterTargeting.unit, data.abilityName);
+        netSend({ type: 'executeToter', allyName: toterTargeting.selectedAlly.name, toQ: hex.q, toR: hex.r, abilityName: data.abilityName });
+        toterTargeting = null;
+        finishPostMove();
+      }
+      return;
+    }
+
+    // Level targeting mode (phase 1: pick terrain hex to replace)
+    if (levelTargeting && levelTargeting.phase === 1) {
+      const match = levelTargeting.terrainHexes.find(
+        h => h.q === hex.q && h.r === hex.r
+      );
+      if (match) {
+        levelTargeting.selectedHex = match;
+        levelTargeting.phase = 2;
+        uiState.highlights = new Map([[key, 1]]);
+        uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
+        showLevelChoiceOverlay();
+        showPhase();
+        render();
+      }
+      return;
+    }
+
+    // Toss targeting mode (phase 1: pick source, phase 2: pick destination)
+    if (tossTargeting) {
+      if (tossTargeting.phase === 1) {
+        if (tossTargeting.sources.has(key)) {
+          tossTargeting.tossSource = tossTargeting.sources.get(key);
+          tossTargeting.phase = 2;
+          const dests = Abilities.getTossDestHexes(tossTargeting.targetQ, tossTargeting.targetR);
+          tossTargeting.destinations = dests;
+          uiState.highlights = new Map([...dests].map(k => [k, 1]));
+          uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
+          showPhase();
+          render();
+        }
+        return;
+      }
+      if (tossTargeting.phase === 2) {
+        if (tossTargeting.destinations.has(key)) {
+          const tossData = Game.executeToss(tossTargeting.tossSource, hex.q, hex.r);
+          netSend({ type: 'toss', source: {
+            type: tossTargeting.tossSource.type,
+            fromQ: tossTargeting.tossSource.q, fromR: tossTargeting.tossSource.r
+          }, toQ: hex.q, toR: hex.r });
+          const tQ = tossTargeting.targetQ, tR = tossTargeting.targetR;
+          const bonus = tossTargeting.bonusDamage;
+          tossTargeting = null;
+          const ok = Game.attackUnit(tQ, tR, bonus, tossData);
+          if (ok) {
+            netSend({ type: 'attackUnit', q: tQ, r: tR, bonusDamage: bonus });
+            if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+              enterEffectTargeting();
+              return;
+            }
+            if (!Game.state.activationState) { resetUiState(); }
+            else { showActivationHighlights(); }
+          }
+          showPhase();
+          render();
+        }
+        return;
+      }
+    }
+
     // Effect targeting mode (push/pull/move): click valid hex to resolve
     if (effectTargeting) {
       if (effectTargeting.validHexes.has(key)) {
@@ -2643,42 +3045,42 @@ const UI = (() => {
             moveAnimating = true;
             animateTokenAlongPath(animUnit, animPath, speed, () => {
               moveAnimating = false;
-              if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
-                enterEffectTargeting();
-                showPhase();
-                render();
-                return;
-              }
-              if (!Game.state.activationState) {
-                resetUiState();
-              } else {
-                showActivationHighlights();
-              }
-              showPhase();
-              render();
+              if (checkLevelAfterMove()) return;
+              if (checkToterAfterMove()) return;
+              finishPostMove();
             });
             return;  // Don't render yet — animation callback will
           }
           // speed === 0: instant (existing behavior)
-          if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
-            enterEffectTargeting();
-            showPhase();
-            render();
-            return;
-          }
-          if (!Game.state.activationState) {
-            resetUiState();
-          } else {
-            showActivationHighlights();
-          }
-          showPhase();
-          render();
+          if (checkLevelAfterMove()) return;
+          if (checkToterAfterMove()) return;
+          finishPostMove();
           return;
         }
       }
 
       // Try attack (click a red attack-target)
       if (uiState.attackTargets && uiState.attackTargets.has(key)) {
+        // Check for onAttack abilities (Toss) — enter toss targeting before dealing damage
+        const act = s.activationState;
+        if (typeof Abilities !== 'undefined' && Abilities.hasOnAttackRules(act.unit)) {
+          const sources = Abilities.getTossSourceHexes(act.unit);
+          if (sources.size > 0) {
+            const bonusDamage = Abilities.getOnAttackBonusDamage(act.unit);
+            tossTargeting = {
+              phase: 1, unit: act.unit,
+              targetQ: hex.q, targetR: hex.r,
+              sources, destinations: null,
+              tossSource: null, bonusDamage,
+            };
+            uiState.highlights = new Map([...sources.keys()].map(k => [k, 1]));
+            uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
+            uiState.attackTargets = null;
+            showPhase();
+            render();
+            return;
+          }
+        }
         const ok = Game.attackUnit(hex.q, hex.r);
         if (ok) {
           netSend({ type: 'attackUnit', q: hex.q, r: hex.r });
@@ -2761,6 +3163,7 @@ const UI = (() => {
     { id: 'silenced',     duration: 'endOfActivation' },
     { id: 'disarmed',     duration: 'endOfActivation' },
     { id: 'taunted',      duration: 'endOfActivation' },
+    { id: 'break',       duration: 'permanent' },
   ];
 
   let debugSelectedCondition = null;
@@ -2832,6 +3235,73 @@ const UI = (() => {
 
     debugPickingUnit = false;
     debugSelectedCondition = null;
+    render();
+    updateStatusBar();
+    return true;
+  }
+
+  // ── Debug: Terrain Placer Menu ──────────────────────────────────
+
+  const DEBUG_TERRAINS = [
+    'sand', 'brambles', 'forest', 'rubble', 'crevasse', 'spire',
+    'bog', 'pool', 'whirlpool', 'tide', 'rain', 'river',
+    'cinder', 'heat wave',
+    'fae mist', 'mist', 'miasma', 'gale', 'storm',
+  ];
+
+  let debugSelectedTerrain = null;   // string surface name, or '__erase__'
+  let debugPickingTerrain = false;
+
+  function buildDebugTerrainMenu(nav) {
+    const wrap = document.createElement('div');
+    wrap.className = 'debug-menu';
+    wrap.innerHTML = '<button class="btn-debug-toggle">Terrain</button>' +
+      '<div class="debug-dropdown hidden">' +
+      DEBUG_TERRAINS.map(t =>
+        `<button class="btn-debug-cond" data-terrain="${t}">${t}</button>`
+      ).join('') +
+      '<hr class="debug-sep">' +
+      '<button class="btn-debug-cond btn-debug-clear" data-terrain="__erase__">Erase</button>' +
+      '</div>';
+    nav.appendChild(wrap);
+
+    const toggle = wrap.querySelector('.btn-debug-toggle');
+    const dropdown = wrap.querySelector('.debug-dropdown');
+
+    toggle.addEventListener('click', e => {
+      e.stopPropagation();
+      dropdown.classList.toggle('hidden');
+    });
+
+    document.addEventListener('click', () => dropdown.classList.add('hidden'));
+    dropdown.addEventListener('click', e => e.stopPropagation());
+
+    dropdown.querySelectorAll('.btn-debug-cond').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const t = btn.dataset.terrain;
+        debugSelectedTerrain = t;
+        debugPickingTerrain = true;
+        dropdown.classList.add('hidden');
+        if (t === '__erase__') {
+          document.getElementById('status-bar').textContent = 'Click a hex to ERASE its terrain... (ESC to cancel)';
+        } else {
+          document.getElementById('status-bar').textContent = `Click a hex to place "${t}" terrain... (ESC to cancel)`;
+        }
+      });
+    });
+  }
+
+  function handleDebugTerrainClick(hex) {
+    if (!debugPickingTerrain) return false;
+
+    if (debugSelectedTerrain === '__erase__') {
+      Game.state.terrain.delete(`${hex.q},${hex.r}`);
+    } else {
+      Game.placeTerrain(hex.q, hex.r, debugSelectedTerrain, 0);
+    }
+
+    debugPickingTerrain = false;
+    debugSelectedTerrain = null;
     render();
     updateStatusBar();
     return true;
@@ -2967,8 +3437,43 @@ const UI = (() => {
         }
         break;
       }
+      case 'executeLevel': {
+        const u = Game.state.activationState?.unit;
+        if (u) {
+          Game.executeLevel(u, data.hexQ, data.hexR, data.newSurface, data.abilityName);
+          if (data.abilityName) Abilities.markAbilityUsed(u, data.abilityName);
+        }
+        render();
+        break;
+      }
+      case 'executeToter': {
+        const ally = Game.state.units.find(u => u.name === data.allyName && u.health > 0);
+        const act = Game.state.activationState;
+        if (ally && act) {
+          Game.executeToter(act.unit, ally, data.toQ, data.toR, data.abilityName);
+          if (data.abilityName) Abilities.markAbilityUsed(act.unit, data.abilityName);
+        }
+        render();
+        break;
+      }
+      case 'toss': {
+        const src = data.source;
+        let tossSource;
+        if (src.type === 'unit') {
+          const u = Game.state.units.find(
+            u => u.q === src.fromQ && u.r === src.fromR && u.health > 0
+          );
+          tossSource = { type: 'unit', unit: u, q: src.fromQ, r: src.fromR };
+        } else {
+          const td = Game.state.terrain.get(`${src.fromQ},${src.fromR}`);
+          tossSource = { type: 'terrain', q: src.fromQ, r: src.fromR, surface: td?.surface };
+        }
+        Game.executeToss(tossSource, data.toQ, data.toR);
+        render();
+        break;
+      }
       case 'attackUnit':
-        Game.attackUnit(data.q, data.r);
+        Game.attackUnit(data.q, data.r, data.bonusDamage || 0, data.tossData || null);
         if (!Game.state.activationState) {
           resetUiState();
         } else {
