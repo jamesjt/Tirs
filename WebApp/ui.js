@@ -151,17 +151,18 @@ const UI = (() => {
   }
 
   // ── Ability Targeting Mode ──────────────────────────────────
-  let abilityTargeting = null;  // { abilityName, unit, validTargets: Set<"q,r"> }
+  let abilityTargeting = null;  // { abilityName, unit, validTargets, actionCost }
 
-  function enterAbilityTargeting(abilityName, unit, targeting) {
+  function enterAbilityTargeting(abilityName, unit, targeting, actionCost) {
     const valid = new Set();
+    const overrides = { atkType: targeting.atkType, range: targeting.range };
     for (const enemy of Game.state.units) {
       if (enemy.health <= 0 || enemy.player === unit.player) continue;
       if (Board.hexDistance(unit.q, unit.r, enemy.q, enemy.r) > targeting.range) continue;
-      if (targeting.los && !Game.canAttack(unit, enemy)) continue;
+      if (!Game.canAttack(unit, enemy, overrides)) continue;
       valid.add(`${enemy.q},${enemy.r}`);
     }
-    abilityTargeting = { abilityName, unit, validTargets: valid };
+    abilityTargeting = { abilityName, unit, validTargets: valid, actionCost: actionCost || null };
     // Show purple highlights for ability targeting
     uiState.highlights = new Map([...valid].map(k => [k, 1]));
     uiState.highlightColor = 'rgba(180, 80, 255, 0.35)';
@@ -1245,7 +1246,12 @@ const UI = (() => {
         const actions = Abilities.getActions(act.unit);
         for (const ab of actions) {
           if (ab.oncePerGame && act.unit.usedAbilities.has(ab.name)) continue;
-          html += `<button class="btn btn-ability" data-action="use-ability" data-ability="${ab.name}">${ab.name}</button>`;
+          if (ab.actionCost === 'move' && act.moved) continue;
+          if (ab.actionCost === 'attack' && act.attacked) continue;
+          if (Game.hasCondition(act.unit, 'silenced')) continue;
+          const costLabel = ab.actionCost === 'move' ? ' (uses move)'
+                          : ab.actionCost === 'attack' ? ' (uses attack)' : '';
+          html += `<button class="btn btn-ability" data-action="use-ability" data-ability="${ab.name}" data-cost="${ab.actionCost || ''}">${ab.name}${costLabel}</button>`;
         }
       }
 
@@ -1254,9 +1260,12 @@ const UI = (() => {
       if (history.length > 0) {
         const last = history[history.length - 1];
         const canUndo = (last.type === 'move' && s.rules.canUndoMove) ||
-                        (last.type === 'attack' && s.rules.canUndoAttack);
+                        (last.type === 'attack' && s.rules.canUndoAttack) ||
+                        (last.type === 'ability' && last.actionCost === 'move' && s.rules.canUndoMove) ||
+                        (last.type === 'ability' && last.actionCost === 'attack' && s.rules.canUndoAttack);
         if (canUndo) {
-          const label = last.type === 'move' ? 'Undo Move' : 'Undo Attack';
+          const label = last.type === 'ability' ? `Undo ${last.abilityName}` :
+                        last.type === 'move' ? 'Undo Move' : 'Undo Attack';
           html += `<button class="btn btn-action" data-action="undo-action">\u2190 ${label}</button>`;
         }
       }
@@ -2330,14 +2339,28 @@ const UI = (() => {
 
     else if (action === 'use-ability') {
       const abilityName = btn.dataset.ability;
+      const actionCost = btn.dataset.cost || null;
       const act = Game.state.activationState;
       if (!act) return;
       const targeting = typeof Abilities !== 'undefined' && Abilities.getTargeting(abilityName);
       if (targeting) {
-        enterAbilityTargeting(abilityName, act.unit, targeting);
+        enterAbilityTargeting(abilityName, act.unit, targeting, actionCost);
       } else {
+        // Non-targeted action — execute immediately
         if (typeof Abilities !== 'undefined') {
           Abilities.executeAction(abilityName, { unit: act.unit });
+        }
+        if (actionCost === 'move') act.moved = true;
+        else if (actionCost === 'attack') act.attacked = true;
+        if (actionCost) Game.log(`${act.unit.name} uses ${abilityName} (uses ${actionCost})`, act.unit.player);
+        if (act.moved && act.attacked && !Game.state.rules.confirmEndTurn) {
+          if (typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) {
+            Game.endActivation();
+            resetUiState();
+            showPhase();
+            render();
+            return;
+          }
         }
         showActivationHighlights();
         showPhase();
@@ -2482,11 +2505,40 @@ const UI = (() => {
     if (abilityTargeting) {
       if (abilityTargeting.validTargets.has(key)) {
         const target = s.units.find(u => u.q === hex.q && u.r === hex.r && u.health > 0);
+        const abName = abilityTargeting.abilityName;
+        const actionCost = abilityTargeting.actionCost;
+        const act = s.activationState;
+
+        // Snapshot health of all living units for undo
+        const healthBefore = s.units
+          .filter(u => u.health > 0)
+          .map(u => ({ unit: u, prevHealth: u.health }));
+
         if (typeof Abilities !== 'undefined') {
-          Abilities.executeAction(abilityTargeting.abilityName, {
+          Abilities.executeAction(abName, {
             unit: abilityTargeting.unit, target, targetQ: hex.q, targetR: hex.r,
           });
         }
+
+        // Set activation flag based on action cost
+        if (act && actionCost) {
+          if (actionCost === 'move') act.moved = true;
+          else if (actionCost === 'attack') act.attacked = true;
+        }
+        Game.log(`${abilityTargeting.unit.name} uses ${abName}${actionCost ? ' (uses ' + actionCost + ')' : ''}`, abilityTargeting.unit.player);
+
+        // Build undo history entry with health changes
+        const healthSnapshots = healthBefore.filter(snap => snap.unit.health !== snap.prevHealth);
+        const abDef = typeof Abilities !== 'undefined' ? Abilities.getActions(abilityTargeting.unit).find(a => a.name === abName) : null;
+        s.actionHistory.push({
+          type: 'ability',
+          abilityName: abName,
+          actionCost,
+          oncePerGame: abDef ? abDef.oncePerGame : false,
+          unitRef: abilityTargeting.unit,
+          healthSnapshots,
+        });
+
         abilityTargeting = null;
 
         // Check for queued interactive effects from the action
@@ -2495,7 +2547,18 @@ const UI = (() => {
           return;
         }
 
-        if (!Game.state.activationState) {
+        // Auto-end activation if both actions consumed
+        if (act && act.moved && act.attacked && !s.rules.confirmEndTurn) {
+          if (typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) {
+            Game.endActivation();
+            resetUiState();
+            showPhase();
+            render();
+            return;
+          }
+        }
+
+        if (!s.activationState) {
           resetUiState();
         } else {
           showActivationHighlights();

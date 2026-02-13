@@ -66,9 +66,20 @@ const Abilities = (() => {
     return obj && typeof obj.health === 'number';
   }
 
+  /** Parse range column: "D6" → {atkType:'D', range:6}, "L3" → {atkType:'L', range:3}, "6" → {atkType:'D', range:6} */
+  function parseRangeColumn(rangeStr) {
+    if (!rangeStr) return { atkType: 'D', range: 0 };
+    const s = rangeStr.trim();
+    const first = s.charAt(0).toUpperCase();
+    if (first === 'D' || first === 'L' || first === 'P') {
+      return { atkType: first, range: int(s.slice(1)) };
+    }
+    return { atkType: 'D', range: int(s) };
+  }
+
   // ── Target Resolution ────────────────────────────────────────
 
-  function resolveTargets(targetType, ctx) {
+  function resolveTargets(targetType, ctx, rule) {
     if (!targetType) return [];
     switch (targetType.toLowerCase()) {
       case 'atktarget':
@@ -91,6 +102,23 @@ const Abilities = (() => {
 
       case 'alldamaged':
         return ctx.damagedUnits || (ctx.target ? [ctx.target] : []);
+
+      case 'enemy':
+        return ctx.target ? [ctx.target] : [];
+
+      case 'unitsaroundtarget': {
+        if (!ctx.target) return [];
+        const radius = rule ? parseRangeColumn(rule.range).range : 1;
+        const result = [];
+        for (const u of Game.state.units) {
+          if (u.health <= 0) continue;
+          if (u === ctx.target) continue;
+          if (Board.hexDistance(ctx.target.q, ctx.target.r, u.q, u.r) <= radius) {
+            result.push(u);
+          }
+        }
+        return result;
+      }
 
       default:
         console.warn(`[Abilities] Unknown target type: "${targetType}"`);
@@ -315,7 +343,7 @@ const Abilities = (() => {
       if (!rule || rule.type !== triggerType) continue;
       if (rule.condition && !evaluateCondition(rule.condition, ctx)) continue;
 
-      const targets = resolveTargets(rule.target, ctx);
+      const targets = resolveTargets(rule.target, ctx, rule);
       for (const eff of rule.effects) {
         if (eff.effect) applyEffect(targets, eff.effect, eff.value, ctx);
       }
@@ -432,9 +460,9 @@ const Abilities = (() => {
     if (!unit || !unit.abilities) return [];
     const actions = [];
     for (const ab of unit.abilities) {
-      const hasTargeted = ab.ruleIds.some(id => atomicRules[id]?.type === 'action');
-      if (!hasTargeted) continue;
-      actions.push(ab);
+      const actionRule = ab.ruleIds.map(id => atomicRules[id]).find(r => r && r.type === 'action');
+      if (!actionRule) continue;
+      actions.push({ ...ab, actionCost: (actionRule.action || '').toLowerCase() || null });
     }
     return actions;
   }
@@ -446,20 +474,31 @@ const Abilities = (() => {
     for (const ruleId of def.ruleIds) {
       const rule = atomicRules[ruleId];
       if (rule && rule.type === 'action') {
+        const parsed = parseRangeColumn(rule.range);
         return {
-          range: int(rule.range) || 6,
+          range: parsed.range || 6,
+          atkType: parsed.atkType,
           los: rule.los !== 'N',
+          cost: (rule.action || '').toLowerCase() || null,
         };
       }
     }
     return null;
   }
 
-  /** Execute a targeted action. */
+  /** Execute a targeted action ability. Fires action rules, then sibling hit rules. */
   function executeAction(abilityName, ctx) {
     const def = abilityDefs[abilityName];
     if (!def) return;
+
+    effectQueue = [];
+    isQueuing = true;
+
     executeRules(def.ruleIds, 'action', ctx);
+    executeRules(def.ruleIds, 'hit', ctx);
+
+    isQueuing = false;
+
     if (def.oncePerGame && ctx.unit) {
       ctx.unit.usedAbilities.add(def.name);
     }

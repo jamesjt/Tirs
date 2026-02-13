@@ -220,6 +220,7 @@ const Units = (() => {
         value: col(row, ['value']).trim() || null,
         range: col(row, ['range']).trim() || null,
         los: col(row, ['los']).trim() || null,
+        action: col(row, ['action']).trim() || null,
       };
     }
     return rules;

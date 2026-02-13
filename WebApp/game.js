@@ -749,9 +749,10 @@ const Game = (() => {
 
   // ── Attack validation ─────────────────────────────────────────
 
-  function canAttack(attacker, target) {
+  function canAttack(attacker, target, overrides) {
+    const atkRange = overrides?.range ?? attacker.range;
     const dist = Board.hexDistance(attacker.q, attacker.r, target.q, target.r);
-    if (dist > attacker.range) return false;
+    if (dist > atkRange) return false;
 
     // Hidden: units in concealing terrain require adjacent attacker
     // (negated by revealing-sourced vulnerable)
@@ -764,7 +765,7 @@ const Game = (() => {
     if (!hasLoS(attacker.q, attacker.r, target.q, target.r)) return false;
 
     // Targeting pattern
-    const atkType = (attacker.atkType || 'D').toUpperCase();
+    const atkType = overrides?.atkType ?? (attacker.atkType || 'D').toUpperCase();
 
     if (atkType === 'L') {
       // Line: straight geometric hex line + LoE clear on intermediates
@@ -894,6 +895,10 @@ const Game = (() => {
     const last = state.actionHistory[state.actionHistory.length - 1];
     if (last.type === 'move' && !state.rules.canUndoMove) return false;
     if (last.type === 'attack' && !state.rules.canUndoAttack) return false;
+    if (last.type === 'ability') {
+      if (last.actionCost === 'move' && !state.rules.canUndoMove) return false;
+      if (last.actionCost === 'attack' && !state.rules.canUndoAttack) return false;
+    }
 
     state.actionHistory.pop();
 
@@ -924,6 +929,18 @@ const Game = (() => {
       act.attacked = false;
       // Dizzy: undoing attack also unlocks move
       if (hasCondition(act.unit, 'dizzy')) act.moved = false;
+    } else if (last.type === 'ability') {
+      // Restore all affected unit healths
+      for (const snap of last.healthSnapshots) {
+        snap.unit.health = snap.prevHealth;
+      }
+      // Restore activation flag
+      if (last.actionCost === 'move') act.moved = false;
+      else if (last.actionCost === 'attack') act.attacked = false;
+      // Restore once-per-game charge
+      if (last.oncePerGame && last.unitRef) {
+        last.unitRef.usedAbilities.delete(last.abilityName);
+      }
     }
 
     return true;
