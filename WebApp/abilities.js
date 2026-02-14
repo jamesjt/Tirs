@@ -40,6 +40,7 @@ const Abilities = (() => {
     break:       'permanent',
     arcfire:      'permanent',
     moveintoenemies: 'endOfActivation',
+    glidermark:     'manual',  // deferred damage marker, resolved in endActivation()
   };
 
   // ── Trigger Type Mapping ─────────────────────────────────────
@@ -121,7 +122,30 @@ const Abilities = (() => {
         if (act && act.attackPath && act.attackPath.length > 2) {
           return unitsOnPath(act.attackPath);
         }
-        return unitsInLine(ctx.unit, ctx.target);
+        // Try straight hex line first (Line attacks)
+        if (ctx.unit && ctx.target) {
+          const inter = [];
+          const dir = Board.straightLineDir(ctx.unit.q, ctx.unit.r, ctx.target.q, ctx.target.r, inter);
+          if (dir >= 0) {
+            // Valid straight line — find units on intermediate hexes
+            return inter.map(h => Game.state.units.find(u => u.q === h.q && u.r === h.r && u.health > 0)).filter(Boolean);
+          }
+          // Not a straight line (Direct attacks) — units on any shortest path
+          const dist = Board.hexDistance(ctx.unit.q, ctx.unit.r, ctx.target.q, ctx.target.r);
+          if (dist > 1) {
+            const result = [];
+            for (const u of Game.state.units) {
+              if (u.health <= 0 || u === ctx.unit) continue;
+              if (u.q === ctx.target.q && u.r === ctx.target.r) continue;
+              if (Board.hexDistance(ctx.unit.q, ctx.unit.r, u.q, u.r) +
+                  Board.hexDistance(u.q, u.r, ctx.target.q, ctx.target.r) === dist) {
+                result.push(u);
+              }
+            }
+            return result;
+          }
+        }
+        return [];
       }
 
       case 'alldamaged':
@@ -265,8 +289,7 @@ const Abilities = (() => {
     if (CONDITION_DEFAULTS[lower]) {
       for (const t of targets) {
         if (!isUnit(t)) continue;
-        // Burning doesn't stack — skip if already burning
-        if (lower === 'burning' && t.conditions.some(c => c.id === 'burning')) continue;
+        // Burning stacks (multiple instances = more self-damage on attack)
         // Duration override: value="turn" → endOfActivation, value="permanent" → permanent, else default
         const dur = (value && value.toLowerCase() === 'turn') ? 'endOfActivation'
                   : (value && value.toLowerCase() === 'permanent') ? 'permanent'
@@ -338,6 +361,7 @@ const Abilities = (() => {
         }
         break;
 
+      case 'piercing':
       case 'damage': {
         const rawDmg = value === 'unitDamage'
           ? Game.getEffective(ctx.unit, 'damage')
@@ -505,7 +529,21 @@ const Abilities = (() => {
       }
       return;
     }
-    // All other effects: delegate to normal applyEffect
+    // Deferred damage: Glider pattern (condition-based moveIntoEnemies) marks enemies
+    if ((lower === 'damage' || lower === 'piercing') && Game.hasCondition(unit, 'moveintoenemies')) {
+      const rawDmg = value === 'unitDamage' ? Game.getEffective(unit, 'damage') : int(value);
+      for (const t of targets) {
+        if (!isUnit(t)) continue;
+        if (Game.hasCondition(t, 'glidermark')) continue; // already marked once
+        Game.addCondition(t, 'glidermark', 'manual', unit.player);
+        // Store damage value on the condition for resolution
+        const cond = t.conditions[t.conditions.length - 1]; // just-added
+        cond.value = rawDmg;
+        Game.log(`${unit.name} marks ${t.name}`, unit.player);
+      }
+      return;
+    }
+    // All other effects: delegate to normal applyEffect (Impactful instant damage, etc.)
     applyEffect(targets, effect, value, { unit });
   }
 
@@ -768,39 +806,29 @@ const Abilities = (() => {
     if (unit) unit.usedAbilities.add(abilityName);
   }
 
-  /** Check if unit has Toter-type afterMove rules (teleportAlly effect). */
-  function hasToterRules(unit) {
-    if (!unit || !unit.abilities) return false;
-    if (Game.hasCondition(unit, 'silenced')) return false;
+  /** Get all afterMove teleport abilities for a unit (teleportAlly, teleportTerrain).
+   *  Returns array of { abilityName, oncePerGame, effectType, allowedTypes? }. */
+  function getAfterMoveTeleports(unit) {
+    const result = [];
+    if (!unit || !unit.abilities) return result;
+    if (Game.hasCondition(unit, 'silenced')) return result;
     for (const ab of unit.abilities) {
       if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
       for (const ruleId of ab.ruleIds) {
         const rule = atomicRules[ruleId];
         if (!rule || rule.type !== 'afterMove') continue;
         for (const eff of rule.effects) {
-          if (eff.effect && eff.effect.toLowerCase() === 'teleportally') return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  /** Get Toter ability data for a unit. */
-  function getToterData(unit) {
-    if (!unit || !unit.abilities) return null;
-    for (const ab of unit.abilities) {
-      if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
-      for (const ruleId of ab.ruleIds) {
-        const rule = atomicRules[ruleId];
-        if (!rule || rule.type !== 'afterMove') continue;
-        for (const eff of rule.effects) {
-          if (eff.effect && eff.effect.toLowerCase() === 'teleportally') {
-            return { abilityName: ab.name, oncePerGame: ab.oncePerGame };
+          const lower = (eff.effect || '').toLowerCase();
+          if (lower === 'teleportally') {
+            result.push({ abilityName: ab.name, oncePerGame: ab.oncePerGame, effectType: 'teleportally' });
+          } else if (lower === 'teleportterrain') {
+            const allowed = (eff.value || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
+            result.push({ abilityName: ab.name, oncePerGame: ab.oncePerGame, effectType: 'teleportterrain', allowedTypes: allowed });
           }
         }
       }
     }
-    return null;
+    return result;
   }
 
   // ── Targeted Actions (player-activated abilities) ────────────
@@ -825,6 +853,7 @@ const Abilities = (() => {
       const rule = atomicRules[ruleId];
       if (rule && rule.type === 'action') {
         const parsed = parseRangeColumn(rule.range);
+        if (!parsed.range) return null;  // Non-targeted action (e.g. Glider)
         // Extract raw damage from the action rule's effects
         let rawDamage = 0;
         for (const eff of rule.effects) {
@@ -995,8 +1024,7 @@ const Abilities = (() => {
     hasAfterMoveRules,
     getAfterMoveData,
     markAbilityUsed,
-    hasToterRules,
-    getToterData,
+    getAfterMoveTeleports,
     getActions,
     getTargeting,
     executeAction,

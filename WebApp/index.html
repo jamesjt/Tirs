@@ -135,10 +135,12 @@
   <!-- PeerJS for peer-to-peer WebRTC connections -->
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 
-  <!-- Load order matters: board first (no deps), then units, game, net, abilities, ui -->
+  <!-- Load order matters: board first (no deps), then units, game (core→battle→phases), net, abilities, ui -->
   <script src="board.js"></script>
   <script src="units.js"></script>
-  <script src="game.js"></script>
+  <script src="game-core.js"></script>
+  <script src="game-battle.js"></script>
+  <script src="game-phases.js"></script>
   <script src="net.js"></script>
   <script src="abilities.js"></script>
   <script src="ui.js"></script>

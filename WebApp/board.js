@@ -591,6 +591,7 @@ const Board = (() => {
     rubble: 'rubble', crevasse: 'crevasse', spire: 'spire',
     tide: 'tidepool', cinder: 'cinder', river: 'pool',
     miasma: 'miasma', rain: 'rain', 'heat wave': 'heat wave', 'fae mist': 'fae mist', storm: 'storm',
+    mist: 'Mist', gale: 'gale',
   };
   for (const [name, file] of Object.entries(ICON_FILE_MAP)) {
     const img = new Image();
@@ -1119,6 +1120,15 @@ const Board = (() => {
       ctx.stroke();
     }
 
+    // 4c. Cyan highlights on enemy hexes that can be waypointed (Glider)
+    if (state.enemyWaypointHexes && state.enemyWaypointHexes.size > 0) {
+      for (const key of state.enemyWaypointHexes) {
+        const [q, r] = key.split(',').map(Number);
+        const hex = getHex(q, r);
+        if (hex) drawHexShape(hex, 'rgba(0, 200, 255, 0.3)');
+      }
+    }
+
     // 5. Units — rendered as HTML overlays (see ui.js renderTokens)
 
     // 6. Selected-unit ring
@@ -1221,6 +1231,56 @@ const Board = (() => {
         oc.strokeText(de.atkDmg, x, y + s * 0.15);
         oc.fillStyle = color;
         oc.fillText(de.atkDmg, x, y + s * 0.15);
+      }
+    }
+
+    // 7c. Glider mark reticles — same style as attack reticles, on marked enemies
+    if (state.units && overlayCtx) {
+      const oc = overlayCtx;
+      const s = sz();
+      const radius = s * 0.75;
+      const notchInner = s * 0.63;
+      const notchOuter = s * 0.87;
+      for (const u of state.units) {
+        if (u.health <= 0) continue;
+        const mark = u.conditions.find(c => c.id === 'glidermark');
+        if (!mark) continue;
+        const hex = getHex(u.q, u.r);
+        if (!hex) continue;
+        const { x, y } = px(hex);
+
+        // Targeting circle
+        oc.beginPath();
+        oc.arc(x, y, radius, 0, Math.PI * 2);
+        oc.strokeStyle = '#8B0000';
+        oc.lineWidth = 3;
+        oc.stroke();
+
+        // Four notch lines at diagonals
+        oc.beginPath();
+        for (let i = 0; i < 4; i++) {
+          const angle = (i * 90 + 45) * Math.PI / 180;
+          oc.moveTo(x + notchInner * Math.cos(angle), y + notchInner * Math.sin(angle));
+          oc.lineTo(x + notchOuter * Math.cos(angle), y + notchOuter * Math.sin(angle));
+        }
+        oc.strokeStyle = '#8B0000';
+        oc.lineWidth = 3;
+        oc.lineCap = 'round';
+        oc.stroke();
+
+        // Damage number
+        if (mark.value != null) {
+          const fontSize = Math.max(12, s * 0.45);
+          oc.font = `bold ${fontSize}px sans-serif`;
+          oc.textAlign = 'center';
+          oc.textBaseline = 'middle';
+          oc.strokeStyle = '#fff';
+          oc.lineWidth = 4;
+          oc.lineJoin = 'round';
+          oc.strokeText(mark.value, x, y);
+          oc.fillStyle = '#8B0000';
+          oc.fillText(mark.value, x, y);
+        }
       }
     }
 

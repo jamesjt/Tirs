@@ -101,10 +101,15 @@ const UI = (() => {
     arcfire:      '\uD83D\uDD25',  // 🔥 fire
   };
 
-  /** Group a unit's conditions array by id, returning [{id, count}] */
+  // Conditions rendered as board overlay (not as token badge)
+  const OVERLAY_CONDITIONS = new Set(['glidermark']);
+
+  /** Group a unit's conditions array by id, returning [{id, count}].
+   *  Filters out conditions that are rendered as board overlays (e.g. glidermark reticle). */
   function groupConditions(conditions) {
     const map = {};
     for (const c of conditions) {
+      if (OVERLAY_CONDITIONS.has(c.id)) continue;
       map[c.id] = (map[c.id] || 0) + 1;
     }
     return Object.entries(map).map(([id, count]) => ({ id, count }));
@@ -145,6 +150,7 @@ const UI = (() => {
       waypoints: [],            // [{q,r}] — user-placed intermediate waypoints
       attackWaypoints: [],      // [{q,r}] — waypoints for Piercing attack path routing
       attackPathHighlights: null, // Map of hexes reachable by attack BFS (for waypoint placement)
+      enemyWaypointHexes: null, // Set of "q,r" keys — enemy hexes that can be waypointed (Glider)
     };
   }
 
@@ -153,7 +159,7 @@ const UI = (() => {
     abilityTargeting = null;
     effectTargeting = null;
     tossTargeting = null;
-    toterTargeting = null;
+    teleportTargeting = null;
     hotSuitTargeting = false;
     delayedTargeting = false;
     hideLevelChoiceOverlay();
@@ -232,9 +238,11 @@ const UI = (() => {
   // ── Hot Suit Targeting Mode (post-attack: redirect burning damage) ──
   let hotSuitTargeting = false;
 
-  // ── Toter Targeting Mode (post-move: pick ally, then destination) ──
-  let toterTargeting = null;
-  // { phase: 1|2, unit, allies: [unit], data: object, selectedAlly: unit|null }
+  // ── AfterMove Teleport Targeting (unified Toter/FlareUp: pick source, then destination) ──
+  let teleportTargeting = null;
+  // { phase: 1|2, unit, sources: [{q,r,type:'ally'|'terrain',ref:unit|{surface}}],
+  //   data: {abilityName, oncePerGame, effectType, allowedTypes?},
+  //   selectedSource: object|null, remaining: [data...] }
 
   // ── Effect Targeting Mode (interactive push/pull/move) ────────
   let effectTargeting = null;  // { validHexes: Set<"q,r">, effect: object }
@@ -288,35 +296,70 @@ const UI = (() => {
     return true;
   }
 
-  /** Check for Toter ability after movement; enter targeting if applicable. */
-  function checkToterAfterMove() {
+  /** Get teleport sources for a given afterMove teleport ability. */
+  function getTeleportSources(unit, data) {
     const act = Game.state.activationState;
-    if (!act || !act.alliesPassedDuringMove || act.alliesPassedDuringMove.length === 0) return false;
-    if (typeof Abilities === 'undefined' || !Abilities.hasToterRules(act.unit)) return false;
-    const data = Abilities.getToterData(act.unit);
-    if (!data) return false;
-    const allies = act.alliesPassedDuringMove.filter(u => u.health > 0);
-    if (allies.length === 0) return false;
-    toterTargeting = { phase: 1, unit: act.unit, allies, data, selectedAlly: null };
-    uiState.highlights = new Map(allies.map(u => [`${u.q},${u.r}`, 1]));
-    uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
-    uiState.attackTargets = null;
-    showPhase();
-    render();
-    return true;
+    if (!act) return [];
+    if (data.effectType === 'teleportally') {
+      if (!act.alliesPassedDuringMove) return [];
+      return act.alliesPassedDuringMove
+        .filter(u => u.health > 0)
+        .map(u => ({ q: u.q, r: u.r, type: 'ally', ref: u }));
+    } else if (data.effectType === 'teleportterrain') {
+      if (!act.terrainPassedDuringMove) return [];
+      const allowed = new Set(data.allowedTypes || []);
+      return act.terrainPassedDuringMove
+        .filter(h => allowed.size === 0 || allowed.has(h.surface.toLowerCase()))
+        .map(h => ({ q: h.q, r: h.r, type: 'terrain', ref: h }));
+    }
+    return [];
   }
 
-  /** Get unoccupied hexes adjacent to unit for Toter placement. */
-  function getToterDestinations(unit) {
+  /** Get valid destination hexes for teleport placement (rules differ by source type). */
+  function getTeleportDestinations(unit, sourceType) {
     const neighbors = Board.getNeighbors(unit.q, unit.r);
     const dests = new Map();
     for (const n of neighbors) {
       if (!Board.getHex(n.q, n.r)) continue;
       if (Game.state.units.some(u => u.q === n.q && u.r === n.r && u.health > 0)) continue;
-      if (Game.hasTerrainRule(n.q, n.r, 'impassable')) continue;
+      if (sourceType === 'ally') {
+        if (Game.hasTerrainRule(n.q, n.r, 'impassable')) continue;
+      } else if (sourceType === 'terrain') {
+        const td = Game.state.terrain.get(`${n.q},${n.r}`);
+        if (td && td.surface) continue;
+        if (Board.OBJECTIVES.some(o => o.q === n.q && o.r === n.r)) continue;
+      }
       dests.set(`${n.q},${n.r}`, 1);
     }
     return dests;
+  }
+
+  /** Try to start the next afterMove teleport from the remaining list. */
+  function tryNextTeleport(unit, remaining) {
+    while (remaining.length > 0) {
+      const data = remaining.shift();
+      const sources = getTeleportSources(unit, data);
+      if (sources.length > 0) {
+        teleportTargeting = { phase: 1, unit, sources, data, selectedSource: null, remaining };
+        uiState.highlights = new Map(sources.map(s => [`${s.q},${s.r}`, 1]));
+        uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
+        uiState.attackTargets = null;
+        showPhase();
+        render();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Check for afterMove teleport abilities; enter targeting if applicable. */
+  function checkAfterMoveTeleport() {
+    const act = Game.state.activationState;
+    if (!act) return false;
+    if (typeof Abilities === 'undefined') return false;
+    const teleports = Abilities.getAfterMoveTeleports(act.unit);
+    if (teleports.length === 0) return false;
+    return tryNextTeleport(act.unit, teleports);
   }
 
   /** Check for Hot Suit burning redirect after attack; enter targeting if applicable. */
@@ -437,7 +480,7 @@ const UI = (() => {
     netSend({ type: 'executeLevel', hexQ: sh.q, hexR: sh.r, newSurface, abilityName });
     hideLevelChoiceOverlay();
     levelTargeting = null;
-    if (checkToterAfterMove()) return;
+    if (checkAfterMoveTeleport()) return;
     finishPostMove();
   }
 
@@ -823,16 +866,20 @@ const UI = (() => {
         } else {
           text = 'Click a replacement terrain (ESC to go back)';
         }
-      // Toter targeting messages
-      } else if (toterTargeting) {
-        if (toterTargeting.phase === 1) {
-          text = 'Toter: select an ally to teleport (ESC to skip)';
+      // AfterMove teleport targeting messages
+      } else if (teleportTargeting) {
+        if (teleportTargeting.phase === 1) {
+          const what = teleportTargeting.data.effectType === 'teleportally' ? 'ally' : 'terrain';
+          text = `${teleportTargeting.data.abilityName}: select ${what} to move (ESC to skip)`;
         } else {
-          text = `Place ${toterTargeting.selectedAlly.name} adjacent to ${toterTargeting.unit.name} (ESC to go back)`;
+          const name = teleportTargeting.selectedSource.type === 'ally'
+            ? teleportTargeting.selectedSource.ref.name
+            : teleportTargeting.selectedSource.ref.surface;
+          text = `Place ${name} adjacent to ${teleportTargeting.unit.name} (ESC to go back)`;
         }
       // Hot Suit targeting messages
       } else if (hotSuitTargeting) {
-        text = 'Redirect burning damage to adjacent unit (ESC to take it)';
+        text = 'Redirect burning damage to self or adjacent unit (ESC to skip)';
       // Toss targeting messages
       } else if (tossTargeting) {
         if (tossTargeting.phase === 1) {
@@ -2248,27 +2295,29 @@ const UI = (() => {
           return;
         }
       } else if (key === 'escape') {
-        // Skip Level — check for Toter, then normal post-move flow
+        // Skip Level — check for Toter, then Flare Up, then normal post-move flow
         hideLevelChoiceOverlay();
         levelTargeting = null;
-        if (!checkToterAfterMove()) finishPostMove();
+        if (!checkAfterMoveTeleport()) finishPostMove();
         e.preventDefault();
         return;
       }
     }
 
-    // ESC: toter targeting — phase 2 goes back to phase 1, phase 1 skips
-    if (key === 'escape' && toterTargeting) {
-      if (toterTargeting.phase === 2) {
-        toterTargeting.phase = 1;
-        toterTargeting.selectedAlly = null;
-        uiState.highlights = new Map(toterTargeting.allies.map(u => [`${u.q},${u.r}`, 1]));
+    // ESC: afterMove teleport targeting — phase 2 goes back to phase 1, phase 1 tries next or skips
+    if (key === 'escape' && teleportTargeting) {
+      if (teleportTargeting.phase === 2) {
+        teleportTargeting.phase = 1;
+        teleportTargeting.selectedSource = null;
+        uiState.highlights = new Map(teleportTargeting.sources.map(s => [`${s.q},${s.r}`, 1]));
         uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
         showPhase();
         render();
       } else {
-        toterTargeting = null;
-        finishPostMove();
+        const remaining = teleportTargeting.remaining;
+        const unit = teleportTargeting.unit;
+        teleportTargeting = null;
+        if (!tryNextTeleport(unit, remaining)) finishPostMove();
       }
       e.preventDefault();
       return;
@@ -2671,8 +2720,10 @@ const UI = (() => {
     if (!hex) return;
     const key = `${hex.q},${hex.r}`;
 
-    // Priority 1: Movement waypoints (on movement-highlighted hexes)
-    if (uiState.highlights && uiState.highlights.has(key)) {
+    // Priority 1: Movement waypoints (on movement-highlighted or enemy-waypointable hexes)
+    const isMovementWaypoint = uiState.highlights && uiState.highlights.has(key);
+    const isEnemyWaypoint = uiState.enemyWaypointHexes && uiState.enemyWaypointHexes.has(key);
+    if (isMovementWaypoint || isEnemyWaypoint) {
       const idx = uiState.waypoints.findIndex(w => w.q === hex.q && w.r === hex.r);
       if (idx !== -1) {
         uiState.waypoints.splice(idx, 1);
@@ -2681,7 +2732,7 @@ const UI = (() => {
       }
       if (uiState.hoveredHex) {
         const hKey = `${uiState.hoveredHex.q},${uiState.hoveredHex.r}`;
-        if (uiState.highlights.has(hKey)) {
+        if (uiState.highlights && uiState.highlights.has(hKey)) {
           recomputePathPreview(uiState.hoveredHex.q, uiState.hoveredHex.r);
         }
       }
@@ -3057,6 +3108,19 @@ const UI = (() => {
     uiState.highlightColor = reachable ? 'rgba(255,255,0,0.35)' : null;
     uiState.highlightStyle = reachable ? 'dots' : null;
     uiState.attackTargets = targets;
+    // Enemy hexes that can be waypointed (Glider: condition-based moveIntoEnemies, not passive)
+    if (reachable && Game.hasCondition(act.unit, 'moveintoenemies')) {
+      const ewh = new Set();
+      for (const u of Game.state.units) {
+        if (u.health <= 0 || u.player === act.unit.player) continue;
+        const k = `${u.q},${u.r}`;
+        // Must be BFS-explored (in parentMap) but not a stop-destination
+        if (!reachable.has(k) && act._parentMap && act._parentMap.has(k)) ewh.add(k);
+      }
+      uiState.enemyWaypointHexes = ewh.size > 0 ? ewh : null;
+    } else {
+      uiState.enemyWaypointHexes = null;
+    }
     // Clear path preview (reachable set may have changed after move/attack)
     uiState.pathPreview = null;
     uiState.pathCost = null;
@@ -3170,27 +3234,36 @@ const UI = (() => {
       return;
     }
 
-    // Toter targeting mode (phase 1: select ally, phase 2: select destination)
-    if (toterTargeting && toterTargeting.phase === 1) {
-      const ally = toterTargeting.allies.find(u => u.q === hex.q && u.r === hex.r);
-      if (ally) {
-        toterTargeting.selectedAlly = ally;
-        toterTargeting.phase = 2;
-        uiState.highlights = getToterDestinations(toterTargeting.unit);
+    // AfterMove teleport targeting (unified Toter/FlareUp)
+    if (teleportTargeting && teleportTargeting.phase === 1) {
+      const match = teleportTargeting.sources.find(s => s.q === hex.q && s.r === hex.r);
+      if (match) {
+        teleportTargeting.selectedSource = match;
+        teleportTargeting.phase = 2;
+        uiState.highlights = getTeleportDestinations(teleportTargeting.unit, match.type);
         uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
         showPhase();
         render();
       }
       return;
     }
-    if (toterTargeting && toterTargeting.phase === 2) {
+    if (teleportTargeting && teleportTargeting.phase === 2) {
       if (uiState.highlights.has(key)) {
-        const data = toterTargeting.data;
-        Game.executeToter(toterTargeting.unit, toterTargeting.selectedAlly, hex.q, hex.r, data.abilityName);
-        if (data.oncePerGame) Abilities.markAbilityUsed(toterTargeting.unit, data.abilityName);
-        netSend({ type: 'executeToter', allyName: toterTargeting.selectedAlly.name, toQ: hex.q, toR: hex.r, abilityName: data.abilityName });
-        toterTargeting = null;
-        finishPostMove();
+        const t = teleportTargeting;
+        const data = t.data;
+        const src = t.selectedSource;
+        if (src.type === 'ally') {
+          Game.executeToter(t.unit, src.ref, hex.q, hex.r, data.abilityName);
+          netSend({ type: 'executeToter', allyName: src.ref.name, toQ: hex.q, toR: hex.r, abilityName: data.abilityName });
+        } else {
+          Game.executeFlareUp(t.unit, src.q, src.r, hex.q, hex.r, data.abilityName);
+          netSend({ type: 'executeFlareUp', fromQ: src.q, fromR: src.r, toQ: hex.q, toR: hex.r, abilityName: data.abilityName });
+        }
+        if (data.oncePerGame) Abilities.markAbilityUsed(t.unit, data.abilityName);
+        const remaining = t.remaining;
+        const unit = t.unit;
+        teleportTargeting = null;
+        if (!tryNextTeleport(unit, remaining)) finishPostMove();
       }
       return;
     }
@@ -3336,14 +3409,14 @@ const UI = (() => {
             animateTokenAlongPath(animUnit, animPath, speed, () => {
               moveAnimating = false;
               if (checkLevelAfterMove()) return;
-              if (checkToterAfterMove()) return;
+              if (checkAfterMoveTeleport()) return;
               finishPostMove();
             });
             return;  // Don't render yet — animation callback will
           }
           // speed === 0: instant (existing behavior)
           if (checkLevelAfterMove()) return;
-          if (checkToterAfterMove()) return;
+          if (checkAfterMoveTeleport()) return;
           finishPostMove();
           return;
         }
@@ -3775,6 +3848,20 @@ const UI = (() => {
           Game.executeToter(act.unit, ally, data.toQ, data.toR, data.abilityName);
           if (data.abilityName) Abilities.markAbilityUsed(act.unit, data.abilityName);
         }
+        render();
+        break;
+      }
+      case 'executeFlareUp': {
+        const act = Game.state.activationState;
+        if (act) {
+          Game.executeFlareUp(act.unit, data.fromQ, data.fromR, data.toQ, data.toR, data.abilityName);
+          if (data.abilityName) {
+            const teleports = Abilities.getAfterMoveTeleports(act.unit);
+            const match = teleports.find(t => t.abilityName === data.abilityName);
+            if (match && match.oncePerGame) Abilities.markAbilityUsed(act.unit, data.abilityName);
+          }
+        }
+        teleportTargeting = null;
         render();
         break;
       }
