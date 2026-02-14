@@ -599,6 +599,10 @@ const Board = (() => {
     surfaceIcons[name] = img;
   }
 
+  // Clock trap image
+  const trapImg = new Image();
+  trapImg.src = '../nandeck/images/unitImages/RedRidge/toytrap.png';
+
   // Unit art image cache — keyed by image path
   const unitImageCache = {};
 
@@ -1048,6 +1052,24 @@ const Board = (() => {
                    : obj.type === 'core' ? '#FFD700' : '#00BFFF';
         drawCircle(hex, 0.75, fill, '#fff', 2);
         drawLabel(hex, obj.type === 'core' ? 'C' : 'S', '#000', `bold ${s / 2}px sans-serif`);
+      }
+    }
+
+    // 4a. Traps (clock traps — rendered above objectives)
+    if (state.traps) {
+      for (const [key] of state.traps) {
+        const [q, r] = key.split(',').map(Number);
+        const hex = getHex(q, r);
+        if (!hex) continue;
+        const { x, y } = px(hex);
+        const s = sz();
+        if (trapImg.complete && trapImg.naturalWidth > 0) {
+          const size = s * 1.2;
+          ctx.drawImage(trapImg, x - size / 2, y - size / 2, size, size);
+        } else {
+          drawCircle(hex, 0.4, '#C44', '#fff', 2);
+          drawLabel(hex, 'T', '#fff');
+        }
       }
     }
 

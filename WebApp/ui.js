@@ -163,6 +163,9 @@ const UI = (() => {
     pushMoveTargeting = null;
     zoomTargeting = null;
     falconGustTargeting = null;
+    deployTrapTargeting = null;
+    clockToysTargeting = null;
+    woundUpTargeting = null;
     hotSuitTargeting = false;
     delayedTargeting = false;
     hideLevelChoiceOverlay();
@@ -222,6 +225,15 @@ const UI = (() => {
   let pushMoveTargeting = null;
   let falconGustTargeting = null; // { phase, validHexes: Map, selectedAlly }
   // { targetQ, targetR, enemy, path, pathCost, pushDestinations: Set }
+
+  // ── Deploy Trap Targeting Mode (place traps after Clockwerk deploys) ──
+  let deployTrapTargeting = null; // { validHexes: Map }
+
+  // ── Clock Toys Targeting Mode (place trap via action ability) ──
+  let clockToysTargeting = null; // { validHexes: Map, costType: 'move'|'attack' }
+
+  // ── Wound Up Targeting Mode (move traps on activation) ──
+  let woundUpTargeting = null; // { trapIndex, validHexes: Map, currentTrap: {q,r} }
 
   // ── Delayed Targeting Mode (space-targeting attack for delayed effect) ──
   let delayedTargeting = false;
@@ -1041,6 +1053,17 @@ const UI = (() => {
         const act = s.activationState;
         text = act ? `${act.unit.name} activated` : 'Select a unit to activate';
       }
+    } else if (deployTrapTargeting) {
+      const pdt = s.pendingDeployTraps;
+      const n = pdt ? `${pdt.placed + 1}/${pdt.count}` : '';
+      text = `Place Clock Trap ${n} adjacent to Clockwerk (ESC to skip)`;
+    } else if (clockToysTargeting) {
+      text = `Clock Toys: place trap adjacent to Clockwerk (ESC to cancel)`;
+    } else if (woundUpTargeting) {
+      const act = s.activationState;
+      const wu = act ? act.woundUp : null;
+      const n = wu ? `${wu.currentIndex + 1}/${wu.traps.length}` : '';
+      text = `Wound Up: move trap ${n} (click destination, ESC to skip)`;
     } else if (s.phase === Game.PHASE.GAME_OVER) {
       const winner = s.scores[1] > s.scores[2] ? 'Player 1' :
                      s.scores[2] > s.scores[1] ? 'Player 2' : 'Tie';
@@ -1755,6 +1778,18 @@ const UI = (() => {
         return; // Don't show move/attack prompts during Falcon Gust
       }
 
+      // Wound Up interactive UI
+      if (act.woundUp && act.woundUp.phase !== 'done') {
+        const wu = act.woundUp;
+        html += `<div class="wound-up-choices">`;
+        html += `<p class="ability-prompt"><strong>Wound Up</strong> — Move trap ${wu.currentIndex + 1}/${wu.traps.length}</p>`;
+        html += `<button class="btn btn-action" data-action="wu-skip-all">Skip All</button>`;
+        html += `</div>`;
+        html += `</div>`;
+        panel.innerHTML = html;
+        return; // Don't show move/attack prompts during Wound Up
+      }
+
       html += `<span class="done-label">${act.moved ? 'Moved' : 'Click yellow hex to move'}</span>`;
       const delayedHint = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'delayedattack');
       html += `<span class="done-label">${act.attacked ? 'Attacked' : (delayedHint ? 'Place delayed attack' : 'Click red target to attack')}</span>`;
@@ -1777,9 +1812,10 @@ const UI = (() => {
           if (ab.actionCost === 'move' && act.moved) continue;
           if (ab.actionCost === 'attack' && act.attacked) continue;
           if (Game.hasCondition(act.unit, 'silenced')) continue;
-          const costLabel = ab.actionCost === 'move' ? ' (uses move)'
-                          : ab.actionCost === 'attack' ? ' (uses attack)' : '';
-          html += `<button class="btn btn-ability" data-action="use-ability" data-ability="${ab.name}" data-cost="${ab.actionCost || ''}">${ab.name}${costLabel}</button>`;
+          const label = ab.displayName || ab.name;
+          const costLabel = ab.displayName ? '' : (ab.actionCost === 'move' ? ' (uses move)'
+                          : ab.actionCost === 'attack' ? ' (uses attack)' : '');
+          html += `<button class="btn btn-ability" data-action="use-ability" data-ability="${ab.name}" data-cost="${ab.actionCost || ''}">${label}${costLabel}</button>`;
         }
       }
 
@@ -1788,13 +1824,27 @@ const UI = (() => {
       if (history.length > 0) {
         const last = history[history.length - 1];
         const canUndo = (last.type === 'move' && s.rules.canUndoMove) ||
+                        (last.type === 'pushMove' && s.rules.canUndoMove) ||
                         (last.type === 'attack' && s.rules.canUndoAttack) ||
                         (last.type === 'zoom' && s.rules.canUndoAttack) ||
+                        (last.type === 'clocktoys' && (last.costType === 'move' ? s.rules.canUndoMove : s.rules.canUndoAttack)) ||
+                        (last.type === 'level' && s.rules.canUndoMove) ||
+                        (last.type === 'toter' && s.rules.canUndoMove) ||
+                        (last.type === 'flareup' && s.rules.canUndoMove) ||
+                        (last.type === 'woundup') ||
+                        (last.type === 'falcongust') ||
                         (last.type === 'ability' && last.actionCost === 'move' && s.rules.canUndoMove) ||
                         (last.type === 'ability' && last.actionCost === 'attack' && s.rules.canUndoAttack);
         if (canUndo) {
           const label = last.type === 'ability' ? `Undo ${last.abilityName}` :
                         last.type === 'zoom' ? 'Undo Zoom' :
+                        last.type === 'clocktoys' ? 'Undo Clock Toys' :
+                        last.type === 'pushMove' ? 'Undo Move' :
+                        last.type === 'level' ? 'Undo Level' :
+                        last.type === 'toter' ? 'Undo Toter' :
+                        last.type === 'flareup' ? 'Undo Flare Up' :
+                        last.type === 'woundup' ? 'Undo Wound Up' :
+                        last.type === 'falcongust' ? 'Undo Falcon Gust' :
                         last.type === 'move' ? 'Undo Move' : 'Undo Attack';
           html += `<button class="btn btn-action" data-action="undo-action">\u2190 ${label}</button>`;
         }
@@ -2449,6 +2499,34 @@ const UI = (() => {
   function onKeyDown(e) {
     const key = e.key.toLowerCase();
 
+    // ESC: Deploy Trap targeting — skip remaining traps
+    if (key === 'escape' && deployTrapTargeting) {
+      netSend({ type: 'deployTrapSkip' });
+      finishDeployTrapPlacement();
+      e.preventDefault();
+      return;
+    }
+
+    // ESC: Clock Toys targeting — cancel
+    if (key === 'escape' && clockToysTargeting) {
+      clockToysTargeting = null;
+      showActivationHighlights();
+      showPhase();
+      updateStatusBar();
+      render();
+      e.preventDefault();
+      return;
+    }
+
+    // ESC: Wound Up targeting — skip current trap
+    if (key === 'escape' && woundUpTargeting) {
+      Game.skipWoundUpTrap();
+      netSend({ type: 'woundUp', action: 'skip' });
+      advanceWoundUpUI();
+      e.preventDefault();
+      return;
+    }
+
     // Level targeting — click overlay or number keys for terrain choice, ESC to skip/go back
     if (levelTargeting) {
       if (levelTargeting.phase === 2) {
@@ -3056,7 +3134,7 @@ const UI = (() => {
     // Block battle-phase actions when it's opponent's turn online
     const battleActions = ['undo-action','remove-burning','end-activation','skip-consuming','skip-arcfire',
       'shift-ride','shift-stay','advance-round-step','use-ability','delayed-target',
-      'fg-mode','fg-action','fg-skip'];
+      'fg-mode','fg-action','fg-skip','wu-skip-all'];
     if (typeof Net !== 'undefined' && Net.isOnline() && !Net.isMyTurn() &&
         battleActions.includes(action)) {
       return;
@@ -3187,6 +3265,16 @@ const UI = (() => {
       render();
     }
 
+    else if (action === 'wu-skip-all') {
+      Game.skipWoundUp();
+      netSend({ type: 'woundUp', action: 'skipAll' });
+      woundUpTargeting = null;
+      showActivationHighlights();
+      showPhase();
+      updateStatusBar();
+      render();
+    }
+
     else if (action === 'undo-action') {
       const ok = Game.undoLastAction();
       if (ok) {
@@ -3235,6 +3323,18 @@ const UI = (() => {
           uiState.attackTargets = null;
           uiState.enemyWaypointHexes = null;
           uiState.pathPreview = null;
+          updateStatusBar();
+          render();
+        }
+      } else if (abilityName === 'Clock Toys') {
+        // Clock Toys: enter trap placement mode
+        const validHexes = Game.getValidTrapHexes(act.unit);
+        if (validHexes.size > 0) {
+          clockToysTargeting = { validHexes, costType: actionCost };
+          uiState.highlights = validHexes;
+          uiState.highlightColor = 'rgba(0, 200, 200, 0.35)';
+          uiState.highlightStyle = 'dots';
+          uiState.attackTargets = null;
           updateStatusBar();
           render();
         }
@@ -3383,6 +3483,26 @@ const UI = (() => {
   }
 
   function handleDeployClick(hex) {
+    // Deploy trap placement mode
+    if (deployTrapTargeting) {
+      const key = `${hex.q},${hex.r}`;
+      if (!deployTrapTargeting.validHexes.has(key)) return;
+      const pdt = Game.state.pendingDeployTraps;
+      Game.placeTrap(hex.q, hex.r, pdt.unit.player);
+      pdt.placed++;
+      netSend({ type: 'deployTrap', q: hex.q, r: hex.r, player: pdt.unit.player });
+      if (pdt.placed >= pdt.count) {
+        finishDeployTrapPlacement();
+      } else {
+        // Refresh valid hexes for next trap
+        deployTrapTargeting.validHexes = Game.getValidTrapHexes(pdt.unit);
+        uiState.highlights = deployTrapTargeting.validHexes;
+        showPhase();
+        render();
+      }
+      return;
+    }
+
     if (selectedDeployIndex === null) return;
     // ONLINE: block deploy clicks when opponent's turn (normal deploy)
     if (typeof Net !== 'undefined' && Net.isOnline() && !Game.state.rules.hiddenDeploy && !Net.isMyTurn()) return;
@@ -3391,9 +3511,87 @@ const UI = (() => {
     if (ok) {
       netSend({ type: 'deployUnit', player: p, index: selectedDeployIndex, q: hex.q, r: hex.r });
       selectedDeployIndex = null;
+
+      // Check for pending deploy traps (Clockwerk)
+      if (Game.state.pendingDeployTraps) {
+        enterDeployTrapPlacement();
+        return;
+      }
+
       uiState.highlights = null;
       showPhase();
       render();
+    }
+  }
+
+  function enterDeployTrapPlacement() {
+    const pdt = Game.state.pendingDeployTraps;
+    if (!pdt) return;
+    const validHexes = Game.getValidTrapHexes(pdt.unit);
+    if (validHexes.size === 0) {
+      finishDeployTrapPlacement();
+      return;
+    }
+    deployTrapTargeting = { validHexes };
+    uiState.highlights = validHexes;
+    uiState.highlightColor = 'rgba(0,200,200,0.35)';
+    uiState.highlightStyle = 'dots';
+    showPhase();
+    render();
+  }
+
+  function finishDeployTrapPlacement() {
+    deployTrapTargeting = null;
+    Game.finishDeployTraps();
+    uiState.highlights = null;
+    showPhase();
+    render();
+  }
+
+  /** Enter Wound Up targeting for the current trap. */
+  function enterWoundUpTargeting() {
+    const act = Game.state.activationState;
+    if (!act || !act.woundUp || act.woundUp.phase !== 'targeting') return;
+    const wu = act.woundUp;
+    if (wu.currentIndex >= wu.traps.length) {
+      wu.phase = 'done';
+      woundUpTargeting = null;
+      showActivationHighlights();
+      showPhase();
+      updateStatusBar();
+      render();
+      return;
+    }
+    const trap = wu.traps[wu.currentIndex];
+    // Check if this trap still exists (might have been triggered)
+    if (!Game.state.traps.has(`${trap.q},${trap.r}`)) {
+      wu.currentIndex++;
+      enterWoundUpTargeting(); // skip to next
+      return;
+    }
+    const dests = Game.getWoundUpDestinations(trap.q, trap.r);
+    woundUpTargeting = { trapIndex: wu.currentIndex, validHexes: dests, currentTrap: trap };
+    uiState.highlights = dests;
+    uiState.highlightColor = 'rgba(0, 200, 200, 0.35)';
+    uiState.highlightStyle = 'dots';
+    uiState.attackTargets = null;
+    updateStatusBar();
+    showPhase();
+    render();
+  }
+
+  /** Advance Wound Up UI after a move or skip. */
+  function advanceWoundUpUI() {
+    const act = Game.state.activationState;
+    if (!act || !act.woundUp) return;
+    if (act.woundUp.phase === 'done') {
+      woundUpTargeting = null;
+      showActivationHighlights();
+      showPhase();
+      updateStatusBar();
+      render();
+    } else {
+      enterWoundUpTargeting();
     }
   }
 
@@ -3407,6 +3605,13 @@ const UI = (() => {
     if (act.falconGust && act.falconGust.phase !== 'done') {
       uiState.highlights = null;
       uiState.attackTargets = null;
+      return;
+    }
+    // Suppress normal highlights while Wound Up is pending; auto-enter targeting
+    if (act.woundUp && act.woundUp.phase !== 'done') {
+      uiState.highlights = null;
+      uiState.attackTargets = null;
+      if (!woundUpTargeting) enterWoundUpTargeting();
       return;
     }
     const reachable = Game.getMoveRange();    // null if already moved
@@ -3548,6 +3753,47 @@ const UI = (() => {
           render();
         }
         return;
+      }
+      return;
+    }
+
+    // Wound Up targeting mode: click valid hex to move trap
+    if (woundUpTargeting) {
+      if (woundUpTargeting.validHexes.has(key)) {
+        const trap = woundUpTargeting.currentTrap;
+        const ok = Game.executeWoundUpMove(trap.q, trap.r, hex.q, hex.r);
+        if (ok) {
+          netSend({ type: 'woundUp', action: 'move', fromQ: trap.q, fromR: trap.r, toQ: hex.q, toR: hex.r });
+          advanceWoundUpUI();
+        }
+      }
+      // Ignore clicks on non-valid hexes (don't cancel)
+      return;
+    }
+
+    // Clock Toys targeting mode: click valid hex to place trap
+    if (clockToysTargeting) {
+      if (clockToysTargeting.validHexes.has(key)) {
+        const ok = Game.executeClockToys(hex.q, hex.r, clockToysTargeting.costType);
+        if (ok) {
+          netSend({ type: 'clockToys', q: hex.q, r: hex.r, costType: clockToysTargeting.costType });
+          clockToysTargeting = null;
+          // Auto-end if both actions used
+          if (act.moved && act.attacked && !s.rules.confirmEndTurn) {
+            Game.endActivation();
+            resetUiState();
+          } else {
+            showActivationHighlights();
+          }
+          showPhase();
+          render();
+        }
+      } else {
+        // Click non-target: cancel
+        clockToysTargeting = null;
+        showActivationHighlights();
+        updateStatusBar();
+        render();
       }
       return;
     }
@@ -3947,15 +4193,16 @@ const UI = (() => {
         }
       }
 
-      // Block deselect/switch during Falcon Gust
+      // Block deselect/switch during Falcon Gust or Wound Up
       const fgPending = s.activationState.falconGust && s.activationState.falconGust.phase !== 'done';
+      const wuPending = s.activationState.woundUp && s.activationState.woundUp.phase !== 'done';
 
       // Click own unactivated unit → switch selection only if no action taken yet
       const unit = s.units.find(
         u => u.q === hex.q && u.r === hex.r && u.player === s.currentPlayer && !u.activated && u.health > 0
       );
       if (unit && unit !== s.activationState.unit) {
-        if (!fgPending && !s.activationState.moved && !s.activationState.attacked) {
+        if (!fgPending && !wuPending && !s.activationState.moved && !s.activationState.attacked) {
           const selected = Game.selectUnit(unit);
           if (selected) {
             netSend({ type: 'selectUnit', unitIndex: s.units.indexOf(unit) });
@@ -3973,7 +4220,7 @@ const UI = (() => {
       }
 
       // Click empty/unrelated space → deselect only if no action taken yet
-      if (!fgPending && !s.activationState.moved && !s.activationState.attacked) {
+      if (!fgPending && !wuPending && !s.activationState.moved && !s.activationState.attacked) {
         Game.deselectUnit();
         resetUiState();
         showPhase();
@@ -4214,6 +4461,21 @@ const UI = (() => {
       // ── Unit Deploy ──
       case 'deployUnit':
         Game.deployUnit(data.player, data.index, data.q, data.r);
+        // Remote side: if pending deploy traps, just wait for deployTrap messages
+        break;
+      case 'deployTrap':
+        Game.placeTrap(data.q, data.r, data.player);
+        if (Game.state.pendingDeployTraps) {
+          Game.state.pendingDeployTraps.placed++;
+          if (Game.state.pendingDeployTraps.placed >= Game.state.pendingDeployTraps.count) {
+            Game.finishDeployTraps();
+          }
+        }
+        break;
+      case 'deployTrapSkip':
+        if (Game.state.pendingDeployTraps) {
+          Game.finishDeployTraps();
+        }
         break;
       case 'confirmDeploy':
         Game.confirmDeploy(data.player);
@@ -4360,6 +4622,35 @@ const UI = (() => {
         }
         showPhase();
         render();
+        break;
+      }
+      case 'clockToys': {
+        Game.executeClockToys(data.q, data.r, data.costType);
+        clockToysTargeting = null;
+        const ctAct = Game.state.activationState;
+        if (ctAct && ctAct.moved && ctAct.attacked && !Game.state.rules.confirmEndTurn) {
+          Game.endActivation();
+          resetUiState();
+        } else {
+          showActivationHighlights();
+        }
+        break;
+      }
+      case 'woundUp': {
+        if (data.action === 'move') {
+          Game.executeWoundUpMove(data.fromQ, data.fromR, data.toQ, data.toR);
+        } else if (data.action === 'skip') {
+          Game.skipWoundUpTrap();
+        } else if (data.action === 'skipAll') {
+          Game.skipWoundUp();
+        }
+        woundUpTargeting = null;
+        const wuAct = Game.state.activationState;
+        if (wuAct && wuAct.woundUp && wuAct.woundUp.phase === 'done') {
+          showActivationHighlights();
+        } else if (wuAct && wuAct.woundUp) {
+          enterWoundUpTargeting();
+        }
         break;
       }
       case 'executeLevel': {

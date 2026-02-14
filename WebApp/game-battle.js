@@ -70,12 +70,25 @@
       initFalconGust(unit);
     }
 
+    // Wound Up: interactive activation — move traps
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'woundup')
+        && !G.hasCondition(unit, 'silenced')) {
+      initWoundUp(unit);
+    }
+
     return unit;
   }
 
   function deselectUnit() {
     const act = G.state.activationState;
     if (act && act.falconGust) undoFalconGust();
+    if (act && act.woundUp) undoWoundUp();
+    // Remove any activation-ability history entries (already undone above)
+    if (G.state.actionHistory) {
+      G.state.actionHistory = G.state.actionHistory.filter(
+        h => h.type !== 'woundup' && h.type !== 'falcongust'
+      );
+    }
     G.state.activationState = null;
   }
 
@@ -315,6 +328,8 @@
     const otherUnitPositions = G.state.units
       .filter(u => u !== act.unit && u.health > 0)
       .map(u => ({ unit: u, q: u.q, r: u.r, health: u.health, conditions: u.conditions.map(c => ({ ...c })) }));
+    // Snapshot traps for undo (traps consumed during path traversal)
+    const prevTraps = G.state.traps.size > 0 ? new Map(G.state.traps) : null;
 
     // Reconstruct shortest path and traverse each hex
     if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
@@ -388,7 +403,7 @@
     // Update objective control
     updateObjectiveControl(act.unit);
 
-    G.state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ: act.unit.q, toR: act.unit.r, prevObjControl, prevMoveDistance, prevHealth, prevConditions, otherUnitPositions });
+    G.state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ: act.unit.q, toR: act.unit.r, prevObjControl, prevMoveDistance, prevHealth, prevConditions, otherUnitPositions, prevTraps });
     G.log(`${act.unit.name} moved (${fromQ},${fromR}) \u2192 (${act.unit.q},${act.unit.r})`, act.unit.player);
 
     // If both actions used, end activation (unless confirmEndTurn, pending effects,
@@ -758,6 +773,17 @@
   /** Handle terrain effects when a unit enters a hex. */
   function onEnterHex(unit, q, r) {
     if (!unit || unit.health <= 0) return;
+
+    // Clock Trap check (fires before terrain)
+    const trapKey = `${q},${r}`;
+    const trap = G.state.traps.get(trapKey);
+    if (trap) {
+      G.state.traps.delete(trapKey);
+      damageUnit(unit, 1, null, 'trap');
+      G.log(`${unit.name} triggers a Clock Trap! (${unit.health}/${unit.maxHealth} HP)`, unit.player);
+    }
+    if (unit.health <= 0) return;
+
     const ignores = typeof Abilities !== 'undefined'
       ? (rule) => Abilities.ignoresTerrainRule(unit, rule, q, r) : () => false;
     if (hasTerrainRule(q, r, 'dangerous') && !ignores('dangerous')) {
@@ -886,6 +912,10 @@
     if (last.type === 'move' && !G.state.rules.canUndoMove) return false;
     if (last.type === 'pushMove' && !G.state.rules.canUndoMove) return false;
     if (last.type === 'zoom' && !G.state.rules.canUndoAttack) return false;
+    if (last.type === 'clocktoys') {
+      if (last.costType === 'move' && !G.state.rules.canUndoMove) return false;
+      if (last.costType === 'attack' && !G.state.rules.canUndoAttack) return false;
+    }
     if (last.type === 'level' && !G.state.rules.canUndoMove) return false;
     if (last.type === 'toter' && !G.state.rules.canUndoMove) return false;
     if (last.type === 'flareup' && !G.state.rules.canUndoMove) return false;
@@ -914,6 +944,8 @@
           snap.unit.conditions = snap.conditions;
         }
       }
+      // Restore traps consumed during path traversal
+      if (last.prevTraps) G.state.traps = new Map(last.prevTraps);
       // Undo consuming terrain (remove from consumedUnits if applicable)
       const cIdx = G.state.consumedUnits.findIndex(e => e.unit === last.unit);
       if (cIdx !== -1) G.state.consumedUnits.splice(cIdx, 1);
@@ -941,6 +973,8 @@
           snap.unit.conditions = snap.conditions;
         }
       }
+      // Restore traps consumed during path traversal
+      if (last.prevTraps) G.state.traps = new Map(last.prevTraps);
       // If no remaining pushMove in history, clear impactPushed
       const hasPushMoveLeft = G.state.actionHistory.some(h => h.type === 'pushMove');
       if (!hasPushMoveLeft) act.impactPushed = false;
@@ -961,6 +995,8 @@
       }
       // Un-mark once-per-game
       act.unit.usedAbilities.delete('Zoom');
+      // Restore traps consumed during path traversal
+      if (last.prevTraps) G.state.traps = new Map(last.prevTraps);
     } else if (last.type === 'level') {
       // Restore original terrain
       if (last.prevSurface) {
@@ -1032,6 +1068,28 @@
           G.state.terrain.set(`${last.tossData.toQ},${last.tossData.toR}`, { surface: null });
         }
       }
+    } else if (last.type === 'clocktoys') {
+      // Remove the placed trap
+      G.state.traps.delete(`${last.trapQ},${last.trapR}`);
+      // Restore spent resource
+      if (last.costType === 'move') act.moved = false;
+      else if (last.costType === 'attack') act.attacked = false;
+    } else if (last.type === 'woundup') {
+      // Restore all trap positions from snapshot
+      G.state.traps = new Map(last.trapSnapshot);
+      delete act.woundUp;
+    } else if (last.type === 'falcongust') {
+      // Restore all unit positions/health/conditions and terrain
+      const { unitSnapshots, terrainSnapshot } = last.undoData;
+      for (const snap of unitSnapshots) {
+        snap.unit.q = snap.q;
+        snap.unit.r = snap.r;
+        snap.unit.health = snap.health;
+        snap.unit.conditions = snap.conditions;
+      }
+      G.state.terrain.clear();
+      for (const [k, v] of terrainSnapshot) G.state.terrain.set(k, v);
+      delete act.falconGust;
     } else if (last.type === 'ability') {
       // Restore all affected unit healths
       for (const snap of last.healthSnapshots) {
@@ -1191,6 +1249,7 @@
     const otherSnapshots = G.state.units
       .filter(o => o !== u && o.health > 0)
       .map(o => ({ unit: o, health: o.health, conditions: o.conditions.map(c => ({ ...c })) }));
+    const prevTraps = G.state.traps.size > 0 ? new Map(G.state.traps) : null;
 
     // Walk path: deal 1 damage to each unit on ALL hexes (intermediates + destination)
     const damagedUnits = [];
@@ -1234,7 +1293,7 @@
       unit: u,
       fromQ, fromR, toQ, toR,
       prevHealth, prevConditions,
-      otherSnapshots,
+      otherSnapshots, prevTraps,
     });
 
     // Objective control
@@ -1364,6 +1423,7 @@
     const otherUnitPositions = G.state.units
       .filter(o => o !== u && o.health > 0)
       .map(o => ({ unit: o, q: o.q, r: o.r, health: o.health, conditions: o.conditions.map(c => ({ ...c })) }));
+    const prevTraps = G.state.traps.size > 0 ? new Map(G.state.traps) : null;
 
     // 1. Push enemy to chosen destination
     const enemyFromQ = data.enemy.q;
@@ -1411,7 +1471,7 @@
       pathCost: data.pathCost,
       prevMoveDistance,
       prevHealth, prevConditions,
-      otherUnitPositions,
+      otherUnitPositions, prevTraps,
     });
 
     G.log(`${u.name} pushes ${data.enemy.name} and moves to (${u.q},${u.r})`, u.player);
@@ -1486,6 +1546,176 @@
     G.state.terrain.set(`${q},${r}`, { surface, player: player || 0 });
     if (G.state.phase === G.PHASE.BATTLE) G.state.terrainChangedThisRound.add(`${q},${r}`);
     return true;
+  }
+
+  // ── Clock Traps ──────────────────────────────────────────────
+
+  /** Get valid hexes for placing a trap adjacent to a unit. */
+  function getValidTrapHexes(unit) {
+    const hexes = new Map();
+    const neighbors = Board.getNeighbors(unit.q, unit.r);
+    for (const n of neighbors) {
+      const key = `${n.q},${n.r}`;
+      // Can't place on existing trap
+      if (G.state.traps.has(key)) continue;
+      hexes.set(key, 1);
+    }
+    return hexes;
+  }
+
+  /** Place a clock trap at (q, r) for the given player. */
+  function placeTrap(q, r, player) {
+    const key = `${q},${r}`;
+    G.state.traps.set(key, { player });
+    G.log(`Clock Trap placed at (${q},${r})`, player);
+  }
+
+  /** Remove a clock trap at (q, r). Returns the trap data or null. */
+  function removeTrap(q, r) {
+    const key = `${q},${r}`;
+    const trap = G.state.traps.get(key);
+    if (trap) G.state.traps.delete(key);
+    return trap || null;
+  }
+
+  /** Get all traps owned by a player. Returns [{q, r}]. */
+  function getPlayerTraps(player) {
+    const result = [];
+    for (const [key, trap] of G.state.traps) {
+      if (trap.player === player) {
+        const [q, r] = key.split(',').map(Number);
+        result.push({ q, r });
+      }
+    }
+    return result;
+  }
+
+  /** Execute Clock Toys: place a trap adjacent to the unit, costing move or attack. */
+  function executeClockToys(q, r, costType) {
+    const act = G.state.activationState;
+    if (!act) return false;
+    const unit = act.unit;
+    const key = `${q},${r}`;
+    // Validate adjacency
+    const neighbors = Board.getNeighbors(unit.q, unit.r);
+    if (!neighbors.some(n => n.q === q && n.r === r)) return false;
+    if (G.state.traps.has(key)) return false;
+
+    placeTrap(q, r, unit.player);
+
+    // Mark spent resource
+    if (costType === 'move') act.moved = true;
+    else if (costType === 'attack') act.attacked = true;
+
+    // Push undo entry
+    G.state.actionHistory.push({
+      type: 'clocktoys', trapQ: q, trapR: r, costType,
+    });
+
+    G.log(`${unit.name} places a Clock Trap (costs ${costType})`, unit.player);
+    return true;
+  }
+
+  // ── Wound Up (activation: move traps) ─────────────────────
+
+  /** Initialize Wound Up on Clockwerk activation. */
+  function initWoundUp(unit) {
+    const act = G.state.activationState;
+    if (!act) return;
+    const traps = getPlayerTraps(unit.player);
+    if (traps.length === 0) return;
+
+    // Snapshot traps for undo-on-deselect
+    const trapSnapshot = new Map();
+    for (const [k, v] of G.state.traps) trapSnapshot.set(k, { ...v });
+
+    act.woundUp = {
+      phase: 'targeting',
+      traps,
+      currentIndex: 0,
+      undoData: { trapSnapshot },
+    };
+  }
+
+  /** Get valid destinations for a trap at (trapQ, trapR). Includes staying in place. */
+  function getWoundUpDestinations(trapQ, trapR) {
+    const hexes = new Map();
+    // Stay in place is always valid
+    hexes.set(`${trapQ},${trapR}`, 1);
+    const neighbors = Board.getNeighbors(trapQ, trapR);
+    for (const n of neighbors) {
+      const key = `${n.q},${n.r}`;
+      // Can't move onto another trap
+      if (G.state.traps.has(key)) continue;
+      hexes.set(key, 1);
+    }
+    return hexes;
+  }
+
+  /** Move a trap during Wound Up. */
+  function executeWoundUpMove(fromQ, fromR, toQ, toR) {
+    const act = G.state.activationState;
+    if (!act || !act.woundUp || act.woundUp.phase !== 'targeting') return false;
+    const wu = act.woundUp;
+
+    const fromKey = `${fromQ},${fromR}`;
+    const toKey = `${toQ},${toR}`;
+    const trap = G.state.traps.get(fromKey);
+    if (!trap) return false;
+
+    if (fromKey !== toKey) {
+      G.state.traps.delete(fromKey);
+      G.state.traps.set(toKey, trap);
+      G.log(`Clock Trap moved from (${fromQ},${fromR}) to (${toQ},${toR})`, trap.player);
+    }
+
+    wu.currentIndex++;
+    if (wu.currentIndex >= wu.traps.length) {
+      wu.phase = 'done';
+      G.state.actionHistory.push({
+        type: 'woundup',
+        trapSnapshot: wu.undoData.trapSnapshot,
+      });
+    }
+    return true;
+  }
+
+  /** Skip moving the current trap (leave in place). */
+  function skipWoundUpTrap() {
+    const act = G.state.activationState;
+    if (!act || !act.woundUp || act.woundUp.phase !== 'targeting') return false;
+    const wu = act.woundUp;
+    wu.currentIndex++;
+    if (wu.currentIndex >= wu.traps.length) {
+      wu.phase = 'done';
+      G.state.actionHistory.push({
+        type: 'woundup',
+        trapSnapshot: wu.undoData.trapSnapshot,
+      });
+    }
+    return true;
+  }
+
+  /** Skip all remaining Wound Up traps. */
+  function skipWoundUp() {
+    const act = G.state.activationState;
+    if (!act || !act.woundUp) return false;
+    act.woundUp.phase = 'done';
+    G.state.actionHistory.push({
+      type: 'woundup',
+      trapSnapshot: act.woundUp.undoData.trapSnapshot,
+    });
+    G.log('Wound Up skipped', act.unit.player);
+    return true;
+  }
+
+  /** Undo all Wound Up trap movements (on deselect). */
+  function undoWoundUp() {
+    const act = G.state.activationState;
+    if (!act || !act.woundUp) return;
+    // Restore trap positions from snapshot
+    G.state.traps = new Map(act.woundUp.undoData.trapSnapshot);
+    delete act.woundUp;
   }
 
   /** Teleport a unit or terrain (for Toss ability). Returns undo data. */
@@ -1729,6 +1959,7 @@
 
     G.log(`${act.unit.name}'s Falcon Gust moves ${ally.name} to (${destQ},${destR})`, act.unit.player);
     act.falconGust.phase = 'done';
+    G.state.actionHistory.push({ type: 'falcongust', undoData: act.falconGust.undoData });
     return true;
   }
 
@@ -1747,6 +1978,7 @@
 
     if (act.falconGust.cinderCount >= act.falconGust.cinderMax) {
       act.falconGust.phase = 'done';
+      G.state.actionHistory.push({ type: 'falcongust', undoData: act.falconGust.undoData });
     }
     // Otherwise stay in 'targeting' phase for the next Cinder placement
     return true;
@@ -1764,6 +1996,7 @@
     pushUnit(enemy, act.unit.q, act.unit.r, 1);
     G.log(`${act.unit.name}'s Falcon Gust pushes ${enemy.name}`, act.unit.player);
     act.falconGust.phase = 'done';
+    G.state.actionHistory.push({ type: 'falcongust', undoData: act.falconGust.undoData });
     return true;
   }
 
@@ -1772,6 +2005,7 @@
     const act = G.state.activationState;
     if (!act || !act.falconGust) return false;
     act.falconGust.phase = 'done';
+    G.state.actionHistory.push({ type: 'falcongust', undoData: act.falconGust.undoData });
     G.log(`${act.unit.name} skips Falcon Gust`, act.unit.player);
     return true;
   }
@@ -1846,5 +2080,18 @@
   G.executeFalconGustPush = executeFalconGustPush;
   G.skipFalconGust = skipFalconGust;
   G.undoFalconGust = undoFalconGust;
+
+  // Clock Trap helpers
+  G.getValidTrapHexes = getValidTrapHexes;
+  G.placeTrap = placeTrap;
+  G.removeTrap = removeTrap;
+  G.getPlayerTraps = getPlayerTraps;
+  G.executeClockToys = executeClockToys;
+  G.initWoundUp = initWoundUp;
+  G.getWoundUpDestinations = getWoundUpDestinations;
+  G.executeWoundUpMove = executeWoundUpMove;
+  G.skipWoundUpTrap = skipWoundUpTrap;
+  G.skipWoundUp = skipWoundUp;
+  G.undoWoundUp = undoWoundUp;
 
 })(Game);

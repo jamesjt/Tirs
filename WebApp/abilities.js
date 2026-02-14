@@ -727,6 +727,26 @@ const Abilities = (() => {
     return false;
   }
 
+  /** Get the deploy trap count for a unit template (0 if no deploy trap rule). */
+  function getDeployTrapCount(template) {
+    const names = (template.specialRules || []).map(r => r.name);
+    for (const name of names) {
+      const def = abilityDefs[name];
+      if (!def) continue;
+      for (const ruleId of def.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (rule && rule.type === 'deploy') {
+          for (const eff of rule.effects) {
+            if (eff.effect && eff.effect.toLowerCase() === 'deploytrap') {
+              return parseInt(eff.value, 10) || 0;
+            }
+          }
+        }
+      }
+    }
+    return 0;
+  }
+
   // ── On-Attack Helpers (Toss and similar pre-attack abilities) ──
 
   /** Check if a unit has any onAttack rules (e.g. Toss). */
@@ -857,7 +877,16 @@ const Abilities = (() => {
     for (const ab of unit.abilities) {
       const actionRule = ab.ruleIds.map(id => atomicRules[id]).find(r => r && r.type === 'action');
       if (!actionRule) continue;
-      actions.push({ ...ab, actionCost: (actionRule.action || '').toLowerCase() || null });
+      const cost = (actionRule.action || '').toLowerCase();
+      if (cost.includes(',')) {
+        // Dual-cost action: emit two entries with different actionCost
+        const costs = cost.split(',').map(c => c.trim());
+        for (const c of costs) {
+          actions.push({ ...ab, actionCost: c, displayName: `${ab.name} (${c})` });
+        }
+      } else {
+        actions.push({ ...ab, actionCost: cost || null });
+      }
     }
     return actions;
   }
@@ -1034,6 +1063,7 @@ const Abilities = (() => {
     hasFlag,
     hasFlagPassive,
     hasDeployRule,
+    getDeployTrapCount,
     ignoresTerrainRule,
     hasOnAttackRules,
     getTossSourceHexes,

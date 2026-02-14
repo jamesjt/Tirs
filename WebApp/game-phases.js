@@ -158,13 +158,28 @@
     G.state.units.push(unit);
     template._deployed = true;
 
+    // Check for deploy trap ability (Clockwerk)
+    const deployTrapCount = typeof Abilities !== 'undefined'
+      ? Abilities.getDeployTrapCount(template) : 0;
+    if (deployTrapCount > 0) {
+      G.state.pendingDeployTraps = { unit, count: deployTrapCount, placed: 0 };
+      // UI will handle trap placement before continuing alternation
+      return true;
+    }
+
+    finishDeploy(player, p);
+    return true;
+  }
+
+  /** Complete deploy alternation after unit is placed (and optional traps placed). */
+  function finishDeploy(player, playerData) {
     // In hidden deploy, no alternation — players deploy freely then confirm
-    if (G.state.rules.hiddenDeploy) return true;
+    if (G.state.rules.hiddenDeploy) return;
 
     // Alternate
     const other = player === 1 ? 2 : 1;
     const otherHasUndeployed = G.state.players[other].roster.some(u => !u._deployed);
-    const selfHasUndeployed = p.roster.some(u => !u._deployed);
+    const selfHasUndeployed = playerData.roster.some(u => !u._deployed);
 
     if (otherHasUndeployed) {
       G.state.currentPlayer = other;
@@ -174,7 +189,16 @@
       // All deployed — enter first round start
       startRound();
     }
-    return true;
+  }
+
+  /** Called by UI after all deploy traps are placed (or skipped). */
+  function finishDeployTraps() {
+    const pdt = G.state.pendingDeployTraps;
+    if (!pdt) return;
+    const player = pdt.unit.player;
+    const playerData = G.state.players[player];
+    G.state.pendingDeployTraps = null;
+    finishDeploy(player, playerData);
   }
 
   function undeployUnit(player, rosterIndex) {
@@ -723,5 +747,8 @@
   G.resolveArcFire = resolveArcFire;
   G.skipArcFire = skipArcFire;
   G.allArcFireResolved = allArcFireResolved;
+
+  // Deploy trap helpers
+  G.finishDeployTraps = finishDeployTraps;
 
 })(Game);

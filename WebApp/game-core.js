@@ -55,6 +55,8 @@ const Game = (() => {
       terrain: new Map(),       // "q,r" -> { surface, player }
       consumedUnits: [],        // [{ unit, fromQ, fromR }] — units swallowed by consuming terrain
       delayedEffects: [],       // [{ unit, player, targetQ, targetR, atkDmg, round }]
+      traps: new Map(),         // "q,r" -> { player } — clock traps (4th hex layer)
+      pendingDeployTraps: null, // { unit, count, placed } — interactive trap placement after deploy
       terrainChangedThisRound: new Set(),  // "q,r" keys — hexes where terrain was placed/moved during battle
       objectiveControl: {},     // "q,r" -> player (1|2|0)
 
