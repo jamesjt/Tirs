@@ -141,6 +141,7 @@ const UI = (() => {
       selectedAction: null,     // 'move' | 'attack' | null
       highlights: null,         // Map for rendering highlights
       highlightColor: null,
+      highlightColor2: null,    // secondary highlight color (value 2 in highlights Map)
       highlightStyle: null,     // 'dots' for dot+border, null for filled hex
       attackTargets: null,      // Map of "q,r" -> {damage} for rendering
       pathPreview: null,        // [{q,r}] — hex sequence for path rendering
@@ -3570,11 +3571,27 @@ const UI = (() => {
       return;
     }
     const dests = Game.getWoundUpDestinations(trap.q, trap.r);
+    const trapKey = `${trap.q},${trap.r}`;
+    const trapOwner = Game.state.traps.get(trapKey);
+    const trapPlayer = trapOwner ? trapOwner.player : 0;
+    // Split destinations: occupied hexes → red attack reticles, others → yellow/cyan highlights
+    const moveHexes = new Map();
+    const occupiedTargets = new Map();
+    for (const [k] of dests) {
+      const [dq, dr] = k.split(',').map(Number);
+      const occupant = Game.state.units.find(u => u.q === dq && u.r === dr && u.health > 0);
+      if (occupant) {
+        occupiedTargets.set(k, { damage: 1 });
+      } else {
+        moveHexes.set(k, k === trapKey ? 2 : 1);
+      }
+    }
     woundUpTargeting = { trapIndex: wu.currentIndex, validHexes: dests, currentTrap: trap };
-    uiState.highlights = dests;
-    uiState.highlightColor = 'rgba(0, 200, 200, 0.35)';
+    uiState.highlights = moveHexes;
+    uiState.highlightColor = 'rgba(255, 255, 0, 0.35)';
+    uiState.highlightColor2 = 'rgba(0, 200, 200, 0.35)';
     uiState.highlightStyle = 'dots';
-    uiState.attackTargets = null;
+    uiState.attackTargets = occupiedTargets.size > 0 ? occupiedTargets : null;
     updateStatusBar();
     showPhase();
     render();
@@ -3625,6 +3642,7 @@ const UI = (() => {
     }
     uiState.highlights = reachable;
     uiState.highlightColor = reachable ? 'rgba(255,255,0,0.35)' : null;
+    uiState.highlightColor2 = null;
     uiState.highlightStyle = reachable ? 'dots' : null;
     uiState.attackTargets = targets;
     // Enemy hexes that can be waypointed (Glider) or push-moved into (Impactful)
@@ -3778,8 +3796,9 @@ const UI = (() => {
         if (ok) {
           netSend({ type: 'clockToys', q: hex.q, r: hex.r, costType: clockToysTargeting.costType });
           clockToysTargeting = null;
+          const act = s.activationState;
           // Auto-end if both actions used
-          if (act.moved && act.attacked && !s.rules.confirmEndTurn) {
+          if (act && act.moved && act.attacked && !s.rules.confirmEndTurn) {
             Game.endActivation();
             resetUiState();
           } else {

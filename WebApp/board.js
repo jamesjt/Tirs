@@ -1084,20 +1084,31 @@ const Board = (() => {
         const m = state.highlightColor.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
         if (m) { hr = +m[1]; hg = +m[2]; hb = +m[3]; }
       }
+      // Optional secondary color (value 2 in highlights Map)
+      let hr2 = hr, hg2 = hg, hb2 = hb;
+      if (state.highlightColor2) {
+        const m2 = state.highlightColor2.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+        if (m2) { hr2 = +m2[1]; hg2 = +m2[2]; hb2 = +m2[3]; }
+      }
 
       // A) 20% opacity hex fill
       for (const key of hlKeys) {
         const [q, r] = key.split(',').map(Number);
         const hex = getHex(q, r);
-        if (hex) drawHexShape(hex, `rgba(${hr}, ${hg}, ${hb}, 0.2)`);
+        if (!hex) continue;
+        const val = state.highlights.get(key);
+        const cr = val === 2 ? hr2 : hr, cg = val === 2 ? hg2 : hg, cb = val === 2 ? hb2 : hb;
+        drawHexShape(hex, `rgba(${cr}, ${cg}, ${cb}, 0.2)`);
       }
 
       // B) Opaque dots at each highlighted hex centre
-      ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, 0.9)`;
       for (const key of hlKeys) {
         const [q, r] = key.split(',').map(Number);
         const hex = getHex(q, r);
         if (!hex) continue;
+        const val = state.highlights.get(key);
+        const cr = val === 2 ? hr2 : hr, cg = val === 2 ? hg2 : hg, cb = val === 2 ? hb2 : hb;
+        ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, 0.9)`;
         const { x, y } = px(hex);
         ctx.beginPath();
         ctx.arc(x, y, s * 0.15, 0, Math.PI * 2);

@@ -1075,8 +1075,14 @@
       if (last.costType === 'move') act.moved = false;
       else if (last.costType === 'attack') act.attacked = false;
     } else if (last.type === 'woundup') {
-      // Restore all trap positions from snapshot
+      // Restore all trap positions and unit health from snapshot
       G.state.traps = new Map(last.trapSnapshot);
+      if (last.unitSnapshots) {
+        for (const snap of last.unitSnapshots) {
+          snap.unit.health = snap.health;
+          snap.unit.conditions = snap.conditions;
+        }
+      }
       delete act.woundUp;
     } else if (last.type === 'falcongust') {
       // Restore all unit positions/health/conditions and terrain
@@ -1625,15 +1631,17 @@
     const traps = getPlayerTraps(unit.player);
     if (traps.length === 0) return;
 
-    // Snapshot traps for undo-on-deselect
+    // Snapshot traps and unit health for undo (traps can damage allies)
     const trapSnapshot = new Map();
     for (const [k, v] of G.state.traps) trapSnapshot.set(k, { ...v });
+    const unitSnapshots = G.state.units.filter(u => u.health > 0)
+      .map(u => ({ unit: u, health: u.health, conditions: u.conditions.map(c => ({ ...c })) }));
 
     act.woundUp = {
       phase: 'targeting',
       traps,
       currentIndex: 0,
-      undoData: { trapSnapshot },
+      undoData: { trapSnapshot, unitSnapshots },
     };
   }
 
@@ -1665,8 +1673,15 @@
 
     if (fromKey !== toKey) {
       G.state.traps.delete(fromKey);
-      G.state.traps.set(toKey, trap);
-      G.log(`Clock Trap moved from (${fromQ},${fromR}) to (${toQ},${toR})`, trap.player);
+      // Check if destination has any unit — trigger trap (damage + destroy)
+      const occupant = G.state.units.find(u => u.q === toQ && u.r === toR && u.health > 0);
+      if (occupant) {
+        damageUnit(occupant, 1, null, 'trap');
+        G.log(`Clock Trap moved into ${occupant.name} — triggered! (${occupant.health}/${occupant.maxHealth} HP)`, trap.player);
+      } else {
+        G.state.traps.set(toKey, trap);
+        G.log(`Clock Trap moved from (${fromQ},${fromR}) to (${toQ},${toR})`, trap.player);
+      }
     }
 
     wu.currentIndex++;
@@ -1675,6 +1690,7 @@
       G.state.actionHistory.push({
         type: 'woundup',
         trapSnapshot: wu.undoData.trapSnapshot,
+        unitSnapshots: wu.undoData.unitSnapshots,
       });
     }
     return true;
@@ -1691,6 +1707,7 @@
       G.state.actionHistory.push({
         type: 'woundup',
         trapSnapshot: wu.undoData.trapSnapshot,
+        unitSnapshots: wu.undoData.unitSnapshots,
       });
     }
     return true;
@@ -1704,6 +1721,7 @@
     G.state.actionHistory.push({
       type: 'woundup',
       trapSnapshot: act.woundUp.undoData.trapSnapshot,
+      unitSnapshots: act.woundUp.undoData.unitSnapshots,
     });
     G.log('Wound Up skipped', act.unit.player);
     return true;
@@ -1713,8 +1731,14 @@
   function undoWoundUp() {
     const act = G.state.activationState;
     if (!act || !act.woundUp) return;
-    // Restore trap positions from snapshot
+    // Restore trap positions and unit health from snapshot
     G.state.traps = new Map(act.woundUp.undoData.trapSnapshot);
+    if (act.woundUp.undoData.unitSnapshots) {
+      for (const snap of act.woundUp.undoData.unitSnapshots) {
+        snap.unit.health = snap.health;
+        snap.unit.conditions = snap.conditions;
+      }
+    }
     delete act.woundUp;
   }
 
