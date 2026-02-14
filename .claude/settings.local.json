@@ -27,7 +27,9 @@
       "Bash(findstr:*)",
       "Bash(echo:*)",
       "Bash(powershell:*)",
-      "Bash(Select-String -Pattern \"ignore\" -SimpleMatch)"
+      "Bash(Select-String -Pattern \"ignore\" -SimpleMatch)",
+      "Bash(git log:*)",
+      "Bash(node -c:*)"
     ]
   }
 }

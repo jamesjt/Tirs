@@ -160,6 +160,9 @@ const UI = (() => {
     effectTargeting = null;
     tossTargeting = null;
     teleportTargeting = null;
+    pushMoveTargeting = null;
+    zoomTargeting = null;
+    falconGustTargeting = null;
     hotSuitTargeting = false;
     delayedTargeting = false;
     hideLevelChoiceOverlay();
@@ -210,6 +213,15 @@ const UI = (() => {
   let levelTargeting = null;
   // { phase: 1|2, unit, terrainHexes: [{q,r,surface}], data: object,
   //   selectedHex: {q,r,surface}|null }
+
+  // ── Zoom Targeting Mode (RoCo: pick hex on straight line to zoom to) ──
+  let zoomTargeting = null;
+  // { unit, validTargets: Set of hex keys }
+
+  // ── Push-Move Targeting Mode (Impactful: right-click enemy → pick push direction) ──
+  let pushMoveTargeting = null;
+  let falconGustTargeting = null; // { phase, validHexes: Map, selectedAlly }
+  // { targetQ, targetR, enemy, path, pathCost, pushDestinations: Set }
 
   // ── Delayed Targeting Mode (space-targeting attack for delayed effect) ──
   let delayedTargeting = false;
@@ -412,6 +424,114 @@ const UI = (() => {
     } else {
       showActivationHighlights();
     }
+    showPhase();
+    render();
+  }
+
+  /** Animate push-move: slide Dozer token along path to enemy's old hex. */
+  function animatePushMove(tgt, pushDestQ, pushDestR, speed) {
+    moveAnimating = true;
+    // Render first to update pushed enemy token position, then animate Dozer
+    render();
+    animateTokenAlongPath(Game.state.activationState.unit, tgt.path, speed, () => {
+      moveAnimating = false;
+      finishPostPushMove();
+    });
+  }
+
+  /** Called after push-move (animated or instant). */
+  function finishPostPushMove() {
+    if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+      enterEffectTargeting();
+      return;
+    }
+    const act = Game.state.activationState;
+    if (!act) {
+      resetUiState();
+    } else if (act.moved && act.attacked && !Game.state.rules.confirmEndTurn) {
+      Game.endActivation();
+      resetUiState();
+    } else {
+      showActivationHighlights();
+    }
+    updateStatusBar();
+    showPhase();
+    render();
+  }
+
+  /** Called after Zoom executes (animated or instant). */
+  function finishPostZoom() {
+    if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+      enterEffectTargeting();
+      return;
+    }
+    const act = Game.state.activationState;
+    if (!act) {
+      resetUiState();
+    } else if (act.moved && act.attacked && !Game.state.rules.confirmEndTurn) {
+      Game.endActivation();
+      resetUiState();
+    } else {
+      showActivationHighlights();
+    }
+    showPhase();
+    render();
+  }
+
+  // ── Falcon Gust targeting ──────────────────────────────────
+
+  function enterFalconGustTargeting(fgAction) {
+    const act = Game.state.activationState;
+    if (!act) return;
+
+    if (fgAction === 'moveAlly') {
+      const allies = Game.getFalconGustAllyTargets();
+      if (!allies || allies.size === 0) {
+        Game.skipFalconGust();
+        netSend({ type: 'falconGust', action: 'skip' });
+        showActivationHighlights();
+        showPhase();
+        render();
+        return;
+      }
+      falconGustTargeting = { phase: 'allySelect', validHexes: new Map([...allies.keys()].map(k => [k, 1])), allyMap: allies, selectedAlly: null };
+      uiState.highlights = falconGustTargeting.validHexes;
+      uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
+      uiState.highlightStyle = 'dots';
+      uiState.attackTargets = null;
+    } else if (fgAction === 'createCinder') {
+      const cinderHexes = Game.getFalconGustCinderHexes();
+      if (!cinderHexes || cinderHexes.size === 0) {
+        Game.skipFalconGust();
+        netSend({ type: 'falconGust', action: 'skip' });
+        showActivationHighlights();
+        showPhase();
+        render();
+        return;
+      }
+      falconGustTargeting = { phase: 'cinderPlace', validHexes: cinderHexes, selectedAlly: null };
+      uiState.highlights = cinderHexes;
+      uiState.highlightColor = 'rgba(255, 120, 0, 0.4)';
+      uiState.highlightStyle = 'dots';
+      uiState.attackTargets = null;
+    } else if (fgAction === 'pushEnemy') {
+      const enemies = Game.getFalconGustPushTargets();
+      if (!enemies || enemies.size === 0) {
+        Game.skipFalconGust();
+        netSend({ type: 'falconGust', action: 'skip' });
+        showActivationHighlights();
+        showPhase();
+        render();
+        return;
+      }
+      falconGustTargeting = { phase: 'pushSelect', validHexes: new Map([...enemies.keys()].map(k => [k, 1])), enemyMap: enemies, selectedAlly: null };
+      uiState.highlights = falconGustTargeting.validHexes;
+      uiState.highlightColor = 'rgba(255, 80, 80, 0.4)';
+      uiState.highlightStyle = 'dots';
+      uiState.attackTargets = null;
+    }
+
+    updateStatusBar();
     showPhase();
     render();
   }
@@ -859,8 +979,32 @@ const UI = (() => {
     let text = '';
 
     if (s.phase === Game.PHASE.BATTLE) {
+      // Falcon Gust targeting messages
+      if (falconGustTargeting) {
+        if (falconGustTargeting.phase === 'allySelect') {
+          text = 'Falcon Gust: select ally to move (ESC to skip)';
+        } else if (falconGustTargeting.phase === 'allyDest') {
+          const name = falconGustTargeting.selectedAlly ? falconGustTargeting.selectedAlly.name : 'ally';
+          text = `Falcon Gust: choose destination for ${name} (ESC to go back)`;
+        } else if (falconGustTargeting.phase === 'cinderPlace') {
+          const fg = s.activationState ? s.activationState.falconGust : null;
+          const n = fg ? `${fg.cinderCount + 1}/${fg.cinderMax}` : '';
+          text = `Falcon Gust: place Cinder ${n} adjacent to existing Cinder (ESC to skip)`;
+        } else if (falconGustTargeting.phase === 'pushSelect') {
+          text = 'Falcon Gust: select adjacent enemy to push (ESC to skip)';
+        }
+      // Falcon Gust button phase (no targeting)
+      } else if (s.activationState && s.activationState.falconGust
+                 && s.activationState.falconGust.phase !== 'done') {
+        text = 'Falcon Gust: choose mode (ESC to skip)';
+      // Zoom targeting messages
+      } else if (zoomTargeting) {
+        text = 'Zoom: pick destination along a straight line (ESC to cancel)';
+      // Push-move targeting messages (Impactful)
+      } else if (pushMoveTargeting) {
+        text = `Push ${pushMoveTargeting.enemy.name} where? (ESC to cancel)`;
       // Level targeting messages
-      if (levelTargeting) {
+      } else if (levelTargeting) {
         if (levelTargeting.phase === 1) {
           text = 'Level: choose terrain to replace (ESC to skip)';
         } else {
@@ -1578,6 +1722,39 @@ const UI = (() => {
         html += `<p class="cond-warning">Dizzy: Can move OR attack (not both)</p>`;
       }
 
+      // Falcon Gust interactive UI
+      if (act.falconGust && act.falconGust.phase !== 'done') {
+        const fg = act.falconGust;
+        html += `<div class="falcon-gust-choices">`;
+        html += `<p class="ability-prompt"><strong>Falcon Gust</strong></p>`;
+        if (fg.phase === 'modeChoice') {
+          html += `<button class="btn btn-ability" data-action="fg-mode" data-mode="free">Free: Move ally or Create Cinder</button>`;
+          html += `<button class="btn btn-ability" data-action="fg-mode" data-mode="enhanced">Enhanced: Push enemy or Create 2 Cinder (Immobilized)</button>`;
+          html += `<button class="btn btn-action" data-action="fg-skip">Skip</button>`;
+        } else if (fg.phase === 'actionChoice') {
+          if (fg.mode === 'free') {
+            html += `<button class="btn btn-ability" data-action="fg-action" data-fg-action="moveAlly">Move an Ally 1 space</button>`;
+            html += `<button class="btn btn-ability" data-action="fg-action" data-fg-action="createCinder">Create Cinder</button>`;
+          } else {
+            html += `<button class="btn btn-ability" data-action="fg-action" data-fg-action="pushEnemy">Push adjacent Enemy 1 space</button>`;
+            html += `<button class="btn btn-ability" data-action="fg-action" data-fg-action="createCinder">Create 2 Cinder</button>`;
+          }
+          html += `<button class="btn btn-action" data-action="fg-skip">Skip</button>`;
+        } else if (fg.phase === 'targeting') {
+          if (fg.action === 'createCinder') {
+            html += `<p>Place Cinder ${fg.cinderCount + 1}/${fg.cinderMax}</p>`;
+          } else if (fg.action === 'moveAlly') {
+            html += `<p>${falconGustTargeting && falconGustTargeting.phase === 'allyDest' ? 'Choose destination' : 'Select ally to move'}</p>`;
+          } else if (fg.action === 'pushEnemy') {
+            html += `<p>Select enemy to push</p>`;
+          }
+        }
+        html += `</div>`;
+        html += `</div>`;
+        panel.innerHTML = html;
+        return; // Don't show move/attack prompts during Falcon Gust
+      }
+
       html += `<span class="done-label">${act.moved ? 'Moved' : 'Click yellow hex to move'}</span>`;
       const delayedHint = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'delayedattack');
       html += `<span class="done-label">${act.attacked ? 'Attacked' : (delayedHint ? 'Place delayed attack' : 'Click red target to attack')}</span>`;
@@ -1612,10 +1789,12 @@ const UI = (() => {
         const last = history[history.length - 1];
         const canUndo = (last.type === 'move' && s.rules.canUndoMove) ||
                         (last.type === 'attack' && s.rules.canUndoAttack) ||
+                        (last.type === 'zoom' && s.rules.canUndoAttack) ||
                         (last.type === 'ability' && last.actionCost === 'move' && s.rules.canUndoMove) ||
                         (last.type === 'ability' && last.actionCost === 'attack' && s.rules.canUndoAttack);
         if (canUndo) {
           const label = last.type === 'ability' ? `Undo ${last.abilityName}` :
+                        last.type === 'zoom' ? 'Undo Zoom' :
                         last.type === 'move' ? 'Undo Move' : 'Undo Attack';
           html += `<button class="btn btn-action" data-action="undo-action">\u2190 ${label}</button>`;
         }
@@ -2304,6 +2483,61 @@ const UI = (() => {
       }
     }
 
+    // ESC: Falcon Gust targeting — cancel/go back
+    if (key === 'escape' && falconGustTargeting) {
+      if (falconGustTargeting.phase === 'allyDest') {
+        // Go back to ally selection
+        const allies = Game.getFalconGustAllyTargets();
+        falconGustTargeting = { phase: 'allySelect', validHexes: new Map([...allies.keys()].map(k => [k, 1])), allyMap: allies, selectedAlly: null };
+        uiState.highlights = falconGustTargeting.validHexes;
+        uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
+        uiState.highlightStyle = 'dots';
+      } else {
+        Game.skipFalconGust();
+        netSend({ type: 'falconGust', action: 'skip' });
+        falconGustTargeting = null;
+        showActivationHighlights();
+      }
+      showPhase();
+      updateStatusBar();
+      render();
+      e.preventDefault();
+      return;
+    }
+
+    // ESC during Falcon Gust button phase (no targeting active)
+    if (key === 'escape' && Game.state.activationState && Game.state.activationState.falconGust
+        && Game.state.activationState.falconGust.phase !== 'done' && !falconGustTargeting) {
+      Game.skipFalconGust();
+      netSend({ type: 'falconGust', action: 'skip' });
+      showActivationHighlights();
+      showPhase();
+      updateStatusBar();
+      render();
+      e.preventDefault();
+      return;
+    }
+
+    // ESC: zoom targeting — cancel and return to normal highlights
+    if (key === 'escape' && zoomTargeting) {
+      zoomTargeting = null;
+      showActivationHighlights();
+      updateStatusBar();
+      render();
+      e.preventDefault();
+      return;
+    }
+
+    // ESC: push-move targeting — cancel and return to normal highlights
+    if (key === 'escape' && pushMoveTargeting) {
+      pushMoveTargeting = null;
+      showActivationHighlights();
+      updateStatusBar();
+      render();
+      e.preventDefault();
+      return;
+    }
+
     // ESC: afterMove teleport targeting — phase 2 goes back to phase 1, phase 1 tries next or skips
     if (key === 'escape' && teleportTargeting) {
       if (teleportTargeting.phase === 2) {
@@ -2720,9 +2954,38 @@ const UI = (() => {
     if (!hex) return;
     const key = `${hex.q},${hex.r}`;
 
+    // Priority 0: Impactful push-move targeting (right-click cyan enemy → enter push direction mode)
+    const isEnemyWaypoint = uiState.enemyWaypointHexes && uiState.enemyWaypointHexes.has(key);
+    const isImpactfulUnit = Game.state.activationState
+      && typeof Abilities !== 'undefined'
+      && Abilities.hasFlagPassive(Game.state.activationState.unit, 'moveintoenemies');
+    if (isEnemyWaypoint && isImpactfulUnit) {
+      const data = Game.getPushMoveData(hex.q, hex.r);
+      if (data && data.pushDestinations.size > 0) {
+        // Enter push-move targeting: show green push destinations
+        pushMoveTargeting = {
+          targetQ: hex.q, targetR: hex.r,
+          enemy: data.enemy,
+          path: data.path,
+          pathCost: data.pathCost,
+          pushDestinations: data.pushDestinations,
+        };
+        uiState.highlights = new Map([...data.pushDestinations].map(k => [k, 1]));
+        uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
+        uiState.highlightStyle = 'dots';
+        uiState.attackTargets = null;
+        uiState.enemyWaypointHexes = null;
+        uiState.pathPreview = null;
+        uiState.pathCost = null;
+        uiState.waypoints = [];
+        updateStatusBar();
+        render();
+        return;
+      }
+    }
+
     // Priority 1: Movement waypoints (on movement-highlighted or enemy-waypointable hexes)
     const isMovementWaypoint = uiState.highlights && uiState.highlights.has(key);
-    const isEnemyWaypoint = uiState.enemyWaypointHexes && uiState.enemyWaypointHexes.has(key);
     if (isMovementWaypoint || isEnemyWaypoint) {
       const idx = uiState.waypoints.findIndex(w => w.q === hex.q && w.r === hex.r);
       if (idx !== -1) {
@@ -2792,7 +3055,8 @@ const UI = (() => {
 
     // Block battle-phase actions when it's opponent's turn online
     const battleActions = ['undo-action','remove-burning','end-activation','skip-consuming','skip-arcfire',
-      'shift-ride','shift-stay','advance-round-step','use-ability','delayed-target'];
+      'shift-ride','shift-stay','advance-round-step','use-ability','delayed-target',
+      'fg-mode','fg-action','fg-skip'];
     if (typeof Net !== 'undefined' && Net.isOnline() && !Net.isMyTurn() &&
         battleActions.includes(action)) {
       return;
@@ -2894,6 +3158,35 @@ const UI = (() => {
       render();
     }
 
+    // ── Falcon Gust button handlers ──
+    else if (action === 'fg-mode') {
+      const mode = btn.dataset.mode;
+      const ok = Game.setFalconGustMode(mode);
+      if (ok) {
+        netSend({ type: 'falconGust', action: 'setMode', mode });
+        showPhase();
+        render();
+      }
+    }
+
+    else if (action === 'fg-action') {
+      const fgAction = btn.dataset.fgAction;
+      const ok = Game.setFalconGustAction(fgAction);
+      if (ok) {
+        netSend({ type: 'falconGust', action: 'setAction', fgAction });
+        enterFalconGustTargeting(fgAction);
+      }
+    }
+
+    else if (action === 'fg-skip') {
+      Game.skipFalconGust();
+      netSend({ type: 'falconGust', action: 'skip' });
+      falconGustTargeting = null;
+      showActivationHighlights();
+      showPhase();
+      render();
+    }
+
     else if (action === 'undo-action') {
       const ok = Game.undoLastAction();
       if (ok) {
@@ -2931,6 +3224,20 @@ const UI = (() => {
       const targeting = typeof Abilities !== 'undefined' && Abilities.getTargeting(abilityName);
       if (targeting) {
         enterAbilityTargeting(abilityName, act.unit, targeting, actionCost);
+      } else if (abilityName === 'Zoom') {
+        // Zoom: enter custom targeting mode (pick hex on straight line)
+        const targets = Game.getZoomTargets(act.unit);
+        if (targets.size > 0) {
+          zoomTargeting = { unit: act.unit, validTargets: targets };
+          uiState.highlights = new Map([...targets].map(k => [k, 1]));
+          uiState.highlightColor = 'rgba(180, 255, 100, 0.4)';
+          uiState.highlightStyle = 'dots';
+          uiState.attackTargets = null;
+          uiState.enemyWaypointHexes = null;
+          uiState.pathPreview = null;
+          updateStatusBar();
+          render();
+        }
       } else {
         // Non-targeted action — execute immediately
         if (typeof Abilities !== 'undefined') {
@@ -3095,6 +3402,13 @@ const UI = (() => {
     const act = Game.state.activationState;
     if (!act) return;
     uiState.selectedUnit = act.unit;
+
+    // Suppress normal highlights while Falcon Gust is pending
+    if (act.falconGust && act.falconGust.phase !== 'done') {
+      uiState.highlights = null;
+      uiState.attackTargets = null;
+      return;
+    }
     const reachable = Game.getMoveRange();    // null if already moved
     let targets = Game.getAttackTargets();  // null if already attacked
     // Delayed Effect: target hexes instead of units
@@ -3108,14 +3422,23 @@ const UI = (() => {
     uiState.highlightColor = reachable ? 'rgba(255,255,0,0.35)' : null;
     uiState.highlightStyle = reachable ? 'dots' : null;
     uiState.attackTargets = targets;
-    // Enemy hexes that can be waypointed (Glider: condition-based moveIntoEnemies, not passive)
-    if (reachable && Game.hasCondition(act.unit, 'moveintoenemies')) {
+    // Enemy hexes that can be waypointed (Glider) or push-moved into (Impactful)
+    const isGlider = Game.hasCondition(act.unit, 'moveintoenemies');
+    const isImpactful = typeof Abilities !== 'undefined'
+      && Abilities.hasFlagPassive(act.unit, 'moveintoenemies');
+    if (reachable && (isGlider || isImpactful)) {
       const ewh = new Set();
       for (const u of Game.state.units) {
         if (u.health <= 0 || u.player === act.unit.player) continue;
         const k = `${u.q},${u.r}`;
-        // Must be BFS-explored (in parentMap) but not a stop-destination
-        if (!reachable.has(k) && act._parentMap && act._parentMap.has(k)) ewh.add(k);
+        if (isImpactful) {
+          // Impactful: show only enemies that have valid push destinations
+          const data = Game.getPushMoveData(u.q, u.r);
+          if (data && data.pushDestinations.size > 0) ewh.add(k);
+        } else {
+          // Glider: must be BFS-explored (in parentMap) but not a stop-destination
+          if (!reachable.has(k) && act._parentMap && act._parentMap.has(k)) ewh.add(k);
+        }
       }
       uiState.enemyWaypointHexes = ewh.size > 0 ? ewh : null;
     } else {
@@ -3152,6 +3475,143 @@ const UI = (() => {
 
     const s = Game.state;
     const key = `${hex.q},${hex.r}`;
+
+    // Falcon Gust targeting mode
+    if (falconGustTargeting) {
+      const fgPhase = falconGustTargeting.phase;
+
+      if (fgPhase === 'allySelect') {
+        if (falconGustTargeting.allyMap && falconGustTargeting.allyMap.has(key)) {
+          const ally = falconGustTargeting.allyMap.get(key);
+          falconGustTargeting.selectedAlly = ally;
+          falconGustTargeting.phase = 'allyDest';
+          const dests = Game.getFalconGustAllyDests(ally.q, ally.r);
+          falconGustTargeting.validHexes = dests;
+          uiState.highlights = dests;
+          uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
+          showPhase();
+          render();
+        }
+        return;
+      }
+
+      if (fgPhase === 'allyDest') {
+        if (falconGustTargeting.validHexes.has(key)) {
+          const ally = falconGustTargeting.selectedAlly;
+          const allyIdx = Game.state.units.indexOf(ally);
+          Game.executeFalconGustMoveAlly(allyIdx, hex.q, hex.r);
+          netSend({ type: 'falconGust', action: 'moveAlly', allyIdx, destQ: hex.q, destR: hex.r });
+          falconGustTargeting = null;
+          showActivationHighlights();
+          showPhase();
+          render();
+        }
+        return;
+      }
+
+      if (fgPhase === 'cinderPlace') {
+        if (falconGustTargeting.validHexes.has(key)) {
+          Game.executeFalconGustCinder(hex.q, hex.r);
+          netSend({ type: 'falconGust', action: 'createCinder', q: hex.q, r: hex.r });
+          const act = Game.state.activationState;
+          if (act && act.falconGust && act.falconGust.phase === 'done') {
+            falconGustTargeting = null;
+            showActivationHighlights();
+          } else {
+            // Refresh valid hexes (new cinder = new adjacency source)
+            const newHexes = Game.getFalconGustCinderHexes();
+            if (!newHexes || newHexes.size === 0) {
+              Game.skipFalconGust();
+              netSend({ type: 'falconGust', action: 'skip' });
+              falconGustTargeting = null;
+              showActivationHighlights();
+            } else {
+              falconGustTargeting.validHexes = newHexes;
+              uiState.highlights = newHexes;
+            }
+          }
+          showPhase();
+          render();
+        }
+        return;
+      }
+
+      if (fgPhase === 'pushSelect') {
+        if (falconGustTargeting.enemyMap && falconGustTargeting.enemyMap.has(key)) {
+          const enemy = falconGustTargeting.enemyMap.get(key);
+          const enemyIdx = Game.state.units.indexOf(enemy);
+          Game.executeFalconGustPush(enemyIdx);
+          netSend({ type: 'falconGust', action: 'pushEnemy', enemyIdx });
+          falconGustTargeting = null;
+          showActivationHighlights();
+          showPhase();
+          render();
+        }
+        return;
+      }
+      return;
+    }
+
+    // Zoom targeting mode: click valid hex to zoom there, else cancel
+    if (zoomTargeting) {
+      if (zoomTargeting.validTargets.has(key)) {
+        // Capture path data before execution (unit will move in game state)
+        const zUnit = zoomTargeting.unit;
+        const intermediates = [];
+        Board.straightLineDir(zUnit.q, zUnit.r, hex.q, hex.r, intermediates);
+        const fullPath = [...intermediates, { q: hex.q, r: hex.r }];
+
+        const ok = Game.executeZoom(hex.q, hex.r);
+        if (ok) {
+          netSend({ type: 'executeZoom', q: hex.q, r: hex.r });
+          const speed = s.rules.animSpeed || 0;
+          zoomTargeting = null;
+          if (speed > 0 && fullPath.length > 0) {
+            moveAnimating = true;
+            animateTokenAlongPath(zUnit, fullPath, speed, () => {
+              moveAnimating = false;
+              finishPostZoom();
+            });
+          } else {
+            finishPostZoom();
+          }
+        }
+      } else {
+        // Click non-target: cancel
+        zoomTargeting = null;
+        showActivationHighlights();
+        updateStatusBar();
+        render();
+      }
+      return;
+    }
+
+    // Push-move targeting mode: click green hex to execute push, else cancel
+    if (pushMoveTargeting) {
+      if (pushMoveTargeting.pushDestinations.has(key)) {
+        const tgt = pushMoveTargeting;
+        const ok = Game.executePushMove(tgt.targetQ, tgt.targetR, hex.q, hex.r);
+        if (ok) {
+          netSend({ type: 'pushMove', targetQ: tgt.targetQ, targetR: tgt.targetR, pushQ: hex.q, pushR: hex.r });
+          const animSpeed = s.rules.animSpeed || 0;
+          pushMoveTargeting = null;
+          if (animSpeed > 0 && tgt.path.length > 0) {
+            // Animate Dozer along the path to the enemy's old hex
+            // The unit is already at the destination in game state; animate visually
+            animatePushMove(tgt, hex.q, hex.r, animSpeed);
+          } else {
+            finishPostPushMove();
+          }
+        }
+      } else {
+        // Click on non-destination hex: cancel push-move targeting
+        pushMoveTargeting = null;
+        showActivationHighlights();
+        updateStatusBar();
+        render();
+      }
+      return;
+    }
 
     // Ability targeting mode: click valid target to execute, else cancel
     if (abilityTargeting) {
@@ -3487,12 +3947,15 @@ const UI = (() => {
         }
       }
 
+      // Block deselect/switch during Falcon Gust
+      const fgPending = s.activationState.falconGust && s.activationState.falconGust.phase !== 'done';
+
       // Click own unactivated unit → switch selection only if no action taken yet
       const unit = s.units.find(
         u => u.q === hex.q && u.r === hex.r && u.player === s.currentPlayer && !u.activated && u.health > 0
       );
       if (unit && unit !== s.activationState.unit) {
-        if (!s.activationState.moved && !s.activationState.attacked) {
+        if (!fgPending && !s.activationState.moved && !s.activationState.attacked) {
           const selected = Game.selectUnit(unit);
           if (selected) {
             netSend({ type: 'selectUnit', unitIndex: s.units.indexOf(unit) });
@@ -3510,7 +3973,7 @@ const UI = (() => {
       }
 
       // Click empty/unrelated space → deselect only if no action taken yet
-      if (!s.activationState.moved && !s.activationState.attacked) {
+      if (!fgPending && !s.activationState.moved && !s.activationState.attacked) {
         Game.deselectUnit();
         resetUiState();
         showPhase();
@@ -3830,6 +4293,73 @@ const UI = (() => {
             showActivationHighlights();
           }
         }
+        break;
+      }
+      case 'pushMove': {
+        // Remote push-move: get path data before executing, then animate
+        const pmData = Game.getPushMoveData(data.targetQ, data.targetR);
+        const pmOk = Game.executePushMove(data.targetQ, data.targetR, data.pushQ, data.pushR);
+        if (pmOk) {
+          const pmSpeed = Game.state.rules.animSpeed || 0;
+          const pmUnit = Game.state.activationState ? Game.state.activationState.unit : null;
+          if (pmSpeed > 0 && pmData && pmData.path.length > 0 && pmUnit) {
+            render();  // Update pushed enemy token position
+            moveAnimating = true;
+            animateTokenAlongPath(pmUnit, pmData.path, pmSpeed, () => {
+              moveAnimating = false;
+              finishPostPushMove();
+            });
+            skipRender = true;
+          } else {
+            finishPostPushMove();
+          }
+        }
+        break;
+      }
+      case 'executeZoom': {
+        // Capture path data before execution for animation
+        const zoomUnit = Game.state.activationState ? Game.state.activationState.unit : null;
+        const zoomIntermediates = [];
+        if (zoomUnit) Board.straightLineDir(zoomUnit.q, zoomUnit.r, data.q, data.r, zoomIntermediates);
+        const zoomPath = [...zoomIntermediates, { q: data.q, r: data.r }];
+
+        const zoomOk = Game.executeZoom(data.q, data.r);
+        if (zoomOk) {
+          const zoomSpeed = Game.state.rules.animSpeed || 0;
+          if (zoomSpeed > 0 && zoomPath.length > 0 && zoomUnit) {
+            moveAnimating = true;
+            animateTokenAlongPath(zoomUnit, zoomPath, zoomSpeed, () => {
+              moveAnimating = false;
+              finishPostZoom();
+            });
+            skipRender = true;
+          } else {
+            finishPostZoom();
+          }
+        }
+        break;
+      }
+      case 'falconGust': {
+        if (data.action === 'setMode') {
+          Game.setFalconGustMode(data.mode);
+        } else if (data.action === 'setAction') {
+          Game.setFalconGustAction(data.fgAction);
+        } else if (data.action === 'moveAlly') {
+          Game.executeFalconGustMoveAlly(data.allyIdx, data.destQ, data.destR);
+        } else if (data.action === 'createCinder') {
+          Game.executeFalconGustCinder(data.q, data.r);
+        } else if (data.action === 'pushEnemy') {
+          Game.executeFalconGustPush(data.enemyIdx);
+        } else if (data.action === 'skip') {
+          Game.skipFalconGust();
+        }
+        falconGustTargeting = null;
+        const fgAct = Game.state.activationState;
+        if (fgAct && fgAct.falconGust && fgAct.falconGust.phase === 'done') {
+          showActivationHighlights();
+        }
+        showPhase();
+        render();
         break;
       }
       case 'executeLevel': {

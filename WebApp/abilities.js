@@ -621,6 +621,23 @@ const Abilities = (() => {
     return false;
   }
 
+  /** Check if a unit has a passive flag from abilities only (NOT conditions).
+   *  Use this to distinguish innate flags (Impactful's moveintoenemies)
+   *  from condition-granted flags (Glider's moveintoenemies). */
+  function hasFlagPassive(unit, flag) {
+    if (!unit || !unit.abilities) return false;
+    for (const ab of unit.abilities) {
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule || rule.type !== 'passive') continue;
+        for (const eff of rule.effects) {
+          if (eff.effect && eff.effect.toLowerCase() === flag) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   // ── Terrain Immunity ─────────────────────────────────────────
 
   /** Collect all comma-separated values from a passive effect by name. */
@@ -1015,6 +1032,7 @@ const Abilities = (() => {
     dispatchMovement,
     getPassiveMod,
     hasFlag,
+    hasFlagPassive,
     hasDeployRule,
     ignoresTerrainRule,
     hasOnAttackRules,

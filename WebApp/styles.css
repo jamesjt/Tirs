@@ -50,10 +50,12 @@ canvas {
 .unit-token.selected { border-color: #FFD700; border-width: 3px; box-shadow: 0 0 8px rgba(255,215,0,0.6); }
 
 .unit-token img {
-  width: 100%;
-  height: 100%;
+  width: 130%;
+  height: 130%;
   object-fit: cover;
   object-position: center 30%;
+  margin-left: -15%;
+  margin-top: -15%;
   display: block;
 }
 

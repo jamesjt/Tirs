@@ -63,10 +63,19 @@
     if (typeof Abilities !== 'undefined') {
       Abilities.dispatch('afterSelect', { unit });
     }
+
+    // Falcon Gust: interactive activation ability
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'falcongust')
+        && !G.hasCondition(unit, 'silenced')) {
+      initFalconGust(unit);
+    }
+
     return unit;
   }
 
   function deselectUnit() {
+    const act = G.state.activationState;
+    if (act && act.falconGust) undoFalconGust();
     G.state.activationState = null;
   }
 
@@ -75,10 +84,15 @@
     if (!act) return null;
 
     const isMobile = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'mobile');
+    const isImpactful = typeof Abilities !== 'undefined'
+      && Abilities.hasFlagPassive(act.unit, 'moveintoenemies');
     const canMoveIntoEnemies = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'moveintoenemies');
 
     if (isMobile) {
       if (act.unit.move - act.moveDistance <= 0) return null;
+    } else if (isImpactful) {
+      if (act.moved) return null;                         // normal move already done
+      if (act.unit.move - act.moveDistance <= 0) return null; // budget exhausted by push-moves
     } else {
       if (act.moved) return null;
     }
@@ -117,7 +131,7 @@
       }
     }
 
-    const range = isMobile ? (u.move - act.moveDistance) : u.move;
+    const range = (isMobile || isImpactful) ? (u.move - act.moveDistance) : u.move;
     function moveCost(fromQ, fromR, toQ, toR) {
       if (hasTerrainRule(toQ, toR, 'flow')) {
         const td = G.state.terrain.get(`${toQ},${toR}`);
@@ -179,7 +193,9 @@
     }
 
     const isMobile = typeof Abilities !== 'undefined' && Abilities.hasFlag(u, 'mobile');
-    const range = isMobile ? (u.move - act.moveDistance) : u.move;
+    const isImpactful = typeof Abilities !== 'undefined'
+      && Abilities.hasFlagPassive(u, 'moveintoenemies');
+    const range = (isMobile || isImpactful) ? (u.move - act.moveDistance) : u.move;
 
     return { blocked, moveCost, range, unit: u, enemyOccupied };
   }
@@ -254,7 +270,10 @@
     if (!act) return false;
 
     const isMobile = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'mobile');
-    if (!isMobile && act.moved) return false;
+    const isImpactful = typeof Abilities !== 'undefined'
+      && Abilities.hasFlagPassive(act.unit, 'moveintoenemies');
+    if (!isMobile && !isImpactful && act.moved) return false;
+    if (isImpactful && act.moved) return false;  // normal move already done
 
     // Save the UI-committed parentMap before validation overwrites it
     const savedParentMap = act._parentMap;
@@ -281,6 +300,9 @@
     if (isMobile) {
       act.moveDistance += stepDistance;
       if (act.moveDistance >= act.unit.move) act.moved = true;
+    } else if (isImpactful) {
+      act.moveDistance += stepDistance;
+      act.moved = true;  // normal move = final move for Impactful (can't move again)
     } else {
       act.moveDistance = stepDistance;
       act.moved = true;
@@ -503,6 +525,22 @@
       G.log(`${act.unit.name} takes ${burningCount2} burning self-damage (${act.unit.health}/${act.unit.maxHealth} HP)`, act.unit.player);
     } else if (act.pendingBurningRedirect && burningCount2 > 1) {
       G.log(`${act.unit.name} takes ${burningCount2 - 1} burning self-damage (${act.unit.health}/${act.unit.maxHealth} HP)`, act.unit.player);
+    }
+
+    // Impactful sequencing: attacking after push-moves = done (no more push-moves allowed)
+    const isImpactAttacker = typeof Abilities !== 'undefined'
+      && Abilities.hasFlagPassive(act.unit, 'moveintoenemies');
+    if (isImpactAttacker && act.impactPushed) {
+      act.impactAttackedAfterPush = true;
+      // Push-then-attack = activation complete (auto-end unless confirmEndTurn)
+      act.moved = true;
+      if (!G.state.rules.confirmEndTurn) {
+        const hasPending = typeof Abilities !== 'undefined' && Abilities.hasPendingEffects();
+        if (!hasPending && !act.pendingBurningRedirect) {
+          endActivation();
+        }
+      }
+      return true;
     }
 
     // If both actions used, end activation (unless confirmEndTurn, pending effects, or burning redirect)
@@ -846,6 +884,8 @@
 
     const last = G.state.actionHistory[G.state.actionHistory.length - 1];
     if (last.type === 'move' && !G.state.rules.canUndoMove) return false;
+    if (last.type === 'pushMove' && !G.state.rules.canUndoMove) return false;
+    if (last.type === 'zoom' && !G.state.rules.canUndoAttack) return false;
     if (last.type === 'level' && !G.state.rules.canUndoMove) return false;
     if (last.type === 'toter' && !G.state.rules.canUndoMove) return false;
     if (last.type === 'flareup' && !G.state.rules.canUndoMove) return false;
@@ -884,6 +924,43 @@
       if (destKey in G.state.objectiveControl) {
         G.state.objectiveControl[destKey] = last.prevObjControl !== undefined ? last.prevObjControl : 0;
       }
+    } else if (last.type === 'pushMove') {
+      // Restore Dozer position, health, conditions
+      last.unit.q = last.fromQ;
+      last.unit.r = last.fromR;
+      if (last.prevHealth !== undefined) last.unit.health = last.prevHealth;
+      if (last.prevConditions !== undefined) last.unit.conditions = last.prevConditions;
+      act.moveDistance = last.prevMoveDistance !== undefined ? last.prevMoveDistance : 0;
+      act.moved = false;
+      // Restore all other units (pushed enemy + terrain-damaged)
+      if (last.otherUnitPositions) {
+        for (const snap of last.otherUnitPositions) {
+          snap.unit.q = snap.q;
+          snap.unit.r = snap.r;
+          snap.unit.health = snap.health;
+          snap.unit.conditions = snap.conditions;
+        }
+      }
+      // If no remaining pushMove in history, clear impactPushed
+      const hasPushMoveLeft = G.state.actionHistory.some(h => h.type === 'pushMove');
+      if (!hasPushMoveLeft) act.impactPushed = false;
+    } else if (last.type === 'zoom') {
+      // Restore RoCo position, health, conditions
+      last.unit.q = last.fromQ;
+      last.unit.r = last.fromR;
+      last.unit.health = last.prevHealth;
+      last.unit.conditions = last.prevConditions;
+      act.attacked = false;
+      if (G.hasCondition(act.unit, 'dizzy')) act.moved = false;
+      // Restore all other units' health/conditions (damaged during Zoom)
+      if (last.otherSnapshots) {
+        for (const snap of last.otherSnapshots) {
+          snap.unit.health = snap.health;
+          snap.unit.conditions = snap.conditions;
+        }
+      }
+      // Un-mark once-per-game
+      act.unit.usedAbilities.delete('Zoom');
     } else if (last.type === 'level') {
       // Restore original terrain
       if (last.prevSurface) {
@@ -1017,6 +1094,335 @@
         }
       }
     }
+  }
+
+  // ── Zoom (RoCo) ──────────────────────────────────────────────
+
+  /** Return valid destination hexes for Zoom (all hexes along 6 straight lines,
+   *  truncated at impassable terrain or board edge).
+   *  Uses the same angle-based walking as Board.straightLineDir() to ensure
+   *  highlighted hexes match what executeZoom() will accept.
+   *  Occupied hexes are excluded (can't stop there) but the line continues past them. */
+  function getZoomTargets(unit) {
+    const targets = new Set();
+    const ignoresTerrain = typeof Abilities !== 'undefined'
+      ? (rule, q, r) => Abilities.ignoresTerrainRule(unit, rule, q, r) : () => false;
+    const srcHex = Board.getHex(unit.q, unit.r);
+    if (!srcHex) return targets;
+    const neighbors = Board.getNeighbors(unit.q, unit.r);
+
+    for (const firstNb of neighbors) {
+      const firstHex = Board.getHex(firstNb.q, firstNb.r);
+      if (!firstHex) continue;
+
+      // Heading angle from source to this neighbor (the line direction)
+      const heading = Math.atan2(firstHex.y - srcHex.y, firstHex.x - srcHex.x);
+
+      // Check first neighbor
+      if (hasTerrainRule(firstNb.q, firstNb.r, 'impassable') && !ignoresTerrain('impassable', firstNb.q, firstNb.r)) continue;
+      const firstOccupied = G.state.units.some(o => o !== unit && o.q === firstNb.q && o.r === firstNb.r && o.health > 0);
+      if (!firstOccupied) targets.add(`${firstNb.q},${firstNb.r}`);
+
+      // Walk outward following heading
+      let cur = firstNb;
+      const visited = [`${unit.q},${unit.r}`, `${firstNb.q},${firstNb.r}`];
+      for (let step = 1; step < 13; step++) {
+        const curHex = Board.getHex(cur.q, cur.r);
+        if (!curHex) break;
+        const curNeighbors = Board.getNeighbors(cur.q, cur.r);
+
+        let best = null, bestAngleDiff = Infinity;
+        for (const nb of curNeighbors) {
+          // Don't go backwards
+          if (visited.length >= 2) {
+            const prev = visited[visited.length - 2];
+            if (`${nb.q},${nb.r}` === prev) continue;
+          }
+          const nbHex = Board.getHex(nb.q, nb.r);
+          if (!nbHex) continue;
+          const a = Math.atan2(nbHex.y - curHex.y, nbHex.x - curHex.x);
+          let diff = Math.abs(a - heading);
+          if (diff > Math.PI) diff = 2 * Math.PI - diff;
+          if (diff < bestAngleDiff) {
+            bestAngleDiff = diff;
+            best = nb;
+          }
+        }
+
+        if (!best || bestAngleDiff > Math.PI / 6) break; // 30° tolerance (same as straightLineDir)
+        if (hasTerrainRule(best.q, best.r, 'impassable') && !ignoresTerrain('impassable', best.q, best.r)) break;
+
+        const occupied = G.state.units.some(o => o !== unit && o.q === best.q && o.r === best.r && o.health > 0);
+        if (!occupied) targets.add(`${best.q},${best.r}`);
+
+        visited.push(`${best.q},${best.r}`);
+        cur = best;
+      }
+    }
+    return targets;
+  }
+
+  /** Execute Zoom: move unit in a straight line, dealing 1 damage to every unit
+   *  on the path, then gain permanent Strengthened. Returns true on success. */
+  function executeZoom(toQ, toR) {
+    const act = G.state.activationState;
+    if (!act || act.attacked) return false;
+    const u = act.unit;
+
+    // Find direction from unit to target (must be straight line)
+    const intermediates = [];
+    const dir = Board.straightLineDir(u.q, u.r, toQ, toR, intermediates);
+    if (dir === -1) return false;
+
+    // Build full path including destination
+    const allSteps = [...intermediates, { q: toQ, r: toR }];
+
+    // Validate: no impassable terrain on path
+    const ignoresTerrain = typeof Abilities !== 'undefined'
+      ? (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r) : () => false;
+    for (const step of allSteps) {
+      if (hasTerrainRule(step.q, step.r, 'impassable') && !ignoresTerrain('impassable', step.q, step.r)) return false;
+    }
+
+    // Snapshot for undo
+    const fromQ = u.q, fromR = u.r;
+    const prevHealth = u.health;
+    const prevConditions = u.conditions.map(c => ({ ...c }));
+    const otherSnapshots = G.state.units
+      .filter(o => o !== u && o.health > 0)
+      .map(o => ({ unit: o, health: o.health, conditions: o.conditions.map(c => ({ ...c })) }));
+
+    // Walk path: deal 1 damage to each unit on ALL hexes (intermediates + destination)
+    const damagedUnits = [];
+    for (const step of allSteps) {
+      // Damage any unit on this hex before moving in
+      const occupant = G.state.units.find(
+        o => o !== u && o.q === step.q && o.r === step.r && o.health > 0
+      );
+      if (occupant) {
+        damageUnit(occupant, 1, u, 'ability');
+        damagedUnits.push(occupant);
+      }
+      // Move RoCo to this hex
+      u.q = step.q;
+      u.r = step.r;
+      onEnterHex(u, step.q, step.r);
+      if (u.health <= 0 || u.q === -99) break;  // died or consumed
+    }
+
+    // Gain permanent Strengthened: +1 per unit hit
+    if (u.health > 0 && damagedUnits.length > 0) {
+      for (let i = 0; i < damagedUnits.length; i++) {
+        G.addCondition(u, 'strengthened', 'permanent', 'Zoom');
+      }
+    }
+
+    // Mark attack used + once-per-game
+    act.attacked = true;
+    u.usedAbilities.add('Zoom');
+    if (G.hasCondition(u, 'dizzy')) act.moved = true;
+    G.clearConditions(u, 'untilAttack');
+
+    // Log
+    const hitNames = damagedUnits.map(d => d.name).join(', ');
+    const stacks = damagedUnits.length;
+    G.log(`${u.name} zooms to (${toQ},${toR})${hitNames ? ', hitting ' + hitNames : ''}${stacks > 0 ? `, +${stacks} strengthened` : ''}!`, u.player);
+
+    // Action history
+    G.state.actionHistory.push({
+      type: 'zoom',
+      unit: u,
+      fromQ, fromR, toQ, toR,
+      prevHealth, prevConditions,
+      otherSnapshots,
+    });
+
+    // Objective control
+    if (u.health > 0) updateObjectiveControl(u);
+
+    // Auto-end
+    if (act.moved && act.attacked && !G.state.rules.confirmEndTurn) {
+      const hasPending = typeof Abilities !== 'undefined' && Abilities.hasPendingEffects();
+      if (!hasPending) endActivation();
+    }
+
+    return true;
+  }
+
+  // ── Push-Move (Impactful) ─────────────────────────────────────
+
+  /** Validate a push-move and return data needed to execute it.
+   *  Returns { path, pathCost, enemy, pushDestinations, prevStep } or null if invalid. */
+  function getPushMoveData(targetQ, targetR) {
+    const act = G.state.activationState;
+    if (!act) return null;
+    const u = act.unit;
+
+    // Must have passive moveintoenemies (Impactful), not condition-based (Glider)
+    const isImpactful = typeof Abilities !== 'undefined'
+      && Abilities.hasFlagPassive(u, 'moveintoenemies');
+    if (!isImpactful) return null;
+
+    // Sequencing: can't push after attack-after-push
+    if (act.impactAttackedAfterPush) return null;
+
+    // Budget check
+    const remaining = u.move - act.moveDistance;
+    if (remaining <= 0) return null;
+
+    // Find enemy at target
+    const enemy = G.state.units.find(
+      e => e.q === targetQ && e.r === targetR && e.health > 0 && e.player !== u.player
+    );
+    if (!enemy) return null;
+
+    // BFS from unit to enemy hex, blocking other enemies (not target) + impassable terrain
+    // Allies are traversable but not stoppable (same as normal movement)
+    const ignoresTerrain = typeof Abilities !== 'undefined'
+      ? (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r) : () => false;
+    const blocked = new Set();
+    for (const other of G.state.units) {
+      if (other.health <= 0 || other === u) continue;
+      if (other.player === u.player) continue;  // allies not blocked (traversable)
+      if (other === enemy) continue;             // target not blocked (walking to it)
+      blocked.add(`${other.q},${other.r}`);      // other enemies blocked
+    }
+    for (const [key] of G.state.terrain) {
+      const [tq, tr] = key.split(',').map(Number);
+      if (hasTerrainRule(tq, tr, 'impassable') && !ignoresTerrain('impassable', tq, tr)) blocked.add(key);
+    }
+
+    function moveCost(fromQ2, fromR2, toQ, toR) {
+      if (hasTerrainRule(toQ, toR, 'flow')) {
+        const td = G.state.terrain.get(`${toQ},${toR}`);
+        return (td && td.player === u.player) ? 0 : 2;
+      }
+      if (hasTerrainRule(toQ, toR, 'difficult') && !ignoresTerrain('difficult', toQ, toR)) return 2;
+      return 1;
+    }
+
+    const parentMap = new Map();
+    const reachable = Board.getReachableHexes(u.q, u.r, remaining, blocked, moveCost, parentMap);
+
+    // Enemy hex must be reachable (it was excluded from BFS because enemies aren't "reachable" stops,
+    // but it should be in the parentMap if the BFS explored through it)
+    // Actually, the enemy hex is NOT blocked (we excluded it from blocked), so BFS will reach it.
+    // But the enemy hex won't be in reachable because the unit can't stop there... actually it will be.
+    // Let me check: the enemy hex is not blocked, not an ally, so BFS should add it to reachable.
+    const enemyKey = `${targetQ},${targetR}`;
+    if (!reachable.has(enemyKey) && !parentMap.has(enemyKey)) return null;
+
+    const pathCost = reachable.get(enemyKey) || 0;
+    if (pathCost <= 0) return null;  // can't push-move to own hex
+
+    // Get path from BFS
+    const path = Board.getPath(u.q, u.r, targetQ, targetR, parentMap);
+    if (!path || path.length === 0) return null;
+
+    // Determine approach direction: the step before the enemy hex
+    const prevStep = path.length >= 2 ? path[path.length - 2] : { q: u.q, r: u.r };
+
+    // Compute valid push destinations: neighbors of enemy hex that are:
+    // - farther from the approach direction (prevStep)
+    // - unoccupied
+    // - not impassable
+    const pushDestinations = new Set();
+    const approachDist = Board.hexDistance(prevStep.q, prevStep.r, targetQ, targetR);
+    for (const n of Board.getNeighbors(targetQ, targetR)) {
+      const nDist = Board.hexDistance(prevStep.q, prevStep.r, n.q, n.r);
+      if (nDist <= approachDist) continue;  // must be pushed away from approach
+      if (G.state.units.some(o => o.q === n.q && o.r === n.r && o.health > 0)) continue;
+      if (hasTerrainRule(n.q, n.r, 'impassable') && !ignoresTerrain('impassable', n.q, n.r)) continue;
+      pushDestinations.add(`${n.q},${n.r}`);
+    }
+
+    if (pushDestinations.size === 0) return null;
+
+    return { path, pathCost, enemy, pushDestinations, prevStep };
+  }
+
+  /** Execute a push-move: push enemy to chosen destination, move Dozer along path.
+   *  Returns true on success. */
+  function executePushMove(targetQ, targetR, pushDestQ, pushDestR) {
+    const act = G.state.activationState;
+    if (!act) return false;
+    const u = act.unit;
+
+    // Re-validate
+    const data = getPushMoveData(targetQ, targetR);
+    if (!data) return false;
+    const pushKey = `${pushDestQ},${pushDestR}`;
+    if (!data.pushDestinations.has(pushKey)) return false;
+
+    const fromQ = u.q;
+    const fromR = u.r;
+    const prevMoveDistance = act.moveDistance;
+    const prevHealth = u.health;
+    const prevConditions = u.conditions.map(c => ({ ...c }));
+
+    // Snapshot ALL other units (pushed enemy + any terrain-damaged units during traversal)
+    const otherUnitPositions = G.state.units
+      .filter(o => o !== u && o.health > 0)
+      .map(o => ({ unit: o, q: o.q, r: o.r, health: o.health, conditions: o.conditions.map(c => ({ ...c })) }));
+
+    // 1. Push enemy to chosen destination
+    const enemyFromQ = data.enemy.q;
+    const enemyFromR = data.enemy.r;
+    data.enemy.q = pushDestQ;
+    data.enemy.r = pushDestR;
+    onEnterHex(data.enemy, pushDestQ, pushDestR);
+
+    // 2. Walk Dozer along path to enemy's old hex
+    if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
+    for (const step of data.path) {
+      u.q = step.q;
+      u.r = step.r;
+      // Fire movement triggers if hex is occupied by another unit
+      if (typeof Abilities !== 'undefined') {
+        const occupant = G.state.units.find(
+          o => o !== u && o.q === step.q && o.r === step.r && o.health > 0
+        );
+        if (occupant) {
+          Abilities.dispatchMovement(u, occupant);
+        }
+      }
+      onEnterHex(u, step.q, step.r);
+      if (u.q === -99 || u.health <= 0) break;
+    }
+
+    // 3. Update budget
+    act.moveDistance += data.pathCost;
+    act.impactPushed = true;
+    if (act.moveDistance >= u.move) act.moved = true;
+
+    // 4. Update objective control
+    updateObjectiveControl(u);
+    if (data.enemy.health > 0) updateObjectiveControl(data.enemy);
+
+    // 5. Action history for undo
+    G.state.actionHistory.push({
+      type: 'pushMove',
+      unit: u,
+      fromQ, fromR,
+      toQ: u.q, toR: u.r,
+      enemyFromQ, enemyFromR,
+      pushDestQ, pushDestR,
+      enemy: data.enemy,
+      pathCost: data.pathCost,
+      prevMoveDistance,
+      prevHealth, prevConditions,
+      otherUnitPositions,
+    });
+
+    G.log(`${u.name} pushes ${data.enemy.name} and moves to (${u.q},${u.r})`, u.player);
+
+    // 6. Auto-end check (both actions used and no pending effects)
+    if (act.moved && act.attacked && !G.state.rules.confirmEndTurn) {
+      const hasPending = typeof Abilities !== 'undefined' && Abilities.hasPendingEffects();
+      if (!hasPending) endActivation();
+    }
+
+    return true;
   }
 
   // ── Ability utility functions ──────────────────────────────────
@@ -1198,6 +1604,203 @@
     }
   }
 
+  // ── Falcon Gust (Surveyor) ────────────────────────────────────
+
+  /** Initialize Falcon Gust interactive state on Surveyor activation. */
+  function initFalconGust(unit) {
+    const act = G.state.activationState;
+    if (!act) return;
+    // Snapshot for undo-on-deselect
+    const unitSnapshots = G.state.units.filter(u => u.health > 0)
+      .map(u => ({ unit: u, q: u.q, r: u.r, health: u.health,
+                   conditions: u.conditions.map(c => ({ ...c })) }));
+    const terrainSnapshot = new Map();
+    for (const [k, v] of G.state.terrain) terrainSnapshot.set(k, { ...v });
+
+    act.falconGust = {
+      phase: 'modeChoice',   // modeChoice → actionChoice → targeting → done
+      mode: null,             // 'free' | 'enhanced'
+      action: null,           // 'moveAlly' | 'createCinder' | 'pushEnemy'
+      cinderCount: 0,
+      cinderMax: 0,
+      selectedAlly: null,
+      undoData: { unitSnapshots, terrainSnapshot },
+    };
+  }
+
+  /** Set Falcon Gust mode: 'free' (no cost) or 'enhanced' (gain Immobilized). */
+  function setFalconGustMode(mode) {
+    const act = G.state.activationState;
+    if (!act || !act.falconGust || act.falconGust.phase !== 'modeChoice') return false;
+    act.falconGust.mode = mode;
+    act.falconGust.phase = 'actionChoice';
+    if (mode === 'enhanced') {
+      G.addCondition(act.unit, 'immobilized', 'endOfActivation');
+      G.log(`${act.unit.name} gains Immobilized (enhanced Falcon Gust)`, act.unit.player);
+    }
+    return true;
+  }
+
+  /** Set Falcon Gust action after mode is chosen. */
+  function setFalconGustAction(action) {
+    const act = G.state.activationState;
+    if (!act || !act.falconGust || act.falconGust.phase !== 'actionChoice') return false;
+    act.falconGust.action = action;
+    act.falconGust.phase = 'targeting';
+    if (action === 'createCinder') {
+      act.falconGust.cinderMax = (act.falconGust.mode === 'enhanced') ? 2 : 1;
+    }
+    return true;
+  }
+
+  /** Get living non-Surveyor allies. Returns Map<"q,r", unit> or null. */
+  function getFalconGustAllyTargets() {
+    const act = G.state.activationState;
+    if (!act || !act.falconGust) return null;
+    const valid = new Map();
+    for (const u of G.state.units) {
+      if (u.health <= 0 || u === act.unit || u.player !== act.unit.player) continue;
+      valid.set(`${u.q},${u.r}`, u);
+    }
+    return valid;
+  }
+
+  /** Get valid 1-space destinations for an ally. Returns Map<"q,r", 1>. */
+  function getFalconGustAllyDests(allyQ, allyR) {
+    const valid = new Map();
+    const neighbors = Board.getNeighbors(allyQ, allyR);
+    for (const n of neighbors) {
+      if (!Board.getHex(n.q, n.r)) continue;
+      if (G.state.units.some(u => u.q === n.q && u.r === n.r && u.health > 0)) continue;
+      if (hasTerrainRule(n.q, n.r, 'impassable')) continue;
+      valid.set(`${n.q},${n.r}`, 1);
+    }
+    return valid;
+  }
+
+  /** Get empty hexes adjacent to any existing Cinder terrain. Returns Map<"q,r", 1>. */
+  function getFalconGustCinderHexes() {
+    const valid = new Map();
+    for (const [key, td] of G.state.terrain) {
+      if (!td || !td.surface || td.surface.toLowerCase() !== 'cinder') continue;
+      const [cq, cr] = key.split(',').map(Number);
+      const neighbors = Board.getNeighbors(cq, cr);
+      for (const n of neighbors) {
+        const nk = `${n.q},${n.r}`;
+        if (!Board.getHex(n.q, n.r)) continue;
+        if (G.state.units.some(u => u.q === n.q && u.r === n.r && u.health > 0)) continue;
+        if (G.state.terrain.has(nk)) continue; // already has terrain
+        if (Board.OBJECTIVES.some(o => o.q === n.q && o.r === n.r)) continue;
+        valid.set(nk, 1);
+      }
+    }
+    return valid;
+  }
+
+  /** Get adjacent living enemies for push. Returns Map<"q,r", unit>. */
+  function getFalconGustPushTargets() {
+    const act = G.state.activationState;
+    if (!act || !act.falconGust) return null;
+    const valid = new Map();
+    const neighbors = Board.getNeighbors(act.unit.q, act.unit.r);
+    for (const n of neighbors) {
+      const enemy = G.state.units.find(
+        u => u.q === n.q && u.r === n.r && u.health > 0 && u.player !== act.unit.player
+      );
+      if (enemy) valid.set(`${n.q},${n.r}`, enemy);
+    }
+    return valid;
+  }
+
+  /** Move an ally 1 space for Falcon Gust. */
+  function executeFalconGustMoveAlly(allyIdx, destQ, destR) {
+    const act = G.state.activationState;
+    if (!act || !act.falconGust) return false;
+    const ally = G.state.units[allyIdx];
+    if (!ally || ally.health <= 0 || ally === act.unit) return false;
+
+    const dests = getFalconGustAllyDests(ally.q, ally.r);
+    if (!dests.has(`${destQ},${destR}`)) return false;
+
+    ally.q = destQ;
+    ally.r = destR;
+    onEnterHex(ally, destQ, destR);
+    updateObjectiveControl(ally);
+
+    G.log(`${act.unit.name}'s Falcon Gust moves ${ally.name} to (${destQ},${destR})`, act.unit.player);
+    act.falconGust.phase = 'done';
+    return true;
+  }
+
+  /** Place one Cinder terrain for Falcon Gust. */
+  function executeFalconGustCinder(q, r) {
+    const act = G.state.activationState;
+    if (!act || !act.falconGust) return false;
+
+    const validHexes = getFalconGustCinderHexes();
+    if (!validHexes.has(`${q},${r}`)) return false;
+
+    placeTerrain(q, r, 'cinder', act.unit.player);
+    act.falconGust.cinderCount++;
+
+    G.log(`${act.unit.name}'s Falcon Gust creates Cinder at (${q},${r})`, act.unit.player);
+
+    if (act.falconGust.cinderCount >= act.falconGust.cinderMax) {
+      act.falconGust.phase = 'done';
+    }
+    // Otherwise stay in 'targeting' phase for the next Cinder placement
+    return true;
+  }
+
+  /** Push an adjacent enemy 1 space for Falcon Gust. */
+  function executeFalconGustPush(enemyIdx) {
+    const act = G.state.activationState;
+    if (!act || !act.falconGust) return false;
+    const enemy = G.state.units[enemyIdx];
+    if (!enemy || enemy.health <= 0 || enemy.player === act.unit.player) return false;
+
+    if (Board.hexDistance(act.unit.q, act.unit.r, enemy.q, enemy.r) !== 1) return false;
+
+    pushUnit(enemy, act.unit.q, act.unit.r, 1);
+    G.log(`${act.unit.name}'s Falcon Gust pushes ${enemy.name}`, act.unit.player);
+    act.falconGust.phase = 'done';
+    return true;
+  }
+
+  /** Skip Falcon Gust entirely. */
+  function skipFalconGust() {
+    const act = G.state.activationState;
+    if (!act || !act.falconGust) return false;
+    act.falconGust.phase = 'done';
+    G.log(`${act.unit.name} skips Falcon Gust`, act.unit.player);
+    return true;
+  }
+
+  /** Undo all Falcon Gust effects (called on deselect). */
+  function undoFalconGust() {
+    const act = G.state.activationState;
+    if (!act || !act.falconGust || !act.falconGust.undoData) return false;
+
+    const { unitSnapshots, terrainSnapshot } = act.falconGust.undoData;
+
+    // Restore all unit positions, health, conditions
+    for (const snap of unitSnapshots) {
+      snap.unit.q = snap.q;
+      snap.unit.r = snap.r;
+      snap.unit.health = snap.health;
+      snap.unit.conditions = snap.conditions;
+    }
+
+    // Restore terrain
+    G.state.terrain.clear();
+    for (const [k, v] of terrainSnapshot) {
+      G.state.terrain.set(k, v);
+    }
+
+    delete act.falconGust;
+    return true;
+  }
+
   // ── Attach to Game ──────────────────────────────────────────
   G.selectUnit = selectUnit;
   G.deselectUnit = deselectUnit;
@@ -1227,5 +1830,21 @@
   G.executeToter = executeToter;
   G.executeFlareUp = executeFlareUp;
   G.damageUnit = damageUnit;
+  G.getZoomTargets = getZoomTargets;
+  G.executeZoom = executeZoom;
+  G.getPushMoveData = getPushMoveData;
+  G.executePushMove = executePushMove;
+  G.initFalconGust = initFalconGust;
+  G.setFalconGustMode = setFalconGustMode;
+  G.setFalconGustAction = setFalconGustAction;
+  G.getFalconGustAllyTargets = getFalconGustAllyTargets;
+  G.getFalconGustAllyDests = getFalconGustAllyDests;
+  G.getFalconGustCinderHexes = getFalconGustCinderHexes;
+  G.getFalconGustPushTargets = getFalconGustPushTargets;
+  G.executeFalconGustMoveAlly = executeFalconGustMoveAlly;
+  G.executeFalconGustCinder = executeFalconGustCinder;
+  G.executeFalconGustPush = executeFalconGustPush;
+  G.skipFalconGust = skipFalconGust;
+  G.undoFalconGust = undoFalconGust;
 
 })(Game);

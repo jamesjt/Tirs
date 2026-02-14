@@ -19,12 +19,12 @@ No build step required - pure HTML/JS/CSS.
 
 ## Architecture
 
-Four modules using IIFE pattern with clear separation:
+Five modules using IIFE pattern with clear separation:
 
 ```
 UI (ui.js) - Events & DOM
     ↓ calls          ↓ calls
-Board (board.js)    Game (game.js)
+Board (board.js)    Game (game-core/battle/phases.js)
 Rendering/Spatial   State/Logic
     ↑               ↑
     └───────────────┘
@@ -32,12 +32,14 @@ Rendering/Spatial   State/Logic
          Data from Google Sheets
 ```
 
-**Load order matters:** board.js → units.js → game.js → ui.js
+**Load order matters:** board.js → units.js → game-core.js → game-battle.js → game-phases.js → net.js → abilities.js → ui.js
 
 ### Module Responsibilities
 
 - **board.js**: Hex grid geometry, canvas rendering, spatial queries (hexAtPixel, getReachableHexes, hexDistance). No game logic.
-- **game.js**: Game state machine, 6 phases, turn management, attack validation. No rendering/DOM.
+- **game-core.js**: IIFE creating `Game` object. Owns state closure, PHASE constants, freshState/reset/log, createUnit, condition system (add/remove/has/clear/getEffective). No rendering/DOM.
+- **game-battle.js**: Extends Game via `((G) => { ... })(Game)`. Battle activation (select/move/attack/undo), attack validation (canAttack, LoS, LoE), terrain rules, objectives, ability utilities (push/pull/toss/level/damageUnit).
+- **game-phases.js**: Extends Game. Pre-battle phases (faction/roster/terrain/unit deploy), turn/round management, round-step interactives (shifting, consuming, hot suit, arc fire).
 - **ui.js**: Event handlers, phase UI builders, bridges Board and Game. Calls `Board.render(Game.state)`.
 - **units.js**: Fetches faction/unit data from Google Sheets via PapaParse CSV endpoint.
 
