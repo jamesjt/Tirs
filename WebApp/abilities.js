@@ -36,6 +36,7 @@ const Abilities = (() => {
     vulnerable:   'endOfRound',
     protected:    'endOfRound',
     strengthened: 'untilAttack',
+    empowered:    'untilAttack',
     weakness:     'endOfActivation',
     break:       'permanent',
     arcfire:      'permanent',
@@ -294,7 +295,10 @@ const Abilities = (() => {
         const dur = (value && value.toLowerCase() === 'turn') ? 'endOfActivation'
                   : (value && value.toLowerCase() === 'permanent') ? 'permanent'
                   : CONDITION_DEFAULTS[lower];
-        Game.addCondition(t, lower, dur, ctx.unit ? ctx.unit.player : null);
+        const numVal = parseFloat(value);
+        const condValue = (!isNaN(numVal) && value.toLowerCase() !== 'turn' && value.toLowerCase() !== 'permanent')
+                        ? numVal : undefined;
+        Game.addCondition(t, lower, dur, ctx.unit ? ctx.unit.player : null, condValue);
         const src = ctx.unit ? ctx.unit.name : 'Effect';
         const player = ctx.unit ? ctx.unit.player : 0;
         if (ctx.unit && ctx.unit === t) {

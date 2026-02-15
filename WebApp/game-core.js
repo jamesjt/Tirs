@@ -121,8 +121,10 @@ const Game = (() => {
 
   // ── Conditions ───────────────────────────────────────────────
 
-  function addCondition(unit, id, duration, source) {
-    unit.conditions.push({ id, duration, source: source || null });
+  function addCondition(unit, id, duration, source, value) {
+    const cond = { id, duration, source: source || null };
+    if (value != null) cond.value = value;
+    unit.conditions.push(cond);
   }
 
   function removeCondition(unit, id) {
@@ -145,6 +147,7 @@ const Game = (() => {
     protected:    { armor: 1 },
     vulnerable:   { armor: -1 },
     strengthened: { damage: 1 },
+    empowered:    { damage: 2 },
     weakness:     { damage: -1 },
     break:       { armor: -1 },
   };
@@ -154,7 +157,7 @@ const Game = (() => {
     let val = unit[stat];
     for (const c of unit.conditions) {
       const mods = CONDITION_MODS[c.id];
-      if (mods && mods[stat] !== undefined) val += mods[stat];
+      if (mods && mods[stat] !== undefined) val += (c.value != null) ? c.value : mods[stat];
     }
     if (typeof Abilities !== 'undefined') {
       val += Abilities.getPassiveMod(unit, stat);

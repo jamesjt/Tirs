@@ -619,6 +619,7 @@ canvas {
 .cond-icon { position: relative; }
 
 .cond-strengthened { background: #ff6600; }
+.cond-empowered    { background: #ff3300; }
 .cond-weakness     { background: #8844aa; }
 .cond-vulnerable   { background: #cc0000; }
 .cond-protected    { background: #0088ff; }

@@ -588,9 +588,9 @@ const Board = (() => {
     sand: 'sand', brambles: 'brambles', forest: 'forest',
     bog: 'bog', pool: 'pool', whirlpool: 'whirlpool',
     // Reused icons for renamed / similar terrain
-    rubble: 'rubble', crevasse: 'crevasse', spire: 'spire',
-    tide: 'tidepool', cinder: 'cinder', river: 'pool',
-    miasma: 'miasma', rain: 'rain', 'heat wave': 'heat wave', 'fae mist': 'fae mist', storm: 'storm',
+    rubble: 'Rubble', crevasse: 'crevasse', spire: 'spire',
+    tide: 'tidepool', cinder: 'Cinder', river: 'pool',
+    miasma: 'miasma', rain: 'Rain', 'heat wave': 'heat wave', 'fae mist': 'fae mist', storm: 'Storm',
     mist: 'Mist', gale: 'gale',
   };
   for (const [name, file] of Object.entries(ICON_FILE_MAP)) {

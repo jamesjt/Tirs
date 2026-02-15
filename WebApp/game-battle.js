@@ -1852,8 +1852,12 @@
       const isAllyAbility = sourceType === 'ability' && source &&
                             typeof source === 'object' && source.player === unit.player;
       if (isCinder || isAllyAbility) {
-        unit.usedAbilities.clear();
-        G.log(`Fire Charged! ${unit.name}'s abilities refreshed`, unit.player);
+        if (G.hasCondition(unit, 'empowered')) {
+          G.log(`Fire Charged blocked — ${unit.name} is empowered`, unit.player);
+        } else {
+          unit.usedAbilities.clear();
+          G.log(`Fire Charged! ${unit.name}'s abilities refreshed`, unit.player);
+        }
       }
     }
   }

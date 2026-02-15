@@ -87,6 +87,7 @@ const UI = (() => {
   // ── Condition icon mapping (swap values to change icon style) ─
   const COND_ICONS = {
     strengthened: '\u2694',  // ⚔ crossed swords
+    empowered:    '\u2694',  // ⚔ crossed swords (same icon, different color)
     weakness:     '\u25BC',  // ▼ down triangle
     vulnerable:   '\u2666',  // ♦ diamond (exposed)
     protected:    '\u25C6',  // ◆ solid diamond (shielded)
@@ -4287,6 +4288,7 @@ const UI = (() => {
     { id: 'protected',    duration: 'endOfRound' },
     { id: 'vulnerable',   duration: 'endOfRound' },
     { id: 'strengthened',  duration: 'untilAttack' },
+    { id: 'empowered',    duration: 'untilAttack' },
     { id: 'weakness',     duration: 'endOfActivation' },
     { id: 'poisoned',     duration: 'endOfActivation' },
     { id: 'burning',      duration: 'permanent' },
