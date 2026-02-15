@@ -379,6 +379,8 @@
     G.state.delayedEffects = G.state.delayedEffects.filter(de => de.unit.health > 0);
     // Reset terrain change tracking for the new round
     G.state.terrainChangedThisRound.clear();
+    // Reset Calculated pass tracking
+    G.state.passedThisRound.clear();
 
     G.log(`\u2501\u2501 Round ${G.state.round} Start \u2501\u2501`);
     G.state.summaryLog.push({ text: `\u2501\u2501 Round ${G.state.round} Start \u2501\u2501`, player: 0, round: G.state.round });

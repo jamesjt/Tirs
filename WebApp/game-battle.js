@@ -321,6 +321,11 @@
       act.moved = true;
     }
 
+    // Move or Fire: moving locks out attacking
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'moveorfire')) {
+      act.attacked = true;
+    }
+
     // Snapshot for undo (terrain effects may change health/conditions during traversal)
     const prevHealth = act.unit.health;
     const prevConditions = act.unit.conditions.map(c => ({ ...c }));
@@ -493,6 +498,9 @@
     // Dizzy: attacking locks out moving
     if (G.hasCondition(act.unit, 'dizzy')) act.moved = true;
 
+    // Move or Fire: attacking locks out moving
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'moveorfire')) act.moved = true;
+
     // Clear "until attack" conditions on the attacker
     G.clearConditions(act.unit, 'untilAttack');
 
@@ -520,9 +528,12 @@
     // Store attack path for Piercing + Path resolution
     if (attackPath) act.attackPath = attackPath;
 
-    // Ability dispatch: afterAttack + afterDeath
+    // Ability dispatch: afterAttack + afterDeath + whenAttacked
     if (typeof Abilities !== 'undefined') {
       Abilities.dispatch('afterAttack', { unit: act.unit, target, damage: dmg, damagedUnits: [target] });
+      if (target.health > 0) {
+        Abilities.dispatch('whenAttacked', { unit: target, attacker: act.unit, damage: dmg });
+      }
       if (target.health <= 0) {
         Abilities.dispatch('afterDeath', { unit: target, killer: act.unit });
       }
@@ -617,6 +628,11 @@
         damageUnit(act.unit, act.moveDistance, null, 'poison');
         G.log(`${act.unit.name} takes ${act.moveDistance} poison damage (${act.unit.health}/${act.unit.maxHealth} HP)`, act.unit.player);
       }
+      // End-of-activation ability dispatch (e.g. Guiding Gale)
+      if (typeof Abilities !== 'undefined') {
+        Abilities.dispatch('endActivation', { unit: act.unit });
+      }
+
       act.unit.activated = true;
       G.clearConditions(act.unit, 'endOfActivation');
     }
@@ -656,6 +672,20 @@
     act.moved = true;
     act.attacked = true;
     endActivation();
+    return true;
+  }
+
+  /** Calculated: pass turn without activating a unit (once per round). */
+  function passTurn() {
+    if (G.state.activationState) return false;
+    const p = G.state.currentPlayer;
+    if (G.state.passedThisRound.has(p)) return false;
+    G.state.passedThisRound.add(p);
+    G.log(`Player ${p} passes (Calculated)`, p);
+    // Flush turn actions
+    for (const e of G.state.turnActions) G.state.summaryLog.push(e);
+    G.state.turnActions = [];
+    G.nextTurn();
     return true;
   }
 
@@ -951,6 +981,8 @@
       if (cIdx !== -1) G.state.consumedUnits.splice(cIdx, 1);
       // Dizzy: undoing move also unlocks attack
       if (G.hasCondition(act.unit, 'dizzy')) act.attacked = false;
+      // Move or Fire: undoing move also unlocks attack
+      if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'moveorfire')) act.attacked = false;
       // Restore objective control at destination
       const destKey = `${last.toQ},${last.toR}`;
       if (destKey in G.state.objectiveControl) {
@@ -1495,6 +1527,11 @@
 
   /** Push unit N hexes away from (fromQ, fromR). Returns actual distance pushed. */
   function pushUnit(unit, fromQ, fromR, distance) {
+    // Steadfast: immune to forced movement from enemies
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'steadfast')) {
+      G.log(`${unit.name} is steadfast — cannot be pushed`, unit.player);
+      return 0;
+    }
     let pushed = 0;
     for (let i = 0; i < distance; i++) {
       const neighbors = Board.getNeighbors(unit.q, unit.r);
@@ -1520,6 +1557,11 @@
 
   /** Pull unit N hexes toward (towardQ, towardR). Returns actual distance pulled. */
   function pullUnit(unit, towardQ, towardR, distance) {
+    // Steadfast: immune to forced movement from enemies
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'steadfast')) {
+      G.log(`${unit.name} is steadfast — cannot be pulled`, unit.player);
+      return 0;
+    }
     let pulled = 0;
     for (let i = 0; i < distance; i++) {
       const neighbors = Board.getNeighbors(unit.q, unit.r);
@@ -2077,6 +2119,7 @@
   G.endActivation = endActivation;
   G.removeBurning = removeBurning;
   G.forceEndActivation = forceEndActivation;
+  G.passTurn = passTurn;
   G.canAttack = canAttack;
   G.canAttackHex = canAttackHex;
   G.getDelayedTargetHexes = getDelayedTargetHexes;

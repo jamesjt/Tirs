@@ -47,14 +47,16 @@ const Abilities = (() => {
   // ── Trigger Type Mapping ─────────────────────────────────────
 
   const TYPE_TRIGGER = {
-    hit:        'afterAttack',
-    passive:    'statCalc',
-    death:      'afterDeath',
-    activation: 'afterSelect',
-    action:     'playerAction',
-    movement:   'onMovement',
-    onAttack:   'onAttack',
-    afterMove:  'afterMove',
+    hit:           'afterAttack',
+    passive:       'statCalc',
+    death:         'afterDeath',
+    activation:    'afterSelect',
+    action:        'playerAction',
+    movement:      'onMovement',
+    onAttack:      'onAttack',
+    afterMove:     'afterMove',
+    whenAttacked:  'whenAttacked',
+    endActivation: 'endActivation',
   };
 
   // Reverse map: trigger string -> ability type
@@ -168,6 +170,10 @@ const Abilities = (() => {
         }
         return result;
       }
+
+      // whenAttacked: the unit that attacked us
+      case 'attacker':
+        return ctx.attacker ? [ctx.attacker] : [];
 
       // Movement occupant target types (used by dispatchMovement)
       case 'enemyoccupant':
@@ -335,6 +341,10 @@ const Abilities = (() => {
       case 'push':
         for (const t of targets) {
           if (!isUnit(t)) continue;
+          if (hasFlag(t, 'steadfast')) {
+            Game.log(`${t.name} is steadfast — cannot be pushed`, t.player);
+            continue;
+          }
           if (isQueuing) {
             effectQueue.push({ type: 'push', unit: t, refQ: ctx.unit.q, refR: ctx.unit.r, remaining: int(value) });
           } else {
@@ -346,6 +356,10 @@ const Abilities = (() => {
       case 'pull':
         for (const t of targets) {
           if (!isUnit(t)) continue;
+          if (hasFlag(t, 'steadfast')) {
+            Game.log(`${t.name} is steadfast — cannot be pulled`, t.player);
+            continue;
+          }
           if (isQueuing) {
             effectQueue.push({ type: 'pull', unit: t, refQ: ctx.unit.q, refR: ctx.unit.r, remaining: int(value) });
           } else {
@@ -450,6 +464,20 @@ const Abilities = (() => {
       return ctx.unit && Game.hasCondition(ctx.unit, condId);
     }
 
+    // "ifTargetArmor>=N" — attack target has at least N effective armor
+    const tArmMatch = lower.match(/^iftargetarmor>=(\d+)$/);
+    if (tArmMatch) {
+      const threshold = int(tArmMatch[1]);
+      return ctx.target && Game.getEffective(ctx.target, 'armor') >= threshold;
+    }
+
+    // "ifTargetBaseHealth>=N" — attack target has base health >= N
+    const tHpMatch = lower.match(/^iftargetbasehealth>=(\d+)$/);
+    if (tHpMatch) {
+      const threshold = int(tHpMatch[1]);
+      return ctx.target && ctx.target.maxHealth >= threshold;
+    }
+
     console.warn(`[Abilities] Unknown condition: "${condStr}"`);
     return true;
   }
@@ -513,6 +541,10 @@ const Abilities = (() => {
     if (lower === 'push') {
       for (const t of targets) {
         if (!isUnit(t)) continue;
+        if (hasFlag(t, 'steadfast')) {
+          Game.log(`${t.name} is steadfast — cannot be pushed`, t.player);
+          continue;
+        }
         // refQ/refR = mover's position (same hex as target) → distance 0 → all 6 directions valid
         if (isQueuing) {
           effectQueue.push({ type: 'push', unit: t, refQ, refR, remaining: int(value), noStay: true });
@@ -525,6 +557,10 @@ const Abilities = (() => {
     if (lower === 'pull') {
       for (const t of targets) {
         if (!isUnit(t)) continue;
+        if (hasFlag(t, 'steadfast')) {
+          Game.log(`${t.name} is steadfast — cannot be pulled`, t.player);
+          continue;
+        }
         if (isQueuing) {
           effectQueue.push({ type: 'pull', unit: t, refQ, refR, remaining: int(value), noStay: true });
         } else {

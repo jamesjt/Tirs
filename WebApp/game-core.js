@@ -59,6 +59,7 @@ const Game = (() => {
       pendingDeployTraps: null, // { unit, count, placed } — interactive trap placement after deploy
       terrainChangedThisRound: new Set(),  // "q,r" keys — hexes where terrain was placed/moved during battle
       objectiveControl: {},     // "q,r" -> player (1|2|0)
+      passedThisRound: new Set(),  // players who used Calculated pass this round
 
       // Per-activation tracking
       activationState: null,    // { unit, moved, attacked }

@@ -1859,8 +1859,20 @@ const UI = (() => {
       html += `</div>`;
       panel.innerHTML = html;
     } else {
-      // No activation — hide the side panel, HUD is sufficient
-      panel.classList.add('hidden');
+      // No activation — show Pass Turn button if Calculated, otherwise hide panel
+      const faction = s.players[s.currentPlayer].faction;
+      const fRules = Units.factionRules[faction] || [];
+      const hasCalculated = fRules.some(r => r.effect && r.effect.toLowerCase() === 'calculated');
+      if (hasCalculated && !s.passedThisRound.has(s.currentPlayer)) {
+        panel.classList.remove('hidden');
+        applyPlayerStyle(panel, s.currentPlayer);
+        panel.innerHTML = `<div class="activation-info">
+          <p>Select a unit to activate</p>
+          <button class="btn btn-action" data-action="pass-turn">Pass Turn (Calculated)</button>
+        </div>`;
+      } else {
+        panel.classList.add('hidden');
+      }
     }
   }
 
@@ -3137,7 +3149,7 @@ const UI = (() => {
     // Block battle-phase actions when it's opponent's turn online
     const battleActions = ['undo-action','remove-burning','end-activation','skip-consuming','skip-arcfire',
       'shift-ride','shift-stay','advance-round-step','use-ability','delayed-target',
-      'fg-skip','gust-push','wu-skip-all'];
+      'fg-skip','gust-push','wu-skip-all','pass-turn'];
     if (typeof Net !== 'undefined' && Net.isOnline() && !Net.isMyTurn() &&
         battleActions.includes(action)) {
       return;
@@ -3261,6 +3273,16 @@ const UI = (() => {
       showPhase();
       updateStatusBar();
       render();
+    }
+
+    else if (action === 'pass-turn') {
+      const ok = Game.passTurn();
+      if (ok) {
+        netSend({ type: 'passTurn' });
+        resetUiState();
+        showPhase();
+        render();
+      }
     }
 
     else if (action === 'undo-action') {
@@ -4761,6 +4783,10 @@ const UI = (() => {
         Game.undoLastAction();
         resetUiState();
         showActivationHighlights();
+        break;
+      case 'passTurn':
+        Game.passTurn();
+        resetUiState();
         break;
       case 'removeBurning':
         Game.removeBurning();
