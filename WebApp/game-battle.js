@@ -1095,7 +1095,7 @@
       }
       G.state.terrain.clear();
       for (const [k, v] of terrainSnapshot) G.state.terrain.set(k, v);
-      delete act.falconGust;
+      initFalconGust(act.unit);
     } else if (last.type === 'ability') {
       // Restore all affected unit healths
       for (const snap of last.healthSnapshots) {
@@ -1858,13 +1858,13 @@
     }
   }
 
-  // ── Falcon Gust (Surveyor) ────────────────────────────────────
+  // ── Falcon Gust (Surveyor – on activation) ──────────────────
+  // Move any ally 1 space OR create cinder adjacent to existing cinder.
 
-  /** Initialize Falcon Gust interactive state on Surveyor activation. */
+  /** Initialize Falcon Gust on activation — goes straight to targeting. */
   function initFalconGust(unit) {
     const act = G.state.activationState;
     if (!act) return;
-    // Snapshot for undo-on-deselect
     const unitSnapshots = G.state.units.filter(u => u.health > 0)
       .map(u => ({ unit: u, q: u.q, r: u.r, health: u.health,
                    conditions: u.conditions.map(c => ({ ...c })) }));
@@ -1872,45 +1872,17 @@
     for (const [k, v] of G.state.terrain) terrainSnapshot.set(k, { ...v });
 
     act.falconGust = {
-      phase: 'modeChoice',   // modeChoice → actionChoice → targeting → done
-      mode: null,             // 'free' | 'enhanced'
-      action: null,           // 'moveAlly' | 'createCinder' | 'pushEnemy'
-      cinderCount: 0,
-      cinderMax: 0,
-      selectedAlly: null,
+      phase: 'targeting',   // targeting → done
+      actionsMax: 1,
+      actionsTaken: 0,
       undoData: { unitSnapshots, terrainSnapshot },
     };
   }
 
-  /** Set Falcon Gust mode: 'free' (no cost) or 'enhanced' (gain Immobilized). */
-  function setFalconGustMode(mode) {
-    const act = G.state.activationState;
-    if (!act || !act.falconGust || act.falconGust.phase !== 'modeChoice') return false;
-    act.falconGust.mode = mode;
-    act.falconGust.phase = 'actionChoice';
-    if (mode === 'enhanced') {
-      G.addCondition(act.unit, 'immobilized', 'endOfActivation');
-      G.log(`${act.unit.name} gains Immobilized (enhanced Falcon Gust)`, act.unit.player);
-    }
-    return true;
-  }
-
-  /** Set Falcon Gust action after mode is chosen. */
-  function setFalconGustAction(action) {
-    const act = G.state.activationState;
-    if (!act || !act.falconGust || act.falconGust.phase !== 'actionChoice') return false;
-    act.falconGust.action = action;
-    act.falconGust.phase = 'targeting';
-    if (action === 'createCinder') {
-      act.falconGust.cinderMax = (act.falconGust.mode === 'enhanced') ? 2 : 1;
-    }
-    return true;
-  }
-
-  /** Get living non-Surveyor allies. Returns Map<"q,r", unit> or null. */
+  /** Get living non-active allies. Returns Map<"q,r", unit>. */
   function getFalconGustAllyTargets() {
     const act = G.state.activationState;
-    if (!act || !act.falconGust) return null;
+    if (!act || !act.falconGust) return new Map();
     const valid = new Map();
     for (const u of G.state.units) {
       if (u.health <= 0 || u === act.unit || u.player !== act.unit.player) continue;
@@ -1933,7 +1905,7 @@
   }
 
   /** Get empty hexes adjacent to any existing Cinder terrain. Returns Map<"q,r", 1>. */
-  function getFalconGustCinderHexes() {
+  function getCinderPlacementHexes() {
     const valid = new Map();
     for (const [key, td] of G.state.terrain) {
       if (!td || !td.surface || td.surface.toLowerCase() !== 'cinder') continue;
@@ -1943,7 +1915,8 @@
         const nk = `${n.q},${n.r}`;
         if (!Board.getHex(n.q, n.r)) continue;
         if (G.state.units.some(u => u.q === n.q && u.r === n.r && u.health > 0)) continue;
-        if (G.state.terrain.has(nk)) continue; // already has terrain
+        const existing = G.state.terrain.get(nk);
+        if (existing && existing.surface) continue;
         if (Board.OBJECTIVES.some(o => o.q === n.q && o.r === n.r)) continue;
         valid.set(nk, 1);
       }
@@ -1951,19 +1924,14 @@
     return valid;
   }
 
-  /** Get adjacent living enemies for push. Returns Map<"q,r", unit>. */
-  function getFalconGustPushTargets() {
+  /** Check if Falcon Gust has used all actions, and finalize if so. */
+  function checkFalconGustDone() {
     const act = G.state.activationState;
-    if (!act || !act.falconGust) return null;
-    const valid = new Map();
-    const neighbors = Board.getNeighbors(act.unit.q, act.unit.r);
-    for (const n of neighbors) {
-      const enemy = G.state.units.find(
-        u => u.q === n.q && u.r === n.r && u.health > 0 && u.player !== act.unit.player
-      );
-      if (enemy) valid.set(`${n.q},${n.r}`, enemy);
+    if (!act || !act.falconGust) return;
+    if (act.falconGust.actionsTaken >= act.falconGust.actionsMax) {
+      act.falconGust.phase = 'done';
+      G.state.actionHistory.push({ type: 'falcongust', undoData: act.falconGust.undoData });
     }
-    return valid;
   }
 
   /** Move an ally 1 space for Falcon Gust. */
@@ -1982,45 +1950,24 @@
     updateObjectiveControl(ally);
 
     G.log(`${act.unit.name}'s Falcon Gust moves ${ally.name} to (${destQ},${destR})`, act.unit.player);
-    act.falconGust.phase = 'done';
-    G.state.actionHistory.push({ type: 'falcongust', undoData: act.falconGust.undoData });
+    act.falconGust.actionsTaken++;
+    checkFalconGustDone();
     return true;
   }
 
-  /** Place one Cinder terrain for Falcon Gust. */
+  /** Place one Cinder terrain (used by both Falcon Gust and Gust Push). */
   function executeFalconGustCinder(q, r) {
     const act = G.state.activationState;
     if (!act || !act.falconGust) return false;
 
-    const validHexes = getFalconGustCinderHexes();
+    const validHexes = getCinderPlacementHexes();
     if (!validHexes.has(`${q},${r}`)) return false;
 
     placeTerrain(q, r, 'cinder', act.unit.player);
-    act.falconGust.cinderCount++;
 
     G.log(`${act.unit.name}'s Falcon Gust creates Cinder at (${q},${r})`, act.unit.player);
-
-    if (act.falconGust.cinderCount >= act.falconGust.cinderMax) {
-      act.falconGust.phase = 'done';
-      G.state.actionHistory.push({ type: 'falcongust', undoData: act.falconGust.undoData });
-    }
-    // Otherwise stay in 'targeting' phase for the next Cinder placement
-    return true;
-  }
-
-  /** Push an adjacent enemy 1 space for Falcon Gust. */
-  function executeFalconGustPush(enemyIdx) {
-    const act = G.state.activationState;
-    if (!act || !act.falconGust) return false;
-    const enemy = G.state.units[enemyIdx];
-    if (!enemy || enemy.health <= 0 || enemy.player === act.unit.player) return false;
-
-    if (Board.hexDistance(act.unit.q, act.unit.r, enemy.q, enemy.r) !== 1) return false;
-
-    pushUnit(enemy, act.unit.q, act.unit.r, 1);
-    G.log(`${act.unit.name}'s Falcon Gust pushes ${enemy.name}`, act.unit.player);
-    act.falconGust.phase = 'done';
-    G.state.actionHistory.push({ type: 'falcongust', undoData: act.falconGust.undoData });
+    act.falconGust.actionsTaken++;
+    checkFalconGustDone();
     return true;
   }
 
@@ -2038,24 +1985,79 @@
   function undoFalconGust() {
     const act = G.state.activationState;
     if (!act || !act.falconGust || !act.falconGust.undoData) return false;
-
     const { unitSnapshots, terrainSnapshot } = act.falconGust.undoData;
-
-    // Restore all unit positions, health, conditions
     for (const snap of unitSnapshots) {
       snap.unit.q = snap.q;
       snap.unit.r = snap.r;
       snap.unit.health = snap.health;
       snap.unit.conditions = snap.conditions;
     }
-
-    // Restore terrain
     G.state.terrain.clear();
-    for (const [k, v] of terrainSnapshot) {
-      G.state.terrain.set(k, v);
-    }
-
+    for (const [k, v] of terrainSnapshot) G.state.terrain.set(k, v);
     delete act.falconGust;
+    return true;
+  }
+
+  // ── Gust Push (Surveyor – action, costs move) ──────────────
+  // Push any enemy on the board 1 space OR create cinder adjacent to existing cinder.
+
+  /** Get all living enemies on the board. Returns Map<"q,r", unit>. */
+  function getGustPushEnemies() {
+    const act = G.state.activationState;
+    if (!act) return new Map();
+    const valid = new Map();
+    for (const u of G.state.units) {
+      if (u.health <= 0 || u.player === act.unit.player) continue;
+      valid.set(`${u.q},${u.r}`, u);
+    }
+    return valid;
+  }
+
+  /** Get valid push destinations for an enemy (empty adjacent hexes). Returns Map<"q,r", 1>. */
+  function getGustPushDests(enemyQ, enemyR) {
+    const valid = new Map();
+    const neighbors = Board.getNeighbors(enemyQ, enemyR);
+    for (const n of neighbors) {
+      if (!Board.getHex(n.q, n.r)) continue;
+      if (G.state.units.some(u => u.q === n.q && u.r === n.r && u.health > 0)) continue;
+      if (hasTerrainRule(n.q, n.r, 'impassable')) continue;
+      valid.set(`${n.q},${n.r}`, 1);
+    }
+    return valid;
+  }
+
+  /** Execute Gust Push: move enemy to chosen adjacent hex. */
+  function executeGustPush(enemyIdx, destQ, destR) {
+    const act = G.state.activationState;
+    if (!act) return false;
+    const enemy = G.state.units[enemyIdx];
+    if (!enemy || enemy.health <= 0 || enemy.player === act.unit.player) return false;
+
+    const dests = getGustPushDests(enemy.q, enemy.r);
+    if (!dests.has(`${destQ},${destR}`)) return false;
+
+    const fromQ = enemy.q, fromR = enemy.r;
+    enemy.q = destQ;
+    enemy.r = destR;
+    onEnterHex(enemy, destQ, destR);
+    updateObjectiveControl(enemy);
+
+    G.log(`${act.unit.name}'s Gust Push moves ${enemy.name} from (${fromQ},${fromR}) to (${destQ},${destR})`, act.unit.player);
+    act.moved = true;
+    return true;
+  }
+
+  /** Execute Gust Push cinder placement (costs move). */
+  function executeGustPushCinder(q, r) {
+    const act = G.state.activationState;
+    if (!act) return false;
+
+    const validHexes = getCinderPlacementHexes();
+    if (!validHexes.has(`${q},${r}`)) return false;
+
+    placeTerrain(q, r, 'cinder', act.unit.player);
+    G.log(`${act.unit.name}'s Gust Push creates Cinder at (${q},${r})`, act.unit.player);
+    act.moved = true;
     return true;
   }
 
@@ -2093,17 +2095,17 @@
   G.getPushMoveData = getPushMoveData;
   G.executePushMove = executePushMove;
   G.initFalconGust = initFalconGust;
-  G.setFalconGustMode = setFalconGustMode;
-  G.setFalconGustAction = setFalconGustAction;
   G.getFalconGustAllyTargets = getFalconGustAllyTargets;
   G.getFalconGustAllyDests = getFalconGustAllyDests;
-  G.getFalconGustCinderHexes = getFalconGustCinderHexes;
-  G.getFalconGustPushTargets = getFalconGustPushTargets;
+  G.getCinderPlacementHexes = getCinderPlacementHexes;
   G.executeFalconGustMoveAlly = executeFalconGustMoveAlly;
   G.executeFalconGustCinder = executeFalconGustCinder;
-  G.executeFalconGustPush = executeFalconGustPush;
   G.skipFalconGust = skipFalconGust;
   G.undoFalconGust = undoFalconGust;
+  G.getGustPushEnemies = getGustPushEnemies;
+  G.getGustPushDests = getGustPushDests;
+  G.executeGustPush = executeGustPush;
+  G.executeGustPushCinder = executeGustPushCinder;
 
   // Clock Trap helpers
   G.getValidTrapHexes = getValidTrapHexes;
