@@ -1528,7 +1528,7 @@
   /** Push unit N hexes away from (fromQ, fromR). Returns actual distance pushed. */
   function pushUnit(unit, fromQ, fromR, distance) {
     // Steadfast: immune to forced movement from enemies
-    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'steadfast')) {
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'immuneforcedmove')) {
       G.log(`${unit.name} is steadfast — cannot be pushed`, unit.player);
       return 0;
     }
@@ -1558,7 +1558,7 @@
   /** Pull unit N hexes toward (towardQ, towardR). Returns actual distance pulled. */
   function pullUnit(unit, towardQ, towardR, distance) {
     // Steadfast: immune to forced movement from enemies
-    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'steadfast')) {
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'immuneforcedmove')) {
       G.log(`${unit.name} is steadfast — cannot be pulled`, unit.player);
       return 0;
     }

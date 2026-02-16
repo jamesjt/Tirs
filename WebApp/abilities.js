@@ -341,7 +341,7 @@ const Abilities = (() => {
       case 'push':
         for (const t of targets) {
           if (!isUnit(t)) continue;
-          if (hasFlag(t, 'steadfast')) {
+          if (hasFlag(t, 'immuneforcedmove')) {
             Game.log(`${t.name} is steadfast — cannot be pushed`, t.player);
             continue;
           }
@@ -356,7 +356,7 @@ const Abilities = (() => {
       case 'pull':
         for (const t of targets) {
           if (!isUnit(t)) continue;
-          if (hasFlag(t, 'steadfast')) {
+          if (hasFlag(t, 'immuneforcedmove')) {
             Game.log(`${t.name} is steadfast — cannot be pulled`, t.player);
             continue;
           }
@@ -541,7 +541,7 @@ const Abilities = (() => {
     if (lower === 'push') {
       for (const t of targets) {
         if (!isUnit(t)) continue;
-        if (hasFlag(t, 'steadfast')) {
+        if (hasFlag(t, 'immuneforcedmove')) {
           Game.log(`${t.name} is steadfast — cannot be pushed`, t.player);
           continue;
         }
@@ -557,7 +557,7 @@ const Abilities = (() => {
     if (lower === 'pull') {
       for (const t of targets) {
         if (!isUnit(t)) continue;
-        if (hasFlag(t, 'steadfast')) {
+        if (hasFlag(t, 'immuneforcedmove')) {
           Game.log(`${t.name} is steadfast — cannot be pulled`, t.player);
           continue;
         }

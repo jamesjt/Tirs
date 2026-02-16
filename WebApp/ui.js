@@ -1859,10 +1859,9 @@ const UI = (() => {
       html += `</div>`;
       panel.innerHTML = html;
     } else {
-      // No activation — show Pass Turn button if Calculated, otherwise hide panel
-      const faction = s.players[s.currentPlayer].faction;
-      const fRules = Units.factionRules[faction] || [];
-      const hasCalculated = fRules.some(r => r.effect && r.effect.toLowerCase() === 'calculated');
+      // No activation — show Pass Turn button if any unit has Calculated flag
+      const hasCalculated = typeof Abilities !== 'undefined' &&
+        s.units.some(u => u.player === s.currentPlayer && u.health > 0 && Abilities.hasFlag(u, 'calculated'));
       if (hasCalculated && !s.passedThisRound.has(s.currentPlayer)) {
         panel.classList.remove('hidden');
         applyPlayerStyle(panel, s.currentPlayer);
