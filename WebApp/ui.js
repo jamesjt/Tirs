@@ -159,6 +159,7 @@ const UI = (() => {
   function resetUiState() {
     uiState = freshUiState();
     abilityTargeting = null;
+    relocateTargeting = null;
     effectTargeting = null;
     tossTargeting = null;
     teleportTargeting = null;
@@ -177,9 +178,48 @@ const UI = (() => {
   }
 
   // ── Ability Targeting Mode ──────────────────────────────────
-  let abilityTargeting = null;  // { abilityName, unit, validTargets, actionCost }
+  let abilityTargeting = null;  // { abilityName, unit, validTargets, actionCost, targetList? }
+  let relocateTargeting = null; // { unit, range, reachable, parentMap, abilityName, actionCost, sourceUnit }
 
-  function enterAbilityTargeting(abilityName, unit, targeting, actionCost) {
+  function enterAbilityTargeting(abilityName, unit, targeting, actionCost, actionRuleId) {
+    if (targeting.validTargets) {
+      // ── Tag-based targeting path ──
+      const targets = Abilities.computeActionTargets(unit, targeting);
+      if (targets.length === 0) {
+        // No valid targets — don't enter targeting mode
+        return;
+      }
+      const valid = new Set();
+      const highlights = new Map();
+      const atkTargets = new Map();
+      for (const t of targets) {
+        valid.add(t.key);
+        if (t.type === 'unit' && t.unit.player !== unit.player) {
+          // Enemy → red attack reticle
+          const rawDmg = targeting.rawDamage || 0;
+          const arm = Game.getEffective(t.unit, 'armor');
+          const dmg = rawDmg > 0 ? Math.max(1, rawDmg - arm) : null;
+          atkTargets.set(t.key, { damage: dmg });
+        } else {
+          // Ally/terrain/trap/empty → cyan interactive highlight
+          highlights.set(t.key, 1);
+        }
+      }
+      abilityTargeting = {
+        abilityName, unit, validTargets: valid,
+        actionCost: actionCost || null, actionRuleId: actionRuleId || null,
+        targetList: targets,  // full target data for click resolution
+      };
+      uiState.highlights = highlights.size > 0 ? highlights : null;
+      uiState.highlightColor = 'rgba(0, 200, 200, 0.35)';
+      uiState.highlightStyle = 'dots';
+      uiState.attackTargets = atkTargets.size > 0 ? atkTargets : null;
+      updateStatusBar();
+      showPhase();
+      render();
+      return;
+    }
+    // ── Legacy enemy-only targeting path ──
     const valid = new Set();
     const overrides = { atkType: targeting.atkType, range: targeting.range };
     const atkTargets = new Map();
@@ -195,7 +235,7 @@ const UI = (() => {
       const dmg = rawDmg > 0 ? Math.max(1, rawDmg - arm) : null;
       atkTargets.set(key, { damage: dmg });
     }
-    abilityTargeting = { abilityName, unit, validTargets: valid, actionCost: actionCost || null };
+    abilityTargeting = { abilityName, unit, validTargets: valid, actionCost: actionCost || null, actionRuleId: actionRuleId || null };
     // Show red attack reticles (same as normal attacks)
     uiState.highlights = null;
     uiState.highlightColor = null;
@@ -203,8 +243,59 @@ const UI = (() => {
     render();
   }
 
+  /** Enter relocate targeting: show BFS movement range for the target unit. */
+  function enterRelocateTargeting(targetUnit, range, abilityName, actionCost, sourceUnit) {
+    const { reachable, parentMap } = Game.getRelocateRange(targetUnit, range);
+    if (reachable.size === 0) {
+      // Target can't move anywhere — skip relocate, finish ability
+      Game.log(`${targetUnit.name} has nowhere to move`, sourceUnit.player);
+      finishRelocate(abilityName, actionCost, sourceUnit);
+      return;
+    }
+    relocateTargeting = {
+      unit: targetUnit, range, reachable, parentMap,
+      abilityName, actionCost, sourceUnit, oncePerRound: false,
+    };
+    abilityTargeting = null; // clear primary targeting
+    uiState.highlights = reachable;
+    uiState.highlightColor = 'rgba(255, 255, 0, 0.35)';
+    uiState.highlightStyle = 'dots';
+    uiState.attackTargets = null;
+    updateStatusBar();
+    showPhase();
+    render();
+  }
+
+  /** Finish relocate: set action cost flags, push history, refresh UI. */
+  function finishRelocate(abilityName, actionCost, sourceUnit) {
+    const s = Game.state;
+    const act = s.activationState;
+    if (act) {
+      if (actionCost === 'move') act.moved = true;
+      else if (actionCost === 'attack') act.attacked = true;
+    }
+    relocateTargeting = null;
+    if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
+
+    // Auto-end activation if both actions consumed
+    if (act && act.moved && act.attacked && !s.rules.confirmEndTurn) {
+      Game.endActivation();
+      resetUiState();
+      showPhase();
+      render();
+      return;
+    }
+
+    showActivationHighlights();
+    showPhase();
+    updateStatusBar();
+    render();
+  }
+
   function cancelAbilityTargeting() {
     abilityTargeting = null;
+    relocateTargeting = null;
+    if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
     showActivationHighlights();
     showPhase();
     render();
@@ -1012,8 +1103,14 @@ const UI = (() => {
     let text = '';
 
     if (s.phase === Game.PHASE.BATTLE) {
+      // Relocate targeting messages
+      if (relocateTargeting) {
+        text = `Move ${relocateTargeting.unit.name} to a highlighted hex (ESC to cancel)`;
+      // Tag-based ability targeting messages
+      } else if (abilityTargeting && abilityTargeting.targetList) {
+        text = `${abilityTargeting.abilityName}: select target (ESC to cancel)`;
       // Falcon Gust targeting messages
-      if (falconGustTargeting) {
+      } else if (falconGustTargeting) {
         if (falconGustTargeting.phase === 'combined') {
           text = 'Falcon Gust: click ally to move or cinder hex to place (ESC to skip)';
         } else if (falconGustTargeting.phase === 'allyDest') {
@@ -1811,13 +1908,14 @@ const UI = (() => {
         const actions = Abilities.getActions(act.unit);
         for (const ab of actions) {
           if (ab.oncePerGame && act.unit.usedAbilities.has(ab.name)) continue;
+          if (ab.oncePerRound && act.unit.usedAbilitiesThisRound && act.unit.usedAbilitiesThisRound.has(ab.name)) continue;
           if (ab.actionCost === 'move' && act.moved) continue;
           if (ab.actionCost === 'attack' && act.attacked) continue;
           if (Game.hasCondition(act.unit, 'silenced')) continue;
           const label = ab.displayName || ab.name;
           const costLabel = ab.displayName ? '' : (ab.actionCost === 'move' ? ' (uses move)'
                           : ab.actionCost === 'attack' ? ' (uses attack)' : '');
-          html += `<button class="btn btn-ability" data-action="use-ability" data-ability="${ab.name}" data-cost="${ab.actionCost || ''}">${label}${costLabel}</button>`;
+          html += `<button class="btn btn-ability" data-action="use-ability" data-ability="${ab.name}" data-cost="${ab.actionCost || ''}" data-ruleid="${ab.actionRuleId || ''}">${label}${costLabel}</button>`;
         }
         // Gust Push button (Surveyor: push any enemy or place cinder, costs move)
         if (!act.moved && Abilities.hasFlag(act.unit, 'falcongust') && !Game.hasCondition(act.unit, 'silenced')) {
@@ -2703,6 +2801,13 @@ const UI = (() => {
       return;
     }
 
+    // ESC: cancel relocate targeting (goes back to ability targeting / activation)
+    if (key === 'escape' && relocateTargeting) {
+      cancelAbilityTargeting();
+      e.preventDefault();
+      return;
+    }
+
     // ESC: cancel ability targeting
     if (key === 'escape' && abilityTargeting) {
       cancelAbilityTargeting();
@@ -3316,12 +3421,11 @@ const UI = (() => {
     else if (action === 'use-ability') {
       const abilityName = btn.dataset.ability;
       const actionCost = btn.dataset.cost || null;
+      const actionRuleId = btn.dataset.ruleid || null;
       const act = Game.state.activationState;
       if (!act) return;
-      const targeting = typeof Abilities !== 'undefined' && Abilities.getTargeting(abilityName);
-      if (targeting) {
-        enterAbilityTargeting(abilityName, act.unit, targeting, actionCost);
-      } else if (abilityName === 'Zoom') {
+      // Custom targeting modes must be checked before generic tag-based targeting
+      if (abilityName === 'Zoom') {
         // Zoom: enter custom targeting mode (pick hex on straight line)
         const targets = Game.getZoomTargets(act.unit);
         if (targets.size > 0) {
@@ -3348,9 +3452,15 @@ const UI = (() => {
           render();
         }
       } else {
+        // Generic targeting (tag-based or legacy enemy targeting)
+        const targeting = typeof Abilities !== 'undefined' && Abilities.getTargeting(abilityName, actionRuleId);
+        if (targeting) {
+          enterAbilityTargeting(abilityName, act.unit, targeting, actionCost, actionRuleId);
+          return;
+        }
         // Non-targeted action — execute immediately
         if (typeof Abilities !== 'undefined') {
-          Abilities.executeAction(abilityName, { unit: act.unit });
+          Abilities.executeAction(abilityName, { unit: act.unit }, actionRuleId);
         }
         if (actionCost === 'move') act.moved = true;
         else if (actionCost === 'attack') act.attacked = true;
@@ -3909,6 +4019,44 @@ const UI = (() => {
       return;
     }
 
+    // Relocate targeting mode: click destination to move target unit
+    if (relocateTargeting) {
+      if (relocateTargeting.reachable.has(key)) {
+        const rt = relocateTargeting;
+        const act = s.activationState;
+
+        // Snapshot all living units for undo
+        const healthBefore = s.units
+          .filter(u => u.health > 0)
+          .map(u => ({ unit: u, prevHealth: u.health, prevQ: u.q, prevR: u.r,
+            prevConditions: u.conditions.map(c => ({ ...c })) }));
+
+        const undoData = Game.relocateUnit(rt.unit, hex.q, hex.r, rt.parentMap);
+        Game.log(`${rt.sourceUnit.name} commands ${rt.unit.name} to move`, rt.sourceUnit.player);
+
+        // Build undo history entry
+        const healthSnapshots = healthBefore.filter(snap =>
+          snap.unit.health !== snap.prevHealth || snap.unit.q !== snap.prevQ || snap.unit.r !== snap.prevR
+            || JSON.stringify(snap.unit.conditions) !== JSON.stringify(snap.prevConditions));
+        s.actionHistory.push({
+          type: 'ability',
+          abilityName: rt.abilityName,
+          actionCost: rt.actionCost,
+          oncePerGame: false,
+          oncePerRound: rt.oncePerRound || false,
+          unitRef: rt.sourceUnit,
+          healthSnapshots,
+          relocateData: undoData,
+        });
+
+        finishRelocate(rt.abilityName, rt.actionCost, rt.sourceUnit);
+      } else {
+        // Click off-target: cancel relocate, go back to ability targeting
+        cancelAbilityTargeting();
+      }
+      return;
+    }
+
     // Ability targeting mode: click valid target to execute, else cancel
     if (abilityTargeting) {
       if (abilityTargeting.validTargets.has(key)) {
@@ -3920,14 +4068,34 @@ const UI = (() => {
         // Snapshot health of all living units for undo
         const healthBefore = s.units
           .filter(u => u.health > 0)
-          .map(u => ({ unit: u, prevHealth: u.health }));
+          .map(u => ({ unit: u, prevHealth: u.health, prevQ: u.q, prevR: u.r,
+            prevConditions: u.conditions.map(c => ({ ...c })) }));
 
         if (typeof Abilities !== 'undefined') {
           Abilities.executeAction(abName, {
             unit: abilityTargeting.unit, target, targetQ: hex.q, targetR: hex.r,
-          });
+          }, abilityTargeting.actionRuleId);
         }
 
+        // Check if a relocate effect was queued by the action
+        if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+          const pending = Abilities.peekEffect();
+          if (pending && pending.type === 'relocate') {
+            Abilities.skipEffect(); // consume from queue (we handle it via UI)
+            const relocTarget = pending.unit;
+            const relocRange = pending.range;
+            Game.log(`${abilityTargeting.unit.name} uses ${abName}${actionCost ? ' (uses ' + actionCost + ')' : ''}`, abilityTargeting.unit.player);
+            enterRelocateTargeting(relocTarget, relocRange, abName, actionCost, abilityTargeting.unit);
+            // Set oncePerRound on relocateTargeting for undo
+            if (relocateTargeting) {
+              const rd = Abilities.getActions(relocateTargeting.sourceUnit).find(a => a.name === abName);
+              if (rd && rd.oncePerRound) relocateTargeting.oncePerRound = true;
+            }
+            return;
+          }
+        }
+
+        // Non-relocate ability: finish immediately
         // Set activation flag based on action cost
         if (act && actionCost) {
           if (actionCost === 'move') act.moved = true;
@@ -3936,13 +4104,15 @@ const UI = (() => {
         Game.log(`${abilityTargeting.unit.name} uses ${abName}${actionCost ? ' (uses ' + actionCost + ')' : ''}`, abilityTargeting.unit.player);
 
         // Build undo history entry with health changes
-        const healthSnapshots = healthBefore.filter(snap => snap.unit.health !== snap.prevHealth);
+        const healthSnapshots = healthBefore.filter(snap =>
+          snap.unit.health !== snap.prevHealth || snap.unit.q !== snap.prevQ || snap.unit.r !== snap.prevR);
         const abDef = typeof Abilities !== 'undefined' ? Abilities.getActions(abilityTargeting.unit).find(a => a.name === abName) : null;
         s.actionHistory.push({
           type: 'ability',
           abilityName: abName,
           actionCost,
           oncePerGame: abDef ? abDef.oncePerGame : false,
+          oncePerRound: abDef ? abDef.oncePerRound : false,
           unitRef: abilityTargeting.unit,
           healthSnapshots,
         });

@@ -221,6 +221,8 @@ const Units = (() => {
         range: col(row, ['range']).trim() || null,
         los: col(row, ['los']).trim() || null,
         action: col(row, ['action']).trim() || null,
+        validTargets: col(row, ['validtargets', 'valid targets']).trim() || null,
+        invalidTargets: col(row, ['invalidtargets', 'invalid targets']).trim() || null,
       };
     }
     return rules;
@@ -254,7 +256,8 @@ const Units = (() => {
       defs[name] = {
         name,
         text: col(row, ['display text', 'description']).trim(),
-        oncePerGame: /^(y|yes|true)$/i.test(col(row, ['once per game'])),
+        oncePerGame: /^(y|yes|true)$/i.test(col(row, ['once per game', '1/game'])),
+        oncePerRound: /^(y|yes|true)$/i.test(col(row, ['once per round', '1/round'])),
         ruleIds,
       };
     }

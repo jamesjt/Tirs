@@ -292,6 +292,19 @@ const Abilities = (() => {
     if (!effect) return;
     const lower = effect.toLowerCase();
 
+    // Tag effect — identity marker, no runtime action
+    if (lower === 'tag') return;
+
+    // Relocate effect — queue interactive movement for UI to handle
+    if (lower === 'relocate') {
+      const range = resolveValue(value, ctx) || (ctx.unit ? ctx.unit.move : 3);
+      const target = targets.length > 0 ? targets[0] : ctx.target;
+      if (target && isUnit(target)) {
+        effectQueue.push({ type: 'relocate', unit: target, range, sourceUnit: ctx.unit });
+      }
+      return;
+    }
+
     // Condition application
     if (CONDITION_DEFAULTS[lower]) {
       for (const t of targets) {
@@ -521,12 +534,14 @@ const Abilities = (() => {
       const relevant = ab.ruleIds.filter(id => atomicRules[id]?.type === triggerType);
       if (relevant.length === 0) continue;
 
-      // Once-per-game check
+      // Once-per-game / once-per-round check
       if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
+      if (ab.oncePerRound && unit.usedAbilitiesThisRound && unit.usedAbilitiesThisRound.has(ab.name)) continue;
 
       executeRules(ab.ruleIds, triggerType, ctx);
 
       if (ab.oncePerGame) unit.usedAbilities.add(ab.name);
+      if (ab.oncePerRound) { if (!unit.usedAbilitiesThisRound) unit.usedAbilitiesThisRound = new Set(); unit.usedAbilitiesThisRound.add(ab.name); }
     }
 
     isQueuing = false;
@@ -676,6 +691,26 @@ const Abilities = (() => {
       }
     }
     return false;
+  }
+
+  // ── Unit Tags ────────────────────────────────────────────────
+
+  /** Get all tags on a unit from passive 'tag' effects. */
+  function getUnitTags(unit) {
+    if (!unit || !unit.abilities) return [];
+    const tags = [];
+    for (const ab of unit.abilities) {
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule || rule.type !== 'passive') continue;
+        for (const eff of rule.effects) {
+          if (eff.effect && eff.effect.toLowerCase() === 'tag' && eff.value) {
+            tags.push(...eff.value.toLowerCase().split(',').map(t => t.trim()).filter(Boolean));
+          }
+        }
+      }
+    }
+    return tags;
   }
 
   // ── Terrain Immunity ─────────────────────────────────────────
@@ -915,29 +950,62 @@ const Abilities = (() => {
     if (!unit || !unit.abilities) return [];
     const actions = [];
     for (const ab of unit.abilities) {
-      const actionRule = ab.ruleIds.map(id => atomicRules[id]).find(r => r && r.type === 'action');
-      if (!actionRule) continue;
-      const cost = (actionRule.action || '').toLowerCase();
-      if (cost.includes(',')) {
-        // Dual-cost action: emit two entries with different actionCost
-        const costs = cost.split(',').map(c => c.trim());
-        for (const c of costs) {
-          actions.push({ ...ab, actionCost: c, displayName: `${ab.name} (${c})` });
+      const actionRules = ab.ruleIds.map(id => atomicRules[id]).filter(r => r && r.type === 'action');
+      if (actionRules.length === 0) continue;
+      for (const actionRule of actionRules) {
+        const cost = (actionRule.action || '').toLowerCase();
+        if (cost.includes(',')) {
+          // Dual-cost action: emit two entries with different actionCost
+          const costs = cost.split(',').map(c => c.trim());
+          for (const c of costs) {
+            actions.push({ ...ab, actionCost: c, displayName: `${ab.name} (${c})`, actionRuleId: actionRule.ruleName });
+          }
+        } else {
+          // Multiple action rules on one ability → show cost in label
+          const needsLabel = actionRules.length > 1 && cost;
+          actions.push({
+            ...ab, actionCost: cost || null, actionRuleId: actionRule.ruleName,
+            displayName: needsLabel ? `${ab.name} (${cost})` : undefined,
+          });
         }
-      } else {
-        actions.push({ ...ab, actionCost: cost || null });
       }
     }
     return actions;
   }
 
   /** Get targeting parameters for a targeted action ability. */
-  function getTargeting(abilityName) {
+  function getTargeting(abilityName, actionRuleId) {
     const def = abilityDefs[abilityName];
     if (!def) return null;
     for (const ruleId of def.ruleIds) {
+      if (actionRuleId && ruleId !== actionRuleId) continue;
       const rule = atomicRules[ruleId];
       if (rule && rule.type === 'action') {
+        // Tag-based targeting path: validTargets present
+        if (rule.validTargets) {
+          // Parse range — supports both plain numbers and attack-type prefixed (D6, L3, P4)
+          const parsed = parseRangeColumn(rule.range);
+          const range = parsed.range || null;
+          // Only set atkType if range was actually specified (avoid spurious 'D' from empty range)
+          const atkType = range ? (parsed.atkType || null) : null;
+          // Extract raw damage from the action rule's effects (same as legacy path)
+          let rawDamage = 0;
+          for (const eff of rule.effects) {
+            if (eff.effect && eff.effect.toLowerCase() === 'damage') {
+              rawDamage = eff.value === 'unitDamage' ? 0 : int(eff.value);
+            }
+          }
+          return {
+            range,
+            atkType,
+            los: atkType ? (rule.los !== 'N') : (rule.los === 'Y' || rule.los === 'y'),
+            cost: (rule.action || '').toLowerCase() || null,
+            rawDamage,
+            validTargets: rule.validTargets,
+            invalidTargets: rule.invalidTargets || null,
+          };
+        }
+        // Legacy path: range-based enemy targeting
         const parsed = parseRangeColumn(rule.range);
         if (!parsed.range) return null;  // Non-targeted action (e.g. Glider)
         // Extract raw damage from the action rule's effects
@@ -953,27 +1021,151 @@ const Abilities = (() => {
           los: rule.los !== 'N',
           cost: (rule.action || '').toLowerCase() || null,
           rawDamage,
+          validTargets: null,
+          invalidTargets: null,
         };
       }
     }
     return null;
   }
 
+  // ── Tag-based target resolution ─────────────────────────────
+
+  /** Resolve dynamic value strings like 'unitsMove', 'unitsDamage' etc. */
+  function resolveValue(valueStr, ctx) {
+    if (!valueStr) return null;
+    const lower = valueStr.toLowerCase();
+    switch (lower) {
+      case 'unitsmove':    return ctx.unit ? (ctx.unit.move || 0) : 0;
+      case 'unitsdamage':  return ctx.unit ? Game.getEffective(ctx.unit, 'damage') : 0;
+      case 'unitsrange':   return ctx.unit ? (ctx.unit.range || 0) : 0;
+      case 'unitsarmor':   return ctx.unit ? Game.getEffective(ctx.unit, 'armor') : 0;
+      case 'targetmove':   return ctx.target ? (ctx.target.move || 0) : 0;
+      case 'unitdamage':   return ctx.unit ? Game.getEffective(ctx.unit, 'damage') : 0;
+      default: {
+        const n = parseInt(valueStr, 10);
+        return isNaN(n) ? null : n;
+      }
+    }
+  }
+
+  /** Compute valid action targets on the board using tag-based filtering.
+   *  Returns array of { type, key, unit?, surface? } */
+  function computeActionTargets(unit, targeting) {
+    if (!targeting || !targeting.validTargets) return [];
+
+    const validTags = targeting.validTargets.toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
+    const invalidTags = (targeting.invalidTargets || '').toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
+    const maxRange = targeting.range; // null = unlimited
+    const needLoS = targeting.los;
+    const results = [];
+
+    const atkType = targeting.atkType || null;
+
+    for (const hex of Board.hexes) {
+      // Range check
+      if (maxRange != null && Board.hexDistance(unit.q, unit.r, hex.q, hex.r) > maxRange) continue;
+      // LoS check (skip if atkType present — canAttack handles it below)
+      if (needLoS && !atkType && !Game.hasLoS(unit.q, unit.r, hex.q, hex.r)) continue;
+
+      const key = `${hex.q},${hex.r}`;
+
+      // Collect tags for this hex
+      const hexTags = [];
+      const livingUnit = Game.state.units.find(u => u.q === hex.q && u.r === hex.r && u.health > 0);
+      const terrain = Game.state.terrain.get(key);
+      const trap = Game.state.traps ? Game.state.traps.get(key) : null;
+
+      let targetType = null;
+      let targetRef = null;
+
+      if (livingUnit) {
+        hexTags.push('unit');
+        const isAlly = livingUnit.player === unit.player;
+        const isSelf = livingUnit === unit;
+        if (isAlly) { hexTags.push('allies'); hexTags.push('ally'); }
+        if (!isAlly) { hexTags.push('enemies'); hexTags.push('enemy'); }
+        if (isSelf) hexTags.push('self');
+        // Data tags from passive 'tag' effects
+        const unitTags = getUnitTags(livingUnit);
+        for (const t of unitTags) {
+          hexTags.push(t);                  // bare tag
+          hexTags.push('unit:' + t);        // prefixed
+        }
+        targetType = 'unit';
+        targetRef = livingUnit;
+      }
+
+      if (terrain) {
+        hexTags.push('terrain');
+        const surface = terrain.surface.toLowerCase();
+        hexTags.push(surface);              // bare tag (surface name)
+        hexTags.push('terrain:' + surface); // prefixed
+        if (!targetType) {
+          targetType = 'terrain';
+          targetRef = terrain;
+        }
+      }
+
+      if (trap) {
+        hexTags.push('trap');
+        if (!targetType) {
+          targetType = 'trap';
+          targetRef = trap;
+        }
+      }
+
+      if (!livingUnit && !terrain && !trap) {
+        hexTags.push('empty');
+        targetType = 'empty';
+      }
+
+      // Match: any validTag matches?
+      const matches = validTags.some(vt => hexTags.includes(vt));
+      if (!matches) continue;
+
+      // Exclude: any invalidTag matches?
+      if (invalidTags.length > 0 && invalidTags.some(it => hexTags.includes(it))) continue;
+
+      // For enemy units with attack-type targeting, validate via canAttack()
+      if (atkType && targetType === 'unit' && livingUnit && livingUnit.player !== unit.player) {
+        if (!Game.canAttack(unit, livingUnit, { atkType, range: maxRange })) continue;
+      }
+
+      const entry = { type: targetType, key, q: hex.q, r: hex.r };
+      if (targetType === 'unit') entry.unit = targetRef;
+      if (targetType === 'terrain') entry.surface = terrain.surface;
+      if (targetType === 'trap') entry.trap = targetRef;
+      results.push(entry);
+    }
+
+    return results;
+  }
+
   /** Execute a targeted action ability. Fires action rules, then sibling hit rules. */
-  function executeAction(abilityName, ctx) {
+  function executeAction(abilityName, ctx, actionRuleId) {
     const def = abilityDefs[abilityName];
     if (!def) return;
 
     effectQueue = [];
     isQueuing = true;
 
-    executeRules(def.ruleIds, 'action', ctx);
+    // If specific action rule given, fire only that one; hit rules always fire from all
+    if (actionRuleId) {
+      executeRules([actionRuleId], 'action', ctx);
+    } else {
+      executeRules(def.ruleIds, 'action', ctx);
+    }
     executeRules(def.ruleIds, 'hit', ctx);
 
     isQueuing = false;
 
     if (def.oncePerGame && ctx.unit) {
       ctx.unit.usedAbilities.add(def.name);
+    }
+    if (def.oncePerRound && ctx.unit) {
+      if (!ctx.unit.usedAbilitiesThisRound) ctx.unit.usedAbilitiesThisRound = new Set();
+      ctx.unit.usedAbilitiesThisRound.add(def.name);
     }
   }
 
@@ -1116,6 +1308,11 @@ const Abilities = (() => {
     getActions,
     getTargeting,
     executeAction,
+
+    // Tag-based targeting
+    getUnitTags,
+    computeActionTargets,
+    resolveValue,
 
     // Effect queue (interactive push/pull/move)
     hasPendingEffects,

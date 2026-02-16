@@ -427,6 +427,64 @@
     return true;
   }
 
+  // ── Relocate (Command / ability-driven unit movement) ───────
+
+  /** Compute reachable hexes for a relocate target (ignores conditions on the unit). */
+  function getRelocateRange(unit, range) {
+    const blocked = new Set();
+    for (const other of G.state.units) {
+      if (other.health <= 0 || other === unit) continue;
+      if (other.player !== unit.player) blocked.add(`${other.q},${other.r}`);
+    }
+    const ignoresTerrain = typeof Abilities !== 'undefined'
+      ? (rule, q, r) => Abilities.ignoresTerrainRule(unit, rule, q, r) : () => false;
+    for (const [key] of G.state.terrain) {
+      const [tq, tr] = key.split(',').map(Number);
+      if (hasTerrainRule(tq, tr, 'impassable') && !ignoresTerrain('impassable', tq, tr)) blocked.add(key);
+    }
+    // Allies: can move through but not stop
+    const allyOccupied = new Set();
+    for (const other of G.state.units) {
+      if (other === unit || other.health <= 0) continue;
+      if (other.player === unit.player) allyOccupied.add(`${other.q},${other.r}`);
+    }
+    function moveCost(fromQ, fromR, toQ, toR) {
+      if (hasTerrainRule(toQ, toR, 'flow')) {
+        const td = G.state.terrain.get(`${toQ},${toR}`);
+        return (td && td.player === unit.player) ? 0 : 2;
+      }
+      if (hasTerrainRule(toQ, toR, 'difficult') && !ignoresTerrain('difficult', toQ, toR)) return 2;
+      return 1;
+    }
+    const parentMap = new Map();
+    const reachable = Board.getReachableHexes(unit.q, unit.r, range, blocked, moveCost, parentMap);
+    // Remove ally-occupied hexes (can't stop there)
+    for (const k of allyOccupied) reachable.delete(k);
+    return { reachable, parentMap };
+  }
+
+  /** Relocate a unit to a destination (used by Command and similar abilities).
+   *  Walks the path calling onEnterHex at each step. Does NOT modify activation state.
+   *  Returns undo data: { unit, fromQ, fromR, prevHealth, prevConditions }. */
+  function relocateUnit(unit, toQ, toR, parentMap) {
+    const fromQ = unit.q, fromR = unit.r;
+    const prevHealth = unit.health;
+    const prevConditions = unit.conditions.map(c => ({ ...c }));
+
+    const path = Board.getPath(fromQ, fromR, toQ, toR, parentMap);
+    for (const step of path) {
+      unit.q = step.q;
+      unit.r = step.r;
+      onEnterHex(unit, step.q, step.r);
+      if (unit.q === -99 || unit.health <= 0) break;
+    }
+
+    updateObjectiveControl(unit);
+    G.log(`${unit.name} relocated (${fromQ},${fromR}) → (${unit.q},${unit.r})`, unit.player);
+
+    return { unit, fromQ, fromR, prevHealth, prevConditions };
+  }
+
   function attackUnit(targetQ, targetR, bonusDamage, tossData, attackPath) {
     const act = G.state.activationState;
     if (!act || act.attacked) return false;
@@ -1129,9 +1187,20 @@
       for (const [k, v] of terrainSnapshot) G.state.terrain.set(k, v);
       initFalconGust(act.unit);
     } else if (last.type === 'ability') {
-      // Restore all affected unit healths
+      // Restore all affected units (health, position, conditions)
       for (const snap of last.healthSnapshots) {
         snap.unit.health = snap.prevHealth;
+        if (snap.prevQ != null) { snap.unit.q = snap.prevQ; snap.unit.r = snap.prevR; }
+        if (snap.prevConditions) snap.unit.conditions = snap.prevConditions;
+      }
+      // Restore relocate target position specifically
+      if (last.relocateData) {
+        const rd = last.relocateData;
+        rd.unit.q = rd.fromQ;
+        rd.unit.r = rd.fromR;
+        rd.unit.health = rd.prevHealth;
+        rd.unit.conditions = rd.prevConditions;
+        updateObjectiveControl(rd.unit);
       }
       // Restore activation flag
       if (last.actionCost === 'move') act.moved = false;
@@ -1139,6 +1208,10 @@
       // Restore once-per-game charge
       if (last.oncePerGame && last.unitRef) {
         last.unitRef.usedAbilities.delete(last.abilityName);
+      }
+      // Restore once-per-round charge
+      if (last.oncePerRound && last.unitRef && last.unitRef.usedAbilitiesThisRound) {
+        last.unitRef.usedAbilitiesThisRound.delete(last.abilityName);
       }
     }
 
@@ -2114,6 +2187,8 @@
   G.getMovementContext = getMovementContext;
   G.getAttackTargets = getAttackTargets;
   G.moveUnit = moveUnit;
+  G.getRelocateRange = getRelocateRange;
+  G.relocateUnit = relocateUnit;
   G.attackUnit = attackUnit;
   G.skipAction = skipAction;
   G.endActivation = endActivation;
