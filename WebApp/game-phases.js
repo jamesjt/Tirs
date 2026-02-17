@@ -436,11 +436,69 @@
           }
         },
       },
-      // [Future: Dancer prompts, Ebb and Flow, etc. inserted here]
+      // Dancer: interactive round-start poise choice
+      (() => {
+        const dancers = [];
+        for (const u of G.state.units) {
+          if (u.health <= 0) continue;
+          if (typeof Abilities === 'undefined' || !Abilities.hasFlag(u, 'dancer')) continue;
+          if (G.hasCondition(u, 'silenced')) continue;
+          if (!u.dancerUsed) u.dancerUsed = new Set();
+          const allChoices = ['damage', 'move', 'dodgy', 'tumbler'];
+          const available = allChoices.filter(c => !u.dancerUsed.has(c));
+          if (available.length > 0) dancers.push({ unit: u, available });
+        }
+        return {
+          id: 'dancer',
+          label: 'Dancer poise',
+          auto: dancers.length === 0,
+          data: { dancers, currentIndex: 0 },
+        };
+      })(),
+      // [Future: Ebb and Flow, etc. inserted here]
     ];
     G.state.roundStepIndex = 0;
     G.state.phase = G.PHASE.ROUND_START;
     runAutoSteps();
+  }
+
+  // ── Dancer helpers ────────────────────────────────────────────
+
+  function executeDancerChoice(choice) {
+    const step = G.state.roundStepQueue.find(s => s.id === 'dancer');
+    if (!step) return;
+    const d = step.data.dancers[step.data.currentIndex];
+    if (!d) return;
+    const unit = d.unit;
+
+    switch (choice) {
+      case 'damage':
+        G.addCondition(unit, 'strengthened', 'endOfRound');
+        G.log(`${unit.name} Dancer: +1 Damage`, unit.player);
+        break;
+      case 'move':
+        G.addCondition(unit, 'movebonus', 'endOfRound', null, 2);
+        G.log(`${unit.name} Dancer: +2 Move`, unit.player);
+        break;
+      case 'dodgy':
+        G.addCondition(unit, 'dodgy', 'endOfRound');
+        G.log(`${unit.name} Dancer: Dodgy`, unit.player);
+        break;
+      case 'tumbler':
+        G.addCondition(unit, 'moveintoenemies', 'endOfRound');
+        G.addCondition(unit, 'tumbler', 'endOfRound');
+        G.log(`${unit.name} Dancer: Tumbler`, unit.player);
+        break;
+    }
+
+    d.chosen = choice;
+    unit.dancerUsed.add(choice);
+    step.data.currentIndex++;
+  }
+
+  function allDancersDecided() {
+    const step = G.state.roundStepQueue.find(s => s.id === 'dancer');
+    return step && step.data.currentIndex >= step.data.dancers.length;
   }
 
   /** Run all consecutive auto steps starting from roundStepIndex.
@@ -754,6 +812,10 @@
   G.resolveArcFire = resolveArcFire;
   G.skipArcFire = skipArcFire;
   G.allArcFireResolved = allArcFireResolved;
+
+  // Dancer helpers
+  G.executeDancerChoice = executeDancerChoice;
+  G.allDancersDecided = allDancersDecided;
 
   // Deploy trap helpers
   G.finishDeployTraps = finishDeployTraps;

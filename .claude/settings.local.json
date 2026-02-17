@@ -29,7 +29,8 @@
       "Bash(powershell:*)",
       "Bash(Select-String -Pattern \"ignore\" -SimpleMatch)",
       "Bash(git log:*)",
-      "Bash(node -c:*)"
+      "Bash(node -c:*)",
+      "mcp__ide__getDiagnostics"
     ]
   }
 }

@@ -45,6 +45,9 @@ const Abilities = (() => {
     moveintoenemies: 'endOfActivation',
     glidermark:     'manual',  // deferred damage marker, resolved in endActivation()
     overwatch:      'endOfRound',
+    suppressed:     'manual',   // cleared when any teammate finishes activation
+    dodgy:          'endOfRound',
+    tumbler:        'endOfRound',
   };
 
   // ── Trigger Type Mapping ─────────────────────────────────────
@@ -432,6 +435,28 @@ const Abilities = (() => {
         }
         break;
 
+      case 'bonusdamageperterrain': {
+        // value format: "terrain,range" e.g. "forest,2"
+        if (!ctx.target || !isUnit(ctx.target)) break;
+        const parts = (value || '').split(',').map(s => s.trim().toLowerCase());
+        const terrainName = parts[0];
+        const radius = int(parts[1]) || 1;
+        let count = 0;
+        for (const h of Board.hexes) {
+          if (Board.hexDistance(ctx.target.q, ctx.target.r, h.q, h.r) > radius) continue;
+          const td = Game.state.terrain.get(`${h.q},${h.r}`);
+          if (td && td.surface && td.surface.toLowerCase() === terrainName) count++;
+        }
+        if (count > 0) {
+          Game.damageUnit(ctx.target, count, ctx.unit, 'ability');
+          const src = ctx.unit ? ctx.unit.name : 'Ability';
+          const player = ctx.unit ? ctx.unit.player : 0;
+          const killText = ctx.target.health <= 0 ? ' \u2620 KILLED' : '';
+          Game.log(`${src} deals ${count} bonus dmg (${count} ${terrainName} nearby) to ${ctx.target.name}${killText}`, player);
+        }
+        break;
+      }
+
       case 'armorreduce':
         for (const t of targets) {
           if (!isUnit(t)) continue;
@@ -442,6 +467,33 @@ const Abilities = (() => {
             const player = ctx.unit ? ctx.unit.player : 0;
             Game.log(`${src} reduces ${t.name}'s armor by ${prev - t.armor}`, player);
           }
+        }
+        break;
+
+      case 'swap':
+        if (ctx.unit && ctx.target && isUnit(ctx.target)) {
+          const uQ = ctx.unit.q, uR = ctx.unit.r;
+          ctx.unit.q = ctx.target.q; ctx.unit.r = ctx.target.r;
+          ctx.target.q = uQ; ctx.target.r = uR;
+          Game.onEnterHex(ctx.unit, ctx.unit.q, ctx.unit.r);
+          Game.onEnterHex(ctx.target, ctx.target.q, ctx.target.r);
+          Game.updateObjectiveControl(ctx.unit);
+          Game.updateObjectiveControl(ctx.target);
+          if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
+          const player = ctx.unit.player || 0;
+          Game.log(`${ctx.unit.name} swaps places with ${ctx.target.name}`, player);
+        }
+        break;
+
+      case 'heal':
+        for (const t of targets) {
+          if (!isUnit(t) || t.health <= 0) continue;
+          const amount = Math.min(int(value), t.maxHealth - t.health);
+          if (amount <= 0) continue;
+          t.health += amount;
+          const src = ctx.unit ? ctx.unit.name : 'Ability';
+          const player = ctx.unit ? ctx.unit.player : 0;
+          Game.log(`${src} heals ${t.name} for ${amount} (${t.health}/${t.maxHealth} HP)`, player);
         }
         break;
 
@@ -509,6 +561,22 @@ const Abilities = (() => {
         return ctx.target && compare(ctx.target.maxHealth, op, num);
       }
 
+      case 'distfromstart': {
+        const { op, num } = parseComparison(val);
+        const act = Game.state.activationState;
+        if (!act || !ctx.target) return false;
+        const dist = Board.hexDistance(act.startQ, act.startR, ctx.target.q, ctx.target.r);
+        return compare(dist, op, num);
+      }
+
+      case 'aliveallies': {
+        const { op, num } = parseComparison(val);
+        const unit = ctx.unit;
+        if (!unit) return false;
+        const count = Game.state.units.filter(u => u.health > 0 && u.player === unit.player).length;
+        return compare(count, op, num);
+      }
+
       default:
         return evaluateConditionLegacy(condStr, ctx);
     }
@@ -562,7 +630,19 @@ const Abilities = (() => {
       if (!rule || rule.type !== triggerType) continue;
       if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, ctx)) continue;
 
-      const targets = resolveTargets(rule.target, ctx, rule);
+      let targets = resolveTargets(rule.target, ctx, rule);
+      // Filter out invalidTargets (e.g. atkTarget to exclude primary attack target from AoE)
+      if (rule.invalidTargets && targets.length > 0) {
+        const invalidTags = rule.invalidTargets.toLowerCase().split(',').map(s => s.trim());
+        targets = targets.filter(t => {
+          for (const tag of invalidTags) {
+            if (tag === 'self' && t === ctx.unit) return false;
+            if ((tag === 'atktarget' || tag === 'target') && t === ctx.target) return false;
+            if (tag === 'attacker' && t === ctx.attacker) return false;
+          }
+          return true;
+        });
+      }
       for (const eff of rule.effects) {
         if (eff.effect) applyEffect(targets, eff.effect, eff.value, ctx);
       }
@@ -823,6 +903,91 @@ const Abilities = (() => {
         }
       }
     }
+    return false;
+  }
+
+  // ── Miss Check ─────────────────────────────────────────────
+
+  /** Pre-damage miss check: scan target's whenAttacked rules for 'miss' effect.
+   *  Respects once-per-game/round, silenced, and rule conditions.
+   *  Returns { abilityName, oncePerGame, oncePerRound } or null. */
+  function checkMiss(target, attacker) {
+    if (!target || !target.abilities) return null;
+
+    // Dodgy condition (Dancer choice) — one-time miss, consumed on use
+    // Checked before silenced gate: already-applied condition, not an ability activation
+    if (Game.hasCondition(target, 'dodgy')) {
+      Game.removeCondition(target, 'dodgy');
+      return { abilityName: 'Dodgy', oncePerGame: false, oncePerRound: false };
+    }
+
+    if (Game.hasCondition(target, 'silenced')) return null;
+
+    for (const ab of target.abilities) {
+      const relevant = ab.ruleIds.filter(id => {
+        const rule = atomicRules[id];
+        if (!rule || rule.type !== 'whenAttacked') return false;
+        return rule.effects.some(eff => eff.effect && eff.effect.toLowerCase() === 'miss');
+      });
+      if (relevant.length === 0) continue;
+
+      if (ab.oncePerGame && target.usedAbilities.has(ab.name)) continue;
+      if (ab.oncePerRound && target.usedAbilitiesThisRound && target.usedAbilitiesThisRound.has(ab.name)) continue;
+
+      // Evaluate conditions on each matching rule
+      let conditionsMet = false;
+      for (const ruleId of relevant) {
+        const rule = atomicRules[ruleId];
+        if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit: target, attacker })) continue;
+        conditionsMet = true;
+        break;
+      }
+      if (!conditionsMet) continue;
+
+      // Mark as used
+      if (ab.oncePerGame) target.usedAbilities.add(ab.name);
+      if (ab.oncePerRound) {
+        if (!target.usedAbilitiesThisRound) target.usedAbilitiesThisRound = new Set();
+        target.usedAbilitiesThisRound.add(ab.name);
+      }
+
+      return { abilityName: ab.name, oncePerGame: ab.oncePerGame || false, oncePerRound: ab.oncePerRound || false };
+    }
+    return null;
+  }
+
+  // ── Hidden Check ───────────────────────────────────────────
+
+  /** Check if a unit is Hidden (can only be targeted by adjacent enemies).
+   *  Sources: passive 'hidden' effect (terrain-conditional or always),
+   *  or concealing terrain (Mist). Negated by Revealing terrain. */
+  function isHidden(unit) {
+    if (!unit) return false;
+    // Revealed by Revealing terrain negates all hidden
+    if (unit.conditions?.some(c => c.id === 'vulnerable' && c.source === 'revealing')) return false;
+
+    // Concealing terrain (Mist) — works for any unit
+    const td = Game.state.terrain.get(`${unit.q},${unit.r}`);
+    const surface = td?.surface?.toLowerCase() || null;
+    if (surface) {
+      const info = Units.terrainRules[td.surface];
+      if (info && info.rules.includes('concealing')) return true;
+    }
+
+    // Passive hidden from abilities
+    const hiddenTerrains = getPassiveList(unit, 'hidden');
+    if (hiddenTerrains.length === 0) return false;
+    if (hiddenTerrains.includes('always')) return true;
+
+    if (hiddenTerrains.includes('nosurface')) {
+      if (!surface) {
+        const objKey = `${unit.q},${unit.r}`;
+        if (!Game.state.objectiveControl || !(objKey in Game.state.objectiveControl)) return true;
+      }
+    }
+    // Check if current surface matches any hidden terrain
+    if (surface && hiddenTerrains.includes(surface)) return true;
+
     return false;
   }
 
@@ -1463,6 +1628,8 @@ const Abilities = (() => {
     getPassiveMod,
     hasFlag,
     hasFlagPassive,
+    checkMiss,
+    isHidden,
     recalcAuras,
     hasDeployRule,
     getDeployTrapCount,

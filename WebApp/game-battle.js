@@ -11,10 +11,23 @@
     if (unit.activated) return null;
     if (unit.health <= 0) return null;
 
-    G.state.activationState = { unit, moved: false, attacked: false, moveDistance: 0, damagedEnemies: [] };
+    // Suppressed: cannot activate unless only unactivated unit on team
+    if (G.hasCondition(unit, 'suppressed')) {
+      const others = G.state.units.filter(u =>
+        u !== unit && u.player === unit.player && u.health > 0 && !u.activated && !G.hasCondition(u, 'suppressed')
+      );
+      if (others.length > 0) return null;
+    }
+
+    G.state.activationState = { unit, moved: false, attacked: false, moveDistance: 0, damagedEnemies: [], startQ: unit.q, startR: unit.r };
     G.state.actionHistory = [];
     G.state._logIndexAtSelect = G.state.combatLog.length;
     G.log(`${unit.name} activated`, unit.player);
+
+    // Tumbler: moving through enemies IS the attack — mark attacked
+    if (G.hasCondition(unit, 'tumbler')) {
+      G.state.activationState.attacked = true;
+    }
 
     // Resolve delayed effects from this unit's previous turn
     const pendingDE = G.state.delayedEffects.filter(de => de.unit === unit);
@@ -412,6 +425,11 @@
         );
         if (occupant) {
           Abilities.dispatchMovement(act.unit, occupant);
+          // Tumbler: deal 1 damage to each enemy moved through
+          if (G.hasCondition(act.unit, 'tumbler') && occupant.player !== act.unit.player) {
+            damageUnit(occupant, 1, act.unit, 'ability');
+            G.log(`${act.unit.name} tumbles through ${occupant.name}: 1 dmg${occupant.health <= 0 ? ' \u2620' : ''}`, act.unit.player);
+          }
         }
       }
       onEnterHex(act.unit, step.q, step.r);
@@ -558,6 +576,67 @@
     if (!target) return false;
     if (!canAttack(act.unit, target)) return false;
 
+    // ── Miss check: pre-damage ability interception ──
+    const missResult = typeof Abilities !== 'undefined' ? Abilities.checkMiss(target, act.unit) : null;
+    if (missResult) {
+      const prevAttackerHealth = act.unit.health;
+      act.attacked = true;
+      if (G.hasCondition(act.unit, 'dizzy')) act.moved = true;
+      if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'moveorfire')) act.moved = true;
+      G.clearConditions(act.unit, 'untilAttack');
+
+      // Burning self-damage still fires
+      const burningCount = act.unit.conditions.filter(c => c.id === 'burning').length;
+      if (burningCount > 0) {
+        if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'hotsuit')) {
+          act.pendingBurningRedirect = true;
+          if (burningCount > 1) damageUnit(act.unit, burningCount - 1, null, 'burning');
+        } else {
+          damageUnit(act.unit, burningCount, null, 'burning');
+        }
+      }
+
+      // Overwatch still triggers (attacker committed to an attack)
+      for (const w of G.state.units) {
+        if (w.health <= 0 || w.player === act.unit.player) continue;
+        if (w === target) continue;
+        if (!G.hasCondition(w, 'overwatch')) continue;
+        if (canAttack(w, act.unit)) {
+          damageUnit(act.unit, 1, w, 'ability');
+          G.log(`${w.name} Overwatch: 1 dmg to ${act.unit.name}${act.unit.health <= 0 ? ' \u2620' : ''}`, w.player);
+        }
+      }
+
+      G.state.actionHistory.push({
+        type: 'attack', target, missed: true, prevAttackerHealth,
+        missAbilityName: missResult.abilityName,
+        missOncePerGame: missResult.oncePerGame,
+        missOncePerRound: missResult.oncePerRound,
+        tossData: tossData || null,
+      });
+      G.log(`${act.unit.name} attacks ${target.name} \u2014 MISS! (${missResult.abilityName})`, act.unit.player);
+      if (burningCount > 0 && !act.pendingBurningRedirect && prevAttackerHealth !== act.unit.health) {
+        G.log(`${act.unit.name} takes ${burningCount} burning self-damage (${act.unit.health}/${act.unit.maxHealth} HP)`, act.unit.player);
+      }
+
+      // Impactful sequencing
+      const isImpactAttacker = typeof Abilities !== 'undefined'
+        && Abilities.hasFlagPassive(act.unit, 'moveintoenemies');
+      if (isImpactAttacker && act.impactPushed) {
+        act.impactAttackedAfterPush = true;
+        act.moved = true;
+        if (!G.state.rules.confirmEndTurn) {
+          if (!act.pendingBurningRedirect) endActivation();
+        }
+        return true;
+      }
+
+      if (act.moved && act.attacked && !G.state.rules.confirmEndTurn) {
+        if (!act.pendingBurningRedirect) endActivation();
+      }
+      return true;
+    }
+
     // Deal damage using effective stats (conditions applied)
     const prevHealth = target.health;
     const prevAttackerHealth = act.unit.health;
@@ -618,7 +697,7 @@
         Abilities.dispatch('whenAttacked', { unit: target, attacker: act.unit, damage: dmg });
       }
       if (target.health <= 0) {
-        Abilities.dispatch('afterDeath', { unit: target, killer: act.unit });
+        Abilities.dispatch('afterDeath', { unit: target, killer: act.unit, attacker: act.unit });
       }
     }
 
@@ -742,6 +821,12 @@
     if (act) {
       act.unit.activated = true;
       G.clearConditions(act.unit, 'endOfActivation');
+      // Clear suppressed from all teammates — the "skip turn" has been served
+      for (const u of G.state.units) {
+        if (u.player === act.unit.player && u.health > 0) {
+          u.conditions = u.conditions.filter(c => c.id !== 'suppressed');
+        }
+      }
     }
 
     // Snapshot committed log entries for summary (exclude "activated" messages)
@@ -802,11 +887,9 @@
     const dist = Board.hexDistance(attacker.q, attacker.r, target.q, target.r);
     if (dist > atkRange) return false;
 
-    // Hidden: units in concealing terrain require adjacent attacker
-    // (negated by revealing-sourced vulnerable)
-    if (hasTerrainRule(target.q, target.r, 'concealing') && dist > 1) {
-      const revealed = target.conditions?.some(c => c.id === 'vulnerable' && c.source === 'revealing');
-      if (!revealed) return false;
+    // Hidden: concealing terrain OR passive hidden ability — require adjacent attacker
+    if (typeof Abilities !== 'undefined' && Abilities.isHidden(target) && dist > 1) {
+      return false;
     }
 
     // Line of Sight (all attack types)
@@ -1162,6 +1245,19 @@
       G.state.terrain.set(`${last.fromQ},${last.fromR}`, { surface: last.surface, player: last.prevPlayer });
       if (last.abilityName) last.unit.usedAbilities.delete(last.abilityName);
     } else if (last.type === 'attack') {
+      // Missed attack undo: no target health to restore
+      if (last.missed) {
+        if (last.prevAttackerHealth !== undefined) act.unit.health = last.prevAttackerHealth;
+        act.attacked = false;
+        if (G.hasCondition(act.unit, 'dizzy')) act.moved = false;
+        if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'moveorfire')) act.moved = false;
+        // Restore miss ability charge on the target
+        if (last.missOncePerGame && last.target) last.target.usedAbilities.delete(last.missAbilityName);
+        if (last.missOncePerRound && last.target && last.target.usedAbilitiesThisRound) {
+          last.target.usedAbilitiesThisRound.delete(last.missAbilityName);
+        }
+        return true;
+      }
       // Delayed attack undo: remove from delayedEffects
       if (last.delayed) {
         const idx = G.state.delayedEffects.findIndex(

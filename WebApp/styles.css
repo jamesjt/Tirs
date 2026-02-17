@@ -593,6 +593,92 @@ canvas {
   padding: 2px 0;
 }
 
+/* ── Dancer poise choice ───────────────────────────────────── */
+
+.dancer-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.dancer-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.dancer-name.p1 { color: #2A9D8F; }
+.dancer-name.p2 { color: #D4872C; }
+
+.dancer-subtitle {
+  font-size: 10px;
+  color: rgba(255,255,255,0.4);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.dancer-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dancer-choice {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 4px;
+  background: rgba(255,255,255,0.04);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.dancer-choice:hover:not(.used) {
+  background: rgba(255,215,0,0.1);
+  border-color: rgba(255,215,0,0.45);
+}
+
+.dancer-choice:active:not(.used) {
+  background: rgba(255,215,0,0.18);
+}
+
+.dancer-choice.used {
+  opacity: 0.25;
+  cursor: default;
+  pointer-events: none;
+}
+
+.dancer-icon {
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+}
+
+.dancer-icon img {
+  width: 14px;
+  height: 14px;
+  vertical-align: middle;
+  filter: brightness(1.2);
+}
+
+.dancer-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e0e0e0;
+  white-space: nowrap;
+}
+
+.dancer-desc {
+  font-size: 10px;
+  color: rgba(255,255,255,0.35);
+  margin-left: auto;
+}
+
 /* ── Crystal scoring animation ─────────────────────────────── */
 
 .crystal-anim img {

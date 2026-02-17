@@ -103,6 +103,9 @@ const UI = (() => {
     break:       '\u2B07',  // ⬇ armor stripped
     arcfire:      '\u2316',  // ⌖ crosshair/target (flame seed)
     overwatch:    '\u{1F441}',  // 👁 eye (overwatch mode)
+    suppressed:   '\u{1F6AB}',  // 🚫 no entry (cannot activate)
+    dodgy:        '\u{1F938}',  // 🤸 cartwheeling (dodge)
+    tumbler:      '\u{1F483}',  // 💃 dancer (tumble through enemies)
   };
 
   // Conditions rendered as board overlay (not as token badge)
@@ -1848,6 +1851,40 @@ const UI = (() => {
       }
       if (Game.allArcFireResolved()) {
         // Auto-advance when all arc fire resolved
+        setTimeout(() => { Game.advanceRoundStep(); showPhase(); render(); }, 300);
+      }
+    } else if (step.id === 'dancer') {
+      const { dancers, currentIndex } = step.data;
+      const choiceData = [
+        { id: 'damage',  icon: '\u2694',  label: '+1 Damage',  desc: 'Strengthened' },
+        { id: 'move',    icon: '<img src="../nandeck/images/icons/LightningCharge.png">', label: '+2 Move', desc: 'Move bonus' },
+        { id: 'dodgy',   icon: '\u2727',  label: 'Dodgy',      desc: 'Dodge one attack' },
+        { id: 'tumbler', icon: '\u21AF',  label: 'Tumbler',    desc: 'Charge through enemies' },
+      ];
+      const choiceLabels = {};
+      for (const c of choiceData) choiceLabels[c.id] = c.label;
+
+      for (let i = 0; i < currentIndex; i++) {
+        html += `<p class="step-done">${dancers[i].unit.name}: ${choiceLabels[dancers[i].chosen]}</p>`;
+      }
+      if (currentIndex < dancers.length) {
+        const d = dancers[currentIndex];
+        html += `<div class="dancer-header">`;
+        html += `<span class="dancer-subtitle">Dancer Poise</span>`;
+        html += `<span class="dancer-name p${d.unit.player}">${d.unit.name}</span>`;
+        html += `</div>`;
+        html += `<div class="dancer-grid">`;
+        for (const ch of choiceData) {
+          const used = d.unit.dancerUsed.has(ch.id);
+          html += `<div class="dancer-choice${used ? ' used' : ''}" data-action="dancer-choice" data-choice="${ch.id}">`;
+          html += `<span class="dancer-icon">${ch.icon}</span>`;
+          html += `<span class="dancer-label">${ch.label}</span>`;
+          html += `<span class="dancer-desc">${ch.desc}</span>`;
+          html += `</div>`;
+        }
+        html += `</div>`;
+      }
+      if (Game.allDancersDecided()) {
         setTimeout(() => { Game.advanceRoundStep(); showPhase(); render(); }, 300);
       }
     } else {
@@ -3656,6 +3693,14 @@ const UI = (() => {
       render();
     }
 
+    else if (action === 'dancer-choice') {
+      if (btn.classList.contains('used')) return;
+      Game.executeDancerChoice(btn.dataset.choice);
+      netSend({ type: 'executeDancerChoice', choice: btn.dataset.choice });
+      showPhase();
+      render();
+    }
+
     else if (action === 'shift-ride' || action === 'shift-stay') {
       const index = parseInt(btn.dataset.index);
       const rides = action === 'shift-ride';
@@ -5213,6 +5258,9 @@ const UI = (() => {
       }
       case 'skipArcFire':
         Game.skipArcFire();
+        showPhase(); render(); break;
+      case 'executeDancerChoice':
+        Game.executeDancerChoice(data.choice);
         showPhase(); render(); break;
       case 'resolveBurningRedirect':
         Game.resolveBurningRedirect(data.q, data.r);
