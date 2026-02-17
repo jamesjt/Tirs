@@ -185,6 +185,7 @@ const UI = (() => {
     if (targeting.validTargets) {
       // ── Tag-based targeting path ──
       const targets = Abilities.computeActionTargets(unit, targeting);
+      console.log('[abilityTargeting] tag-based:', abilityName, 'targets found:', targets.length, targets);
       if (targets.length === 0) {
         // No valid targets — don't enter targeting mode
         return;
@@ -3454,6 +3455,7 @@ const UI = (() => {
       } else {
         // Generic targeting (tag-based or legacy enemy targeting)
         const targeting = typeof Abilities !== 'undefined' && Abilities.getTargeting(abilityName, actionRuleId);
+        console.log('[use-ability]', abilityName, 'ruleId:', actionRuleId, 'targeting:', targeting);
         if (targeting) {
           enterAbilityTargeting(abilityName, act.unit, targeting, actionCost, actionRuleId);
           return;

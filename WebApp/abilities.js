@@ -90,7 +90,7 @@ const Abilities = (() => {
   // ── Target Resolution ────────────────────────────────────────
 
   function resolveTargets(targetType, ctx, rule) {
-    if (!targetType) return [];
+    if (!targetType) return ctx.target ? [ctx.target] : (ctx.unit ? [ctx.unit] : []);
     switch (targetType.toLowerCase()) {
       case 'atktarget':
         return ctx.target ? [ctx.target] : [];
@@ -980,6 +980,7 @@ const Abilities = (() => {
     for (const ruleId of def.ruleIds) {
       if (actionRuleId && ruleId !== actionRuleId) continue;
       const rule = atomicRules[ruleId];
+      console.log('[getTargeting]', abilityName, 'ruleId:', ruleId, 'rule:', rule ? { type: rule.type, range: rule.range, validTargets: rule.validTargets, effects: rule.effects } : null);
       if (rule && rule.type === 'action') {
         // Tag-based targeting path: validTargets present
         if (rule.validTargets) {
@@ -1096,7 +1097,7 @@ const Abilities = (() => {
         targetRef = livingUnit;
       }
 
-      if (terrain) {
+      if (terrain && terrain.surface) {
         hexTags.push('terrain');
         const surface = terrain.surface.toLowerCase();
         hexTags.push(surface);              // bare tag (surface name)

@@ -213,7 +213,7 @@ const Units = (() => {
       rules[ruleName] = {
         type,
         ruleName,
-        target: col(row, ['target']).trim(),
+        target: col(row, ['target']).trim() || col(row, ['validtargets', 'valid targets']).trim(),
         effects,
         condition: col(row, ['condition']).trim() || null,
         stat: col(row, ['stat']).trim() || null,
