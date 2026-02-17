@@ -419,7 +419,7 @@
         }
         return {
           id: 'arcfire-resolve',
-          label: 'Arc Fire spreads',
+          label: 'Arc Fire jumps',
           auto: bearers.length === 0,
           data: { bearers, currentIndex: 0 },
         };
@@ -653,7 +653,7 @@
     const bearer = bearers[currentIndex].unit;
     const valid = new Map();
     for (const u of G.state.units) {
-      if (u.health <= 0) continue;
+      if (u.health <= 0 || u === bearer) continue;
       if (Board.hexDistance(bearer.q, bearer.r, u.q, u.r) <= 2) {
         valid.set(`${u.q},${u.r}`, u);
       }
@@ -680,8 +680,8 @@
 
     // If different unit, deal 1 damage to both
     if (targetUnit !== oldBearer) {
-      G.damageUnit(oldBearer, 1, 'Arc Fire', 'arcfire');
-      G.damageUnit(targetUnit, 1, 'Arc Fire', 'arcfire');
+      G.damageUnit(oldBearer, 1, player, 'arcfire');
+      G.damageUnit(targetUnit, 1, player, 'arcfire');
       const killOld = oldBearer.health <= 0 ? ' \u2620' : '';
       const killNew = targetUnit.health <= 0 ? ' \u2620' : '';
       G.log(`Arc Fire jumps from ${oldBearer.name}${killOld} to ${targetUnit.name}${killNew} (1 dmg each)`, player);

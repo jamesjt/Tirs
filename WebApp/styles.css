@@ -333,6 +333,67 @@ canvas {
   border-color: rgba(255,255,255,0.4);
 }
 
+/* ── HUD Activation Row ───────────────────────────────────────── */
+
+.hud-activation {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+  padding: 2px 0;
+}
+
+.hud-unit-name {
+  font-weight: 700;
+  font-size: 12px;
+  color: #fff;
+}
+
+.hud-status-icon {
+  font-size: 14px;
+  transition: opacity 0.2s;
+}
+
+.hud-status-icon.used {
+  text-decoration: line-through;
+  opacity: 0.3;
+}
+
+.hud-activation .btn-ability,
+.hud-activation .btn-action {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.hud-activation .btn-ability {
+  background: rgba(80, 40, 120, 0.7);
+  border: 1px solid rgba(180, 120, 255, 0.5);
+  color: #e8d8ff;
+}
+
+.hud-activation .btn-ability:hover {
+  background: rgba(120, 60, 180, 0.8);
+}
+
+.hud-activation .btn-action {
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: #ccc;
+}
+
+.hud-activation .btn-action:hover {
+  background: rgba(255,255,255,0.2);
+}
+
+.hud-activation .ability-prompt {
+  font-size: 11px;
+  color: #ccc;
+}
+
 /* ── Game log (collapsible below battle HUD) ─────────────────── */
 
 .game-log {
@@ -504,28 +565,32 @@ canvas {
   text-align: center;
 }
 
-/* ── Round phase panel ────────────────────────────────────────── */
+/* ── Round phase panel (inside hud-wrapper, below battle-hud) ── */
 
-#panel-round { width: 320px; }
+#panel-round {
+  background: rgba(20, 20, 40, 0.92);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 0 0 8px 8px;
+  border-top: none;
+  padding: 8px 16px;
+  text-align: center;
+  min-width: 280px;
+  backdrop-filter: blur(8px);
+}
+
+#panel-round .btn { margin: 4px; }
 
 .step-done {
   color: #6a6;
   font-size: 12px;
-  padding: 3px 0;
+  padding: 2px 0;
 }
 .step-done::before { content: '\2713 '; }
-
-.step-current {
-  background: rgba(255,255,255,0.06);
-  border-radius: 6px;
-  padding: 10px;
-  margin: 6px 0;
-}
 
 .step-pending {
   color: #666;
   font-size: 12px;
-  padding: 3px 0;
+  padding: 2px 0;
 }
 
 /* ── Crystal scoring animation ─────────────────────────────── */
@@ -619,6 +684,8 @@ canvas {
 .cond-icon { position: relative; }
 
 .cond-strengthened { background: #ff6600; }
+.cond-leveled      { background: #cc8800; }
+.cond-movebonus    { background: #00bbcc; }
 .cond-empowered    { background: #ff3300; }
 .cond-weakness     { background: #8844aa; }
 .cond-vulnerable   { background: #cc0000; }

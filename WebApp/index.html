@@ -63,6 +63,7 @@
       <div id="hud-center">
         <div id="hud-round"></div>
         <div id="hud-turn"></div>
+        <div id="hud-activation" class="hud-activation hidden"></div>
         <button class="btn btn-hud-end" id="hud-end-turn" data-action="end-activation">End Turn</button>
       </div>
       <div id="hud-p2" class="hud-score">
@@ -70,6 +71,9 @@
         <span class="hud-pts" id="hud-pts-2">0</span>
       </div>
     </div>
+
+    <!-- Round phase steps — below HUD during round start/end -->
+    <div id="panel-round" class="round-panel hidden"></div>
 
     <!-- Game log — sits directly below battle HUD, opens downward -->
     <div id="game-log" class="game-log collapsed">
@@ -94,7 +98,7 @@
   <div id="panel-deploy-p1" class="phase-panel side-panel side-left hidden"></div>
   <div id="panel-deploy-p2" class="phase-panel side-panel side-right hidden"></div>
   <div id="panel-battle" class="phase-panel side-panel hidden"></div>
-  <div id="panel-round" class="phase-panel center-panel hidden"></div>
+  <!-- panel-round moved into hud-wrapper below -->
   <div id="panel-gameover" class="phase-panel center-panel hidden"></div>
 
   <!-- Terrain hover tooltip -->

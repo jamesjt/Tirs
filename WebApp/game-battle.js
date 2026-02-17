@@ -11,7 +11,7 @@
     if (unit.activated) return null;
     if (unit.health <= 0) return null;
 
-    G.state.activationState = { unit, moved: false, attacked: false, moveDistance: 0 };
+    G.state.activationState = { unit, moved: false, attacked: false, moveDistance: 0, damagedEnemies: [] };
     G.state.actionHistory = [];
     G.state._logIndexAtSelect = G.state.combatLog.length;
     G.log(`${unit.name} activated`, unit.player);
@@ -35,6 +35,7 @@
       }
       // Always dispatch afterAttack — Piercing damages units on the line even if target hex is empty
       if (typeof Abilities !== 'undefined') {
+        Abilities.clearEffectQueue();
         // Temporarily set attackPath for Piercing + Path resolution
         if (de.attackPath) G.state.activationState.attackPath = de.attackPath;
         const dispatchTarget = target || { q: de.targetQ, r: de.targetR };
@@ -101,11 +102,12 @@
       && Abilities.hasFlagPassive(act.unit, 'moveintoenemies');
     const canMoveIntoEnemies = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'moveintoenemies');
 
+    const effectiveMove = G.getEffective(act.unit, 'move');
     if (isMobile) {
-      if (act.unit.move - act.moveDistance <= 0) return null;
+      if (effectiveMove - act.moveDistance <= 0) return null;
     } else if (isImpactful) {
       if (act.moved) return null;                         // normal move already done
-      if (act.unit.move - act.moveDistance <= 0) return null; // budget exhausted by push-moves
+      if (effectiveMove - act.moveDistance <= 0) return null; // budget exhausted by push-moves
     } else {
       if (act.moved) return null;
     }
@@ -144,7 +146,7 @@
       }
     }
 
-    const range = (isMobile || isImpactful) ? (u.move - act.moveDistance) : u.move;
+    const range = (isMobile || isImpactful) ? (effectiveMove - act.moveDistance) : effectiveMove;
     function moveCost(fromQ, fromR, toQ, toR) {
       if (hasTerrainRule(toQ, toR, 'flow')) {
         const td = G.state.terrain.get(`${toQ},${toR}`);
@@ -208,7 +210,8 @@
     const isMobile = typeof Abilities !== 'undefined' && Abilities.hasFlag(u, 'mobile');
     const isImpactful = typeof Abilities !== 'undefined'
       && Abilities.hasFlagPassive(u, 'moveintoenemies');
-    const range = (isMobile || isImpactful) ? (u.move - act.moveDistance) : u.move;
+    const em = G.getEffective(u, 'move');
+    const range = (isMobile || isImpactful) ? (em - act.moveDistance) : em;
 
     return { blocked, moveCost, range, unit: u, enemyOccupied };
   }
@@ -252,7 +255,7 @@
 
       // If none attackable from here, check from all reachable hexes (move+attack)
       if (tauntKeys.size === 0 && !act.moved) {
-        const reachable = Board.getReachableHexes(u.q, u.r, u.move, blocked);
+        const reachable = Board.getReachableHexes(u.q, u.r, G.getEffective(u, 'move'), blocked);
         reachable.set(`${u.q},${u.r}`, 0);
         for (const [hexKey] of reachable) {
           const [hq, hr] = hexKey.split(',').map(Number);
@@ -312,7 +315,7 @@
 
     if (isMobile) {
       act.moveDistance += stepDistance;
-      if (act.moveDistance >= act.unit.move) act.moved = true;
+      if (act.moveDistance >= G.getEffective(act.unit, 'move')) act.moved = true;
     } else if (isImpactful) {
       act.moveDistance += stepDistance;
       act.moved = true;  // normal move = final move for Impactful (can't move again)
@@ -551,6 +554,11 @@
     const dmg = Math.max(1, atkDmg - defArm);
     target.health -= dmg;
 
+    // Track damaged enemies for endActivation abilities (Guiding Gale)
+    if (target.player !== act.unit.player && !act.damagedEnemies.includes(target)) {
+      act.damagedEnemies.push(target);
+    }
+
     act.attacked = true;
 
     // Dizzy: attacking locks out moving
@@ -588,6 +596,7 @@
 
     // Ability dispatch: afterAttack + afterDeath + whenAttacked
     if (typeof Abilities !== 'undefined') {
+      Abilities.clearEffectQueue();
       Abilities.dispatch('afterAttack', { unit: act.unit, target, damage: dmg, damagedUnits: [target] });
       if (target.health > 0) {
         Abilities.dispatch('whenAttacked', { unit: target, attacker: act.unit, damage: dmg });
@@ -650,17 +659,19 @@
       else if (!act.attacked) act.attacked = true;
     }
 
+    // Auto-end: used by net handler (remote play completes immediately)
     if (act.moved && act.attacked) {
-      if (typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) {
-        endActivation();
-      }
+      const pending = endActivation();
+      if (pending) completeEndActivation();
     }
     return true;
   }
 
   function endActivation() {
     const act = G.state.activationState;
-    if (act) {
+    if (act && !act._endActStarted) {
+      act._endActStarted = true;
+
       // Crystal capture (before poison — dying unit still captures)
       if (G.state.rules.crystalCapture === 'activationEnd') {
         captureObjective(act.unit);
@@ -688,9 +699,19 @@
       }
       // End-of-activation ability dispatch (e.g. Guiding Gale)
       if (typeof Abilities !== 'undefined') {
-        Abilities.dispatch('endActivation', { unit: act.unit });
+        const hasPending = Abilities.dispatch('endActivation', { unit: act.unit });
+        if (hasPending) return true; // UI handles effects, then calls completeEndActivation()
       }
+    }
 
+    completeEndActivation();
+    return false;
+  }
+
+  /** Phase 2 of endActivation: finalize state after any deferred effects resolve. */
+  function completeEndActivation() {
+    const act = G.state.activationState;
+    if (act) {
       act.unit.activated = true;
       G.clearConditions(act.unit, 'endOfActivation');
     }
@@ -729,8 +750,7 @@
     if (!act) return false;
     act.moved = true;
     act.attacked = true;
-    endActivation();
-    return true;
+    return endActivation();
   }
 
   /** Calculated: pass turn without activating a unit (once per round). */
@@ -1095,9 +1115,9 @@
       } else {
         G.state.terrain.delete(`${last.hexQ},${last.hexR}`);
       }
-      // Remove permanent strengthened from Level
+      // Remove leveled condition from Level
       const cIdx2 = last.unit.conditions.findIndex(
-        c => c.id === 'strengthened' && c.source === 'Level'
+        c => c.id === 'leveled' && c.source === 'Level'
       );
       if (cIdx2 !== -1) last.unit.conditions.splice(cIdx2, 1);
       // Un-mark ability as used
@@ -1383,7 +1403,7 @@
     // Gain permanent Strengthened: +1 per unit hit
     if (u.health > 0 && damagedUnits.length > 0) {
       for (let i = 0; i < damagedUnits.length; i++) {
-        G.addCondition(u, 'strengthened', 'permanent', 'Zoom');
+        G.addCondition(u, 'strengthened', 'untilAttack', 'Zoom');
       }
     }
 
@@ -1437,7 +1457,7 @@
     if (act.impactAttackedAfterPush) return null;
 
     // Budget check
-    const remaining = u.move - act.moveDistance;
+    const remaining = G.getEffective(u, 'move') - act.moveDistance;
     if (remaining <= 0) return null;
 
     // Find enemy at target
@@ -1587,7 +1607,7 @@
 
     G.log(`${u.name} pushes ${data.enemy.name} and moves to (${u.q},${u.r})`, u.player);
 
-    // 6. Auto-end check (both actions used and no pending effects)
+    // Auto-end check (both actions used and no pending effects)
     if (act.moved && act.attacked && !G.state.rules.confirmEndTurn) {
       const hasPending = typeof Abilities !== 'undefined' && Abilities.hasPendingEffects();
       if (!hasPending) endActivation();
@@ -1666,6 +1686,18 @@
     if (Board.OBJECTIVES.some(o => o.q === q && o.r === r)) return false;
     G.state.terrain.set(`${q},${r}`, { surface, player: player || 0 });
     if (G.state.phase === G.PHASE.BATTLE) G.state.terrainChangedThisRound.add(`${q},${r}`);
+    // Dangerous terrain placed on an occupied hex deals damage immediately
+    if (hasTerrainRule(q, r, 'dangerous')) {
+      const unit = G.state.units.find(u => u.q === q && u.r === r && u.health > 0);
+      if (unit) {
+        const ignores = typeof Abilities !== 'undefined'
+          ? (rule) => Abilities.ignoresTerrainRule(unit, rule, q, r) : () => false;
+        if (!ignores('dangerous')) {
+          damageUnit(unit, 1, null, surface === 'cinder' ? 'terrain-cinder' : 'terrain');
+          G.log(`${unit.name} takes 1 terrain damage (${unit.health}/${unit.maxHealth} HP)`, unit.player);
+        }
+      }
+    }
     return true;
   }
 
@@ -1677,8 +1709,9 @@
     const neighbors = Board.getNeighbors(unit.q, unit.r);
     for (const n of neighbors) {
       const key = `${n.q},${n.r}`;
-      // Can't place on existing trap
+      // Can't place on existing trap or enemy-occupied hex
       if (G.state.traps.has(key)) continue;
+      if (G.state.units.some(u => u.q === n.q && u.r === n.r && u.health > 0 && u.player !== unit.player)) continue;
       hexes.set(key, 1);
     }
     return hexes;
@@ -1901,7 +1934,7 @@
     placeTerrain(hexQ, hexR, newSurface, unit.player);
 
     // Permanent +1 damage
-    G.addCondition(unit, 'strengthened', 'permanent', 'Level');
+    G.addCondition(unit, 'leveled', 'permanent', 'Level');
 
     const oldName = prevSurface
       ? ((Units.terrainRules[prevSurface] || {}).displayName || prevSurface) : 'empty';
@@ -1964,9 +1997,10 @@
     // Triggers even at 0 actual damage (Protective Gear + ally/cinder still refreshes)
     if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'firecharged')) {
       const isCinder = sourceType === 'terrain-cinder';
+      const isArcfire = sourceType === 'arcfire' && source === unit.player;
       const isAllyAbility = sourceType === 'ability' && source &&
                             typeof source === 'object' && source.player === unit.player;
-      if (isCinder || isAllyAbility) {
+      if (isCinder || isArcfire || isAllyAbility) {
         if (G.hasCondition(unit, 'empowered')) {
           G.log(`Fire Charged blocked — ${unit.name} is empowered`, unit.player);
         } else {
@@ -2192,6 +2226,7 @@
   G.attackUnit = attackUnit;
   G.skipAction = skipAction;
   G.endActivation = endActivation;
+  G.completeEndActivation = completeEndActivation;
   G.removeBurning = removeBurning;
   G.forceEndActivation = forceEndActivation;
   G.passTurn = passTurn;

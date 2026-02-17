@@ -92,14 +92,16 @@ const UI = (() => {
     vulnerable:   '\u2666',  // ♦ diamond (exposed)
     protected:    '\u25C6',  // ◆ solid diamond (shielded)
     poisoned:     '\u2620',  // ☠ skull
-    burning:      '\u2668',  // ♨ hot/fire
+    burning:      '\uD83D\uDD25',  // 🔥 fire
     immobilized:  '<svg viewBox="0 0 20 20" width="1em" height="1em" style="vertical-align:middle;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round"><polygon points="10,1 17.8,5.5 17.8,14.5 10,19 2.2,14.5 2.2,5.5" /><line x1="5" y1="5" x2="15" y2="15"/><line x1="15" y1="5" x2="5" y2="15"/></svg>',  // hex with X
     dizzy:        '\u2726',  // ✦ 4-point star
     silenced:     '\u2715',  // ✕ X mark
     disarmed:     '\u2297',  // ⊗ circled X
     taunted:      '\u25CE',  // ◎ bullseye
+    leveled:      '\u2B06',  // ⬆ leveled up
+    movebonus:    '\u2B21',  // ⬡ hex (move bonus)
     break:       '\u2B07',  // ⬇ armor stripped
-    arcfire:      '\uD83D\uDD25',  // 🔥 fire
+    arcfire:      '\u2316',  // ⌖ crosshair/target (flame seed)
   };
 
   // Conditions rendered as board overlay (not as token badge)
@@ -161,6 +163,7 @@ const UI = (() => {
     abilityTargeting = null;
     relocateTargeting = null;
     effectTargeting = null;
+    endActTargeting = null;
     tossTargeting = null;
     teleportTargeting = null;
     pushMoveTargeting = null;
@@ -180,6 +183,7 @@ const UI = (() => {
   // ── Ability Targeting Mode ──────────────────────────────────
   let abilityTargeting = null;  // { abilityName, unit, validTargets, actionCost, targetList? }
   let relocateTargeting = null; // { unit, range, reachable, parentMap, abilityName, actionCost, sourceUnit }
+  let endActTargeting = null;   // { targets: [{ type, key, q, r, unit }] }
 
   function enterAbilityTargeting(abilityName, unit, targeting, actionCost, actionRuleId) {
     if (targeting.validTargets) {
@@ -267,6 +271,119 @@ const UI = (() => {
     render();
   }
 
+  /** Try to end activation; if endActivation deferred effects, handle them first. */
+  function tryEndActivation() {
+    const act = Game.state.activationState;
+
+    // If endActivation() already ran inside a game function (e.g. attackUnit),
+    // _endActStarted is set. Don't call endActivation() again — just handle pending effects.
+    if (act && act._endActStarted) {
+      // Remote play: complete immediately (no interactive targeting on opponent's side)
+      if (typeof Net !== 'undefined' && Net.isOnline() && !Net.isMyTurn()) {
+        if (typeof Abilities !== 'undefined') { Abilities.clearPendingEndAct(); Abilities.clearEffectQueue(); }
+        Game.completeEndActivation();
+        resetUiState(); showPhase(); render();
+        return;
+      }
+      if (typeof Abilities !== 'undefined' && Abilities.getPendingEndActTarget()) {
+        enterEndActTargeting();
+        return;
+      }
+      if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+        processEndActEffects();
+        return;
+      }
+      // No pending effects — complete the activation
+      Game.completeEndActivation();
+      resetUiState(); showPhase(); render();
+      return;
+    }
+
+    // Normal path: endActivation hasn't run yet
+    const hasPending = Game.endActivation();
+
+    // Remote play: complete immediately
+    if (typeof Net !== 'undefined' && Net.isOnline() && !Net.isMyTurn()) {
+      if (hasPending) Game.completeEndActivation();
+      resetUiState();
+      showPhase();
+      render();
+      return;
+    }
+
+    if (!hasPending) {
+      resetUiState();
+      showPhase();
+      render();
+      return;
+    }
+
+    // EndActivation needs interactive target selection (e.g. Guiding Gale)
+    if (typeof Abilities !== 'undefined' && Abilities.getPendingEndActTarget()) {
+      enterEndActTargeting();
+      return;
+    }
+
+    // EndActivation queued direct effects (push/pull/relocate)
+    if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+      processEndActEffects();
+      return;
+    }
+
+    resetUiState();
+    showPhase();
+    render();
+  }
+
+  /** Enter targeting mode for endActivation abilities (player picks a unit). */
+  function enterEndActTargeting() {
+    const act = Game.state.activationState;
+    if (!act) return;
+    const targets = Abilities.computeEndActTargets(act.unit);
+    if (targets.length === 0) {
+      // No valid targets — skip ability, finish turn
+      Abilities.clearPendingEndAct();
+      Game.completeEndActivation();
+      resetUiState();
+      showPhase();
+      render();
+      return;
+    }
+    // Show valid targets as highlights
+    const highlights = new Map();
+    for (const t of targets) highlights.set(t.key, 1);
+    uiState.highlights = highlights;
+    uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
+    uiState.selectedUnit = act.unit;
+    endActTargeting = { targets };
+    showPhase();
+    render();
+  }
+
+  /** Process queued effects from endActivation (after target selection or direct). */
+  function processEndActEffects() {
+    if (Abilities.hasPendingEffects()) {
+      const pending = Abilities.peekEffect();
+      if (pending && pending.type === 'relocate') {
+        Abilities.skipEffect();
+        enterRelocateTargeting(pending.unit, pending.range,
+          null, null, pending.sourceUnit);
+        showPhase();
+        render();
+        return;
+      }
+      enterEffectTargeting();
+      showPhase();
+      render();
+      return;
+    }
+    // No effects — finish turn
+    Game.completeEndActivation();
+    resetUiState();
+    showPhase();
+    render();
+  }
+
   /** Finish relocate: set action cost flags, push history, refresh UI. */
   function finishRelocate(abilityName, actionCost, sourceUnit) {
     const s = Game.state;
@@ -278,12 +395,18 @@ const UI = (() => {
     relocateTargeting = null;
     if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
 
-    // Auto-end activation if both actions consumed
-    if (act && act.moved && act.attacked && !s.rules.confirmEndTurn) {
-      Game.endActivation();
+    // Deferred end-of-activation relocate (no actionCost): finish the turn
+    if (!actionCost && act && act.moved && act.attacked) {
+      Game.completeEndActivation();
       resetUiState();
       showPhase();
       render();
+      return;
+    }
+
+    // Auto-end activation if both actions consumed
+    if (act && act.moved && act.attacked && !s.rules.confirmEndTurn) {
+      tryEndActivation();
       return;
     }
 
@@ -294,9 +417,20 @@ const UI = (() => {
   }
 
   function cancelAbilityTargeting() {
+    const wasEndOfAct = relocateTargeting && !relocateTargeting.actionCost;
     abilityTargeting = null;
     relocateTargeting = null;
-    if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
+    endActTargeting = null;
+    if (typeof Abilities !== 'undefined') { Abilities.clearEffectQueue(); Abilities.clearPendingEndAct(); }
+    // If cancelling a deferred end-of-activation effect, finish the turn
+    const act = Game.state.activationState;
+    if (wasEndOfAct && act && act.moved && act.attacked) {
+      Game.completeEndActivation();
+      resetUiState();
+      showPhase();
+      render();
+      return;
+    }
     showActivationHighlights();
     showPhase();
     render();
@@ -376,6 +510,15 @@ const UI = (() => {
     if (!validHexes || validHexes.size === 0) {
       Abilities.skipEffect();
       enterEffectTargeting(); // try next effect in queue
+      return;
+    }
+
+    // Auto-resolve create effects with a single valid hex (already chosen during targeting)
+    if (eff.type === 'create' && validHexes.size === 1) {
+      const [key] = validHexes;
+      const [q, r] = key.split(',').map(Number);
+      Abilities.resolveEffect(q, r);
+      enterEffectTargeting(); // process next effect
       return;
     }
 
@@ -507,8 +650,8 @@ const UI = (() => {
     if (!act) {
       resetUiState();
     } else if (act.moved && act.attacked && !Game.state.rules.confirmEndTurn) {
-      Game.endActivation();
-      resetUiState();
+      tryEndActivation();
+      return;
     } else {
       showActivationHighlights();
     }
@@ -526,8 +669,8 @@ const UI = (() => {
     if (!act) {
       resetUiState();
     } else if (act.moved && act.attacked && !Game.state.rules.confirmEndTurn) {
-      Game.endActivation();
-      resetUiState();
+      tryEndActivation();
+      return;
     } else {
       showActivationHighlights();
     }
@@ -556,8 +699,8 @@ const UI = (() => {
     if (!act) {
       resetUiState();
     } else if (act.moved && act.attacked && !Game.state.rules.confirmEndTurn) {
-      Game.endActivation();
-      resetUiState();
+      tryEndActivation();
+      return;
     } else {
       showActivationHighlights();
     }
@@ -576,8 +719,8 @@ const UI = (() => {
     if (!act) {
       resetUiState();
     } else if (act.moved && act.attacked && !Game.state.rules.confirmEndTurn) {
-      Game.endActivation();
-      resetUiState();
+      tryEndActivation();
+      return;
     } else {
       showActivationHighlights();
     }
@@ -740,8 +883,8 @@ const UI = (() => {
     if (!act) {
       resetUiState();
     } else if (act.moved && act.attacked && !Game.state.rules.confirmEndTurn) {
-      Game.endActivation();
-      resetUiState();
+      tryEndActivation();
+      return;
     } else {
       showActivationHighlights();
     }
@@ -1075,9 +1218,10 @@ const UI = (() => {
 
   function showPhase() {
     hideUnitCard();
-    // Hide all panels + battle HUD wrapper (includes game log)
+    // Hide all panels + battle HUD wrapper (includes game log) + round panel
     document.querySelectorAll('.phase-panel').forEach(el => el.classList.add('hidden'));
     document.getElementById('hud-wrapper').classList.add('hidden');
+    document.getElementById('panel-round').classList.add('hidden');
 
     const phase = Game.state.phase;
 
@@ -1105,7 +1249,9 @@ const UI = (() => {
 
     if (s.phase === Game.PHASE.BATTLE) {
       // Relocate targeting messages
-      if (relocateTargeting) {
+      if (endActTargeting) {
+        text = 'Select a unit to move (ESC to skip)';
+      } else if (relocateTargeting) {
         text = `Move ${relocateTargeting.unit.name} to a highlighted hex (ESC to cancel)`;
       // Tag-based ability targeting messages
       } else if (abilityTargeting && abilityTargeting.targetList) {
@@ -1614,23 +1760,26 @@ const UI = (() => {
 
     if (step.auto) return; // shouldn't happen, but guard
 
+    // Show HUD wrapper and render round step content in hud-center
+    const wrapper = document.getElementById('hud-wrapper');
+    wrapper.classList.remove('hidden');
+
+    // Update scores and round display
+    document.getElementById('hud-pts-1').textContent = s.scores[1];
+    document.getElementById('hud-pts-2').textContent = s.scores[2];
+    document.getElementById('hud-round').textContent = `Round ${s.round} / ${s.rules.numTurns}`;
+    document.getElementById('hud-end-turn').style.display = 'none';
+
+    const turnEl = document.getElementById('hud-turn');
+    const title = s.phase === Game.PHASE.ROUND_START ? 'Round Start' : 'Round End';
+    turnEl.textContent = title;
+    turnEl.className = '';
+
+    // Build step content in panel-round (positioned below HUD)
     const panel = document.getElementById('panel-round');
     panel.classList.remove('hidden');
 
-    const title = s.phase === Game.PHASE.ROUND_START
-      ? `Round ${s.round} — Start`
-      : `Round ${s.round} — End`;
-
-    let html = `<h2>${title}</h2>`;
-
-    // Show completed steps
-    for (let i = 0; i < idx; i++) {
-      html += `<p class="step-done">${queue[i].label}</p>`;
-    }
-
-    // Current step (needs input)
-    html += `<div class="step-current">`;
-    html += `<p><strong>${step.label}</strong></p>`;
+    let html = `<p><strong>${step.label}</strong></p>`;
 
     if (step.id === 'shifting') {
       // Move terrain immediately (idempotent)
@@ -1697,18 +1846,12 @@ const UI = (() => {
         }
       }
       if (Game.allArcFireResolved()) {
-        html += `<button class="btn btn-confirm" data-action="advance-round-step">Continue</button>`;
+        // Auto-advance when all arc fire resolved
+        setTimeout(() => { Game.advanceRoundStep(); showPhase(); render(); }, 300);
       }
     } else {
       // Generic non-auto step
       html += `<button class="btn btn-confirm" data-action="advance-round-step">Continue</button>`;
-    }
-
-    html += `</div>`;
-
-    // Pending steps
-    for (let i = idx + 1; i < queue.length; i++) {
-      html += `<p class="step-pending">${queue[i].label}</p>`;
     }
 
     panel.innerHTML = html;
@@ -1834,77 +1977,61 @@ const UI = (() => {
 
   function buildBattleUI() {
     const panel = document.getElementById('panel-battle');
+    const actEl = document.getElementById('hud-activation');
     const s = Game.state;
 
     // Update the top-center HUD
     updateBattleHud();
+    panel.classList.add('hidden');
 
     if (s.activationState) {
-      panel.classList.remove('hidden');
-      applyPlayerStyle(panel, s.currentPlayer);
-
       const act = s.activationState;
-      let html = `<div class="activation-info">`;
-      html += `<p><strong>${act.unit.name}</strong> (HP:${act.unit.health}/${act.unit.maxHealth})</p>`;
+      const MOVE_ICON = '\u2B21';  // ⬡ hex
+      const ATK_ICON = '\u2694';   // ⚔ swords
 
-      // Condition tags
-      if (act.unit.conditions.length > 0) {
-        html += `<div class="cond-list">`;
-        for (const g of groupConditions(act.unit.conditions)) {
-          const label = g.count > 1 ? `${g.id} ×${g.count}` : g.id;
-          html += `<span class="cond-tag cond-${g.id}">${label}</span>`;
-        }
-        html += `</div>`;
-      }
+      let html = '';
 
-      // Dizzy warning
-      if (Game.hasCondition(act.unit, 'dizzy')) {
-        html += `<p class="cond-warning">Dizzy: Can move OR attack (not both)</p>`;
-      }
-
-      // Falcon Gust interactive UI (on activation: move ally or place cinder)
+      // Falcon Gust interactive prompt
       if (act.falconGust && act.falconGust.phase !== 'done') {
-        html += `<div class="falcon-gust-choices">`;
-        html += `<p class="ability-prompt"><strong>Falcon Gust</strong></p>`;
+        html += `<span class="ability-prompt"><strong>Falcon Gust</strong></span>`;
         if (falconGustTargeting && falconGustTargeting.phase === 'allyDest') {
-          html += `<p>Choose destination for ally</p>`;
+          html += `<span class="ability-prompt">Choose destination</span>`;
         } else {
-          html += `<p>Click ally to move or cinder hex to place</p>`;
+          html += `<span class="ability-prompt">Click ally or cinder</span>`;
         }
         html += `<button class="btn btn-action" data-action="fg-skip">Skip</button>`;
-        html += `</div>`;
-        html += `</div>`;
-        panel.innerHTML = html;
+        actEl.innerHTML = html;
+        actEl.classList.remove('hidden');
         return;
       }
 
-      // Wound Up interactive UI
+      // Wound Up interactive prompt
       if (act.woundUp && act.woundUp.phase !== 'done') {
         const wu = act.woundUp;
-        html += `<div class="wound-up-choices">`;
-        html += `<p class="ability-prompt"><strong>Wound Up</strong> — Move trap ${wu.currentIndex + 1}/${wu.traps.length}</p>`;
+        html += `<span class="ability-prompt"><strong>Wound Up</strong> trap ${wu.currentIndex + 1}/${wu.traps.length}</span>`;
         html += `<button class="btn btn-action" data-action="wu-skip-all">Skip All</button>`;
-        html += `</div>`;
-        html += `</div>`;
-        panel.innerHTML = html;
-        return; // Don't show move/attack prompts during Wound Up
+        actEl.innerHTML = html;
+        actEl.classList.remove('hidden');
+        return;
       }
 
-      html += `<span class="done-label">${act.moved ? 'Moved' : 'Click yellow hex to move'}</span>`;
-      const delayedHint = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'delayedattack');
-      html += `<span class="done-label">${act.attacked ? 'Attacked' : (delayedHint ? 'Place delayed attack' : 'Click red target to attack')}</span>`;
+      // Unit name + move/attack status icons
+      html += `<span class="hud-unit-name">${act.unit.name}</span>`;
+      html += `<span class="hud-status-icon${act.moved ? ' used' : ''}">${MOVE_ICON}</span>`;
+      html += `<span class="hud-status-icon${act.attacked ? ' used' : ''}">${ATK_ICON}</span>`;
 
       // Delayed Attack targeting button
+      const delayedHint = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'delayedattack');
       if (delayedHint && !act.attacked && !act.moved && !Game.hasCondition(act.unit, 'disarmed')) {
-        html += `<button class="btn btn-action" data-action="delayed-target">Target Space (uses attack)</button>`;
+        html += `<button class="btn btn-action" data-action="delayed-target">${ATK_ICON}: Target Space</button>`;
       }
 
       // Quench Burning button
       if (!act.attacked && Game.hasCondition(act.unit, 'burning')) {
-        html += `<button class="btn btn-action btn-quench" data-action="remove-burning">Quench Burning (uses attack)</button>`;
+        html += `<button class="btn btn-action btn-quench" data-action="remove-burning">${ATK_ICON}: Quench</button>`;
       }
 
-      // Ability action buttons (targetedAction abilities)
+      // Ability action buttons
       if (typeof Abilities !== 'undefined') {
         const actions = Abilities.getActions(act.unit);
         for (const ab of actions) {
@@ -1913,18 +2040,18 @@ const UI = (() => {
           if (ab.actionCost === 'move' && act.moved) continue;
           if (ab.actionCost === 'attack' && act.attacked) continue;
           if (Game.hasCondition(act.unit, 'silenced')) continue;
-          const label = ab.displayName || ab.name;
-          const costLabel = ab.displayName ? '' : (ab.actionCost === 'move' ? ' (uses move)'
-                          : ab.actionCost === 'attack' ? ' (uses attack)' : '');
-          html += `<button class="btn btn-ability" data-action="use-ability" data-ability="${ab.name}" data-cost="${ab.actionCost || ''}" data-ruleid="${ab.actionRuleId || ''}">${label}${costLabel}</button>`;
+          const name = ab.displayName || ab.name;
+          const icon = ab.actionCost === 'move' ? `${MOVE_ICON}: `
+                     : ab.actionCost === 'attack' ? `${ATK_ICON}: ` : '';
+          html += `<button class="btn btn-ability" data-action="use-ability" data-ability="${ab.name}" data-cost="${ab.actionCost || ''}" data-ruleid="${ab.actionRuleId || ''}">${icon}${name}</button>`;
         }
-        // Gust Push button (Surveyor: push any enemy or place cinder, costs move)
+        // Gust Push button
         if (!act.moved && Abilities.hasFlag(act.unit, 'falcongust') && !Game.hasCondition(act.unit, 'silenced')) {
-          html += `<button class="btn btn-ability" data-action="gust-push">Gust Push (uses move)</button>`;
+          html += `<button class="btn btn-ability" data-action="gust-push">${MOVE_ICON}: Gust Push</button>`;
         }
       }
 
-      // Back/undo button — only when the last action is undoable
+      // Undo button
       const history = s.actionHistory || [];
       if (history.length > 0) {
         const last = history[history.length - 1];
@@ -1941,35 +2068,30 @@ const UI = (() => {
                         (last.type === 'ability' && last.actionCost === 'move' && s.rules.canUndoMove) ||
                         (last.type === 'ability' && last.actionCost === 'attack' && s.rules.canUndoAttack);
         if (canUndo) {
-          const label = last.type === 'ability' ? `Undo ${last.abilityName}` :
-                        last.type === 'zoom' ? 'Undo Zoom' :
-                        last.type === 'clocktoys' ? 'Undo Clock Toys' :
-                        last.type === 'pushMove' ? 'Undo Move' :
-                        last.type === 'level' ? 'Undo Level' :
-                        last.type === 'toter' ? 'Undo Toter' :
-                        last.type === 'flareup' ? 'Undo Flare Up' :
-                        last.type === 'woundup' ? 'Undo Wound Up' :
-                        last.type === 'falcongust' ? 'Undo Falcon Gust' :
-                        last.type === 'move' ? 'Undo Move' : 'Undo Attack';
+          const label = last.type === 'ability' ? last.abilityName :
+                        last.type === 'zoom' ? 'Zoom' :
+                        last.type === 'clocktoys' ? 'Clock Toys' :
+                        last.type === 'pushMove' ? 'Move' :
+                        last.type === 'level' ? 'Level' :
+                        last.type === 'toter' ? 'Toter' :
+                        last.type === 'flareup' ? 'Flare Up' :
+                        last.type === 'woundup' ? 'Wound Up' :
+                        last.type === 'falcongust' ? 'Falcon Gust' :
+                        last.type === 'move' ? 'Move' : 'Attack';
           html += `<button class="btn btn-action" data-action="undo-action">\u2190 ${label}</button>`;
         }
       }
 
-      html += `</div>`;
-      panel.innerHTML = html;
+      actEl.innerHTML = html;
+      actEl.classList.remove('hidden');
     } else {
+      actEl.classList.add('hidden');
       // No activation — show Pass Turn button if any unit has Calculated flag
       const hasCalculated = typeof Abilities !== 'undefined' &&
         s.units.some(u => u.player === s.currentPlayer && u.health > 0 && Abilities.hasFlag(u, 'calculated'));
       if (hasCalculated && !s.passedThisRound.has(s.currentPlayer)) {
-        panel.classList.remove('hidden');
-        applyPlayerStyle(panel, s.currentPlayer);
-        panel.innerHTML = `<div class="activation-info">
-          <p>Select a unit to activate</p>
-          <button class="btn btn-action" data-action="pass-turn">Pass Turn (Calculated)</button>
-        </div>`;
-      } else {
-        panel.classList.add('hidden');
+        actEl.classList.remove('hidden');
+        actEl.innerHTML = `<button class="btn btn-action" data-action="pass-turn">Pass Turn</button>`;
       }
     }
   }
@@ -1987,6 +2109,7 @@ const UI = (() => {
     document.getElementById('hud-pts-1').textContent = s.scores[1];
     document.getElementById('hud-pts-2').textContent = s.scores[2];
     document.getElementById('hud-round').textContent = `Round ${s.round} / ${s.rules.numTurns}`;
+    document.getElementById('hud-end-turn').style.display = '';
 
     const turnEl = document.getElementById('hud-turn');
     turnEl.textContent = `Player ${s.currentPlayer}'s Turn`;
@@ -2768,6 +2891,10 @@ const UI = (() => {
             return;
           }
           if (checkBurningRedirect()) { e.preventDefault(); return; }
+          const tAct = Game.state.activationState;
+          if (tAct && tAct.moved && tAct.attacked && !Game.state.rules.confirmEndTurn) {
+            tryEndActivation(); e.preventDefault(); return;
+          }
           if (!Game.state.activationState) { resetUiState(); }
           else { showActivationHighlights(); }
         }
@@ -2798,6 +2925,18 @@ const UI = (() => {
     if (key === 'escape' && effectTargeting) {
       Abilities.skipEffect();
       enterEffectTargeting();
+      e.preventDefault();
+      return;
+    }
+
+    // ESC: cancel endActivation targeting — skip ability, finish turn
+    if (key === 'escape' && endActTargeting) {
+      endActTargeting = null;
+      if (typeof Abilities !== 'undefined') Abilities.clearPendingEndAct();
+      Game.completeEndActivation();
+      resetUiState();
+      showPhase();
+      render();
       e.preventDefault();
       return;
     }
@@ -2982,7 +3121,7 @@ const UI = (() => {
       if (hexKey !== prevKey) {
         uiState.hoveredHex = hex;
         const act = Game.state.activationState;
-        if (hex && uiState.highlights && uiState.highlights.has(hexKey)) {
+        if (hex && uiState.highlights && uiState.highlights.has(hexKey) && !endActTargeting && !abilityTargeting && !effectTargeting) {
           uiState.pathPreviewColor = null;
           recomputePathPreview(hex.q, hex.r);
         } else if (hex && uiState.attackTargets && uiState.attackTargets.has(hexKey)
@@ -2993,6 +3132,7 @@ const UI = (() => {
           uiState.pathPreview = null;
           uiState.pathCost = null;
           uiState.pathPreviewColor = null;
+          uiState.pathStartUnit = null;
         }
         render();
       }
@@ -3004,6 +3144,16 @@ const UI = (() => {
 
   /** Rebuild pathPreview from the unit's position to (destQ, destR). */
   function recomputePathPreview(destQ, destR) {
+    // Relocate targeting: path starts from the relocate target unit
+    if (relocateTargeting) {
+      const rt = relocateTargeting;
+      const path = Board.getPath(rt.unit.q, rt.unit.r, destQ, destR, rt.parentMap);
+      uiState.pathPreview = path;
+      uiState.pathCost = uiState.highlights.get(`${destQ},${destR}`) || 0;
+      uiState.pathStartUnit = rt.unit;
+      return;
+    }
+
     const act = Game.state.activationState;
     if (!act || !act._parentMap) {
       uiState.pathPreview = null;
@@ -3011,6 +3161,7 @@ const UI = (() => {
       return;
     }
 
+    uiState.pathStartUnit = null; // normal: use selectedUnit
     if (uiState.waypoints.length === 0) {
       // Simple: use existing parentMap from getMoveRange() BFS
       const path = Board.getPath(act.unit.q, act.unit.r, destQ, destR, act._parentMap);
@@ -3333,10 +3484,16 @@ const UI = (() => {
       // In hidden deploy, the player comes from the button; otherwise currentPlayer
       const p = btn.dataset.player ? parseInt(btn.dataset.player) : Game.state.currentPlayer;
       if (Game.state.rules.hiddenDeploy) hiddenDeployPlayer = p;
-      // Highlight deployment zone
+      // Highlight deployment zone (+ cover/concealing for Scouts)
+      const template = Game.state.players[p].roster[selectedDeployIndex];
+      const isScout = typeof Abilities !== 'undefined' && template &&
+        Abilities.hasDeployRule(template, 'coveringOrConcealing');
       const valid = new Map();
       for (const hex of Board.hexes) {
-        if (hex.zone !== `player${p}`) continue;
+        const inZone = hex.zone === `player${p}`;
+        const scoutHex = isScout && hex.zone === 'neutral' &&
+          (Game.hasTerrainRule(hex.q, hex.r, 'cover') || Game.hasTerrainRule(hex.q, hex.r, 'concealing'));
+        if (!inZone && !scoutHex) continue;
         const key = `${hex.q},${hex.r}`;
         if (Game.state.units.some(u => u.q === hex.q && u.r === hex.r && u.health > 0)) continue;
         if (Board.OBJECTIVES.some(o => o.q === hex.q && o.r === hex.r)) continue;
@@ -3405,6 +3562,11 @@ const UI = (() => {
       const ok = Game.removeBurning();
       if (ok) {
         netSend({ type: 'removeBurning' });
+        const burnAct = Game.state.activationState;
+        if (burnAct && burnAct.moved && burnAct.attacked && !Game.state.rules.confirmEndTurn) {
+          tryEndActivation();
+          return;
+        }
         if (!Game.state.activationState) {
           resetUiState();
         } else {
@@ -3469,10 +3631,7 @@ const UI = (() => {
         if (actionCost) Game.log(`${act.unit.name} uses ${abilityName} (uses ${actionCost})`, act.unit.player);
         if (act.moved && act.attacked && !Game.state.rules.confirmEndTurn) {
           if (typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) {
-            Game.endActivation();
-            resetUiState();
-            showPhase();
-            render();
+            tryEndActivation();
             return;
           }
         }
@@ -3514,8 +3673,20 @@ const UI = (() => {
     }
 
     else if (action === 'end-activation') {
-      Game.forceEndActivation();
+      const hasPending = Game.forceEndActivation();
       netSend({ type: 'endActivation' });
+      if (hasPending && typeof Abilities !== 'undefined') {
+        // Interactive target selection (Guiding Gale)
+        if (Abilities.getPendingEndActTarget()) {
+          enterEndActTargeting();
+          return;
+        }
+        // Direct effects (push/pull/relocate)
+        if (Abilities.hasPendingEffects()) {
+          processEndActEffects();
+          return;
+        }
+      }
       resetUiState();
       showPhase();
       render();
@@ -3791,6 +3962,7 @@ const UI = (() => {
     uiState.pathPreview = null;
     uiState.pathCost = null;
     uiState.pathPreviewColor = null;
+    uiState.pathStartUnit = null;
     uiState.hoveredHex = null;
     uiState.waypoints = [];
     uiState.attackWaypoints = [];
@@ -3942,13 +4114,12 @@ const UI = (() => {
           const act = s.activationState;
           // Auto-end if both actions used
           if (act && act.moved && act.attacked && !s.rules.confirmEndTurn) {
-            Game.endActivation();
-            resetUiState();
+            tryEndActivation();
           } else {
             showActivationHighlights();
+            showPhase();
+            render();
           }
-          showPhase();
-          render();
         }
       } else {
         // Click non-target: cancel
@@ -4021,6 +4192,26 @@ const UI = (() => {
       return;
     }
 
+    // EndActivation targeting: player picks a unit to apply the effect to
+    if (endActTargeting) {
+      const match = endActTargeting.targets.find(t => t.key === key);
+      if (match && match.unit) {
+        endActTargeting = null;
+        Abilities.executeEndActWithTarget(match.unit);
+        // Now process any queued effects (relocate, etc.)
+        processEndActEffects();
+      } else {
+        // Click off-target: cancel, finish turn without the ability
+        endActTargeting = null;
+        Abilities.clearPendingEndAct();
+        Game.completeEndActivation();
+        resetUiState();
+        showPhase();
+        render();
+      }
+      return;
+    }
+
     // Relocate targeting mode: click destination to move target unit
     if (relocateTargeting) {
       if (relocateTargeting.reachable.has(key)) {
@@ -4062,7 +4253,8 @@ const UI = (() => {
     // Ability targeting mode: click valid target to execute, else cancel
     if (abilityTargeting) {
       if (abilityTargeting.validTargets.has(key)) {
-        const target = s.units.find(u => u.q === hex.q && u.r === hex.r && u.health > 0);
+        const target = s.units.find(u => u.q === hex.q && u.r === hex.r && u.health > 0)
+                    || { q: hex.q, r: hex.r };  // hex position for empty/terrain targets
         const abName = abilityTargeting.abilityName;
         const actionCost = abilityTargeting.actionCost;
         const act = s.activationState;
@@ -4130,10 +4322,7 @@ const UI = (() => {
         // Auto-end activation if both actions consumed
         if (act && act.moved && act.attacked && !s.rules.confirmEndTurn) {
           if (typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) {
-            Game.endActivation();
-            resetUiState();
-            showPhase();
-            render();
+            tryEndActivation();
             return;
           }
         }
@@ -4246,6 +4435,10 @@ const UI = (() => {
               return;
             }
             if (checkBurningRedirect()) return;
+            const tossAct = Game.state.activationState;
+            if (tossAct && tossAct.moved && tossAct.attacked && !Game.state.rules.confirmEndTurn) {
+              tryEndActivation(); return;
+            }
             if (!Game.state.activationState) { resetUiState(); }
             else { showActivationHighlights(); }
           }
@@ -4278,14 +4471,15 @@ const UI = (() => {
             return;
           }
           if (checkBurningRedirect()) return;
-          if (!Game.state.activationState) {
+          const delayAct = s.activationState;
+          if (delayAct && delayAct.moved && delayAct.attacked && !s.rules.confirmEndTurn) {
+            tryEndActivation();
+            return;
+          }
+          if (!s.activationState) {
             resetUiState();
           } else {
-            uiState.attackTargets = null;
-            const reachable = Game.getMoveRange();
-            uiState.highlights = reachable;
-            uiState.highlightColor = reachable ? 'rgba(255,255,0,0.35)' : null;
-            uiState.selectedUnit = Game.state.activationState.unit;
+            showActivationHighlights();
           }
           showPhase();
           render();
@@ -4400,14 +4594,17 @@ const UI = (() => {
           }
           if (checkBurningRedirect()) return;
 
-          if (!Game.state.activationState) {
+          // Auto-end activation if both actions consumed (handles Guiding Gale etc.)
+          const postAtkAct = s.activationState;
+          if (postAtkAct && postAtkAct.moved && postAtkAct.attacked && !s.rules.confirmEndTurn) {
+            tryEndActivation();
+            return;
+          }
+
+          if (!s.activationState) {
             resetUiState();
           } else {
-            uiState.attackTargets = null;
-            const reachable = Game.getMoveRange();
-            uiState.highlights = reachable;
-            uiState.highlightColor = reachable ? 'rgba(255,255,0,0.35)' : null;
-            uiState.selectedUnit = Game.state.activationState.unit;
+            showActivationHighlights();
           }
           showPhase();
           render();
@@ -4767,7 +4964,12 @@ const UI = (() => {
               render();
               return;
             }
-            if (!Game.state.activationState) {
+            const nmAct = Game.state.activationState;
+            if (!nmAct) {
+              resetUiState();
+            } else if (nmAct._endActStarted) {
+              if (typeof Abilities !== 'undefined') { Abilities.clearPendingEndAct(); Abilities.clearEffectQueue(); }
+              Game.completeEndActivation();
               resetUiState();
             } else {
               showActivationHighlights();
@@ -4779,10 +4981,17 @@ const UI = (() => {
         } else {
           if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
             enterEffectTargeting();
-          } else if (!Game.state.activationState) {
-            resetUiState();
           } else {
-            showActivationHighlights();
+            const nmAct2 = Game.state.activationState;
+            if (!nmAct2) {
+              resetUiState();
+            } else if (nmAct2._endActStarted) {
+              if (typeof Abilities !== 'undefined') { Abilities.clearPendingEndAct(); Abilities.clearEffectQueue(); }
+              Game.completeEndActivation();
+              resetUiState();
+            } else {
+              showActivationHighlights();
+            }
           }
         }
         break;
@@ -4862,8 +5071,7 @@ const UI = (() => {
         clockToysTargeting = null;
         const ctAct = Game.state.activationState;
         if (ctAct && ctAct.moved && ctAct.attacked && !Game.state.rules.confirmEndTurn) {
-          Game.endActivation();
-          resetUiState();
+          tryEndActivation();
         } else {
           showActivationHighlights();
         }
@@ -4935,21 +5143,29 @@ const UI = (() => {
         render();
         break;
       }
-      case 'attackUnit':
+      case 'attackUnit': {
         Game.attackUnit(data.q, data.r, data.bonusDamage || 0, data.tossData || null, data.attackPath || null);
-        if (!Game.state.activationState) {
+        const netAtkAct = Game.state.activationState;
+        if (!netAtkAct) {
+          resetUiState();
+        } else if (netAtkAct._endActStarted) {
+          if (typeof Abilities !== 'undefined') { Abilities.clearPendingEndAct(); Abilities.clearEffectQueue(); }
+          Game.completeEndActivation();
           resetUiState();
         } else {
           showActivationHighlights();
         }
         break;
+      }
       case 'skipAction':
         Game.skipAction(data.action);
         break;
-      case 'endActivation':
-        Game.forceEndActivation();
+      case 'endActivation': {
+        const eaPending = Game.forceEndActivation();
+        if (eaPending) Game.completeEndActivation(); // remote: complete immediately
         resetUiState();
         break;
+      }
       case 'undoLastAction':
         Game.undoLastAction();
         resetUiState();
@@ -4959,14 +5175,20 @@ const UI = (() => {
         Game.passTurn();
         resetUiState();
         break;
-      case 'removeBurning':
+      case 'removeBurning': {
         Game.removeBurning();
-        if (!Game.state.activationState) {
+        const netBurnAct = Game.state.activationState;
+        if (!netBurnAct) {
+          resetUiState();
+        } else if (netBurnAct._endActStarted) {
+          if (typeof Abilities !== 'undefined') { Abilities.clearPendingEndAct(); Abilities.clearEffectQueue(); }
+          Game.completeEndActivation();
           resetUiState();
         } else {
           showActivationHighlights();
         }
         break;
+      }
 
       // ── Round Steps ──
       case 'advanceRoundStep':

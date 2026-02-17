@@ -38,6 +38,8 @@ const Abilities = (() => {
     strengthened: 'untilAttack',
     empowered:    'untilAttack',
     weakness:     'endOfActivation',
+    leveled:      'permanent',
+    movebonus:    'endOfActivation',
     break:       'permanent',
     arcfire:      'permanent',
     moveintoenemies: 'endOfActivation',
@@ -89,174 +91,181 @@ const Abilities = (() => {
 
   // ── Target Resolution ────────────────────────────────────────
 
+  // Noise words filtered from target tokens (connectors and prefixes)
+  const TARGET_NOISE = new Set(['and', 'or', 'to', 'of', 'the', 'a', 'at', 'in', 'on', 'atk', 'all']);
+
+  // Legacy aliases that don't decompose via camelCase splitting
+  const TARGET_LEGACY = { 'unitorterrain': 'ally difficult dangerous around' };
+
   function resolveTargets(targetType, ctx, rule) {
     if (!targetType) return ctx.target ? [ctx.target] : (ctx.unit ? [ctx.unit] : []);
-    switch (targetType.toLowerCase()) {
-      case 'atktarget':
-        return ctx.target ? [ctx.target] : [];
 
-      case 'self':
-        return ctx.unit ? [ctx.unit] : [];
+    // Check legacy alias (joined lowercase)
+    const joined = targetType.toLowerCase().replace(/[\s,]+/g, '');
 
-      case 'adjacenttotarget':
-        return unitsAdjacentTo(ctx.target);
+    // Tokenize: split camelCase → filter noise → normalize
+    // "unitsAroundTarget" → "units around target" → {'units','around','target'}
+    // "empty, aroundTarget" → "empty, around target" → {'empty','around','target'}
+    const input = (TARGET_LEGACY[joined] || targetType)
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .toLowerCase()
+      .replace(/[,\s]+/g, ' ')
+      .trim();
+    const tokens = new Set(input.split(' ').filter(t => t && !TARGET_NOISE.has(t)));
 
-      case 'emptyadjacenttotarget':
-        return emptyHexesAdjacentTo(ctx.target);
+    // ── Special non-compositional keywords ──
+    if (tokens.has('damaged'))
+      return ctx.damagedUnits || (ctx.target ? [ctx.target] : []);
+    // lineToTarget as sole spec → return units on line (e.g. Piercing)
+    if (tokens.has('line') && tokens.has('target') && !tokens.has('around') && !tokens.has('empty') && !tokens.has('spaces'))
+      return resolveLineToTarget(ctx);
 
-      case 'selfandadjacent':
-        return hexesAtAndAdjacent(ctx.unit);
+    // ── Determine anchor (center point for area collection) ──
+    let anchor = ctx.unit;
+    if (tokens.has('target') || tokens.has('atktarget')) anchor = ctx.target;
+    else if (tokens.has('attacker')) anchor = ctx.attacker;
+    else if (tokens.has('occupant')) anchor = ctx.occupant;
+    if (!anchor) return [];
 
-      case 'spacesownandaround': {
-        if (!ctx.unit) return [];
-        const radius = rule ? (parseInt(rule.range, 10) || 1) : 1;
-        const result = [];
-        for (const hex of Board.hexes) {
-          if (Board.hexDistance(ctx.unit.q, ctx.unit.r, hex.q, hex.r) <= radius) {
-            result.push({ q: hex.q, r: hex.r });
-          }
-        }
-        return result;
-      }
-
-      case 'linetotarget': {
-        // If an attack path is stored (Piercing + Path), find units along that path
-        const act = Game.state.activationState;
-        if (act && act.attackPath && act.attackPath.length > 2) {
-          return unitsOnPath(act.attackPath);
-        }
-        // Try straight hex line first (Line attacks)
-        if (ctx.unit && ctx.target) {
-          const inter = [];
-          const dir = Board.straightLineDir(ctx.unit.q, ctx.unit.r, ctx.target.q, ctx.target.r, inter);
-          if (dir >= 0) {
-            // Valid straight line — find units on intermediate hexes
-            return inter.map(h => Game.state.units.find(u => u.q === h.q && u.r === h.r && u.health > 0)).filter(Boolean);
-          }
-          // Not a straight line (Direct attacks) — units on any shortest path
-          const dist = Board.hexDistance(ctx.unit.q, ctx.unit.r, ctx.target.q, ctx.target.r);
-          if (dist > 1) {
-            const result = [];
-            for (const u of Game.state.units) {
-              if (u.health <= 0 || u === ctx.unit) continue;
-              if (u.q === ctx.target.q && u.r === ctx.target.r) continue;
-              if (Board.hexDistance(ctx.unit.q, ctx.unit.r, u.q, u.r) +
-                  Board.hexDistance(u.q, u.r, ctx.target.q, ctx.target.r) === dist) {
-                result.push(u);
-              }
-            }
-            return result;
-          }
-        }
-        return [];
-      }
-
-      case 'alldamaged':
-        return ctx.damagedUnits || (ctx.target ? [ctx.target] : []);
-
-      case 'enemy':
-        return ctx.target ? [ctx.target] : [];
-
-      case 'unitsaroundtarget': {
-        if (!ctx.target) return [];
-        const radius = rule ? parseRangeColumn(rule.range).range : 1;
-        const result = [];
-        for (const u of Game.state.units) {
-          if (u.health <= 0) continue;
-          if (u === ctx.target) continue;
-          if (Board.hexDistance(ctx.target.q, ctx.target.r, u.q, u.r) <= radius) {
-            result.push(u);
-          }
-        }
-        return result;
-      }
-
-      // whenAttacked: the unit that attacked us
-      case 'attacker':
-        return ctx.attacker ? [ctx.attacker] : [];
-
-      // Movement occupant target types (used by dispatchMovement)
-      case 'enemyoccupant':
-        return ctx.occupant && ctx.unit && ctx.occupant.player !== ctx.unit.player
-          ? [ctx.occupant] : [];
-
-      case 'allyoccupant':
-        return ctx.occupant && ctx.unit && ctx.occupant.player === ctx.unit.player
-          ? [ctx.occupant] : [];
-
-      case 'unitoccupant':
-        return ctx.occupant ? [ctx.occupant] : [];
-
-      case 'terrainoccupant':
-        return [];  // future use
-
-      // unitOrTerrain: adjacent allies + adjacent dangerous/difficult terrain
-      case 'unitorterrain': {
-        if (!ctx.unit) return [];
-        const results = [];
-        const neighbors = Board.getNeighbors(ctx.unit.q, ctx.unit.r);
-        // Adjacent living allies (not self)
-        for (const u of Game.state.units) {
-          if (u.health <= 0 || u === ctx.unit || u.player !== ctx.unit.player) continue;
-          if (Board.hexDistance(ctx.unit.q, ctx.unit.r, u.q, u.r) !== 1) continue;
-          results.push({ type: 'unit', unit: u, q: u.q, r: u.r });
-        }
-        // Adjacent terrain with dangerous or difficult rules
-        for (const n of neighbors) {
-          if (Game.hasTerrainRule(n.q, n.r, 'dangerous') || Game.hasTerrainRule(n.q, n.r, 'difficult')) {
-            const td = Game.state.terrain.get(`${n.q},${n.r}`);
-            if (td && td.surface) {
-              results.push({ type: 'terrain', q: n.q, r: n.r, surface: td.surface });
-            }
-          }
-        }
-        return results;
-      }
-
-      default:
-        console.warn(`[Abilities] Unknown target type: "${targetType}"`);
-        return [];
+    // ── Single-token shortcuts: return anchor as unit directly ──
+    if (tokens.size === 1) {
+      const t = [...tokens][0];
+      if (t === 'self' || t === 'target' || t === 'atktarget' || t === 'attacker')
+        return [anchor];
+      if (t === 'enemy') return ctx.target ? [ctx.target] : [];
     }
-  }
 
-  /** All living units adjacent to a given unit. */
-  function unitsAdjacentTo(unit) {
-    if (!unit) return [];
-    const neighbors = Board.getNeighbors(unit.q, unit.r);
+    // ── Occupant with optional enemy/ally filter ──
+    if (tokens.has('occupant')) {
+      if (tokens.has('enemy') && ctx.unit && anchor.player === ctx.unit.player) return [];
+      if (tokens.has('ally') && ctx.unit && anchor.player !== ctx.unit.player) return [];
+      return [anchor];
+    }
+
+    // ── Collect hexes based on area tokens ──
+    const hasAround = tokens.has('around') || tokens.has('adjacent');
+    const hasLine = tokens.has('line');
+    const hexes = [];
+    const seen = new Set();
+
+    if (hasAround) {
+      const radius = rule ? (parseInt(rule.range, 10) || 1) : 1;
+      if (radius === 1) {
+        for (const n of Board.getNeighbors(anchor.q, anchor.r)) {
+          const k = `${n.q},${n.r}`;
+          if (!seen.has(k)) { seen.add(k); hexes.push(n); }
+        }
+      } else {
+        for (const h of Board.hexes) {
+          if (h.q === anchor.q && h.r === anchor.r) continue;
+          if (Board.hexDistance(anchor.q, anchor.r, h.q, h.r) <= radius) {
+            const k = `${h.q},${h.r}`;
+            if (!seen.has(k)) { seen.add(k); hexes.push({ q: h.q, r: h.r }); }
+          }
+        }
+      }
+    }
+
+    // "line" collects hex positions between ctx.unit and anchor (exclusive of both endpoints)
+    if (hasLine && ctx.unit && anchor) {
+      const intermediates = [];
+      Board.straightLineDir(ctx.unit.q, ctx.unit.r, anchor.q, anchor.r, intermediates);
+      for (const h of intermediates) {
+        const k = `${h.q},${h.r}`;
+        if (!seen.has(k)) { seen.add(k); hexes.push({ q: h.q, r: h.r }); }
+      }
+    }
+
+    // "own" includes the anchor's hex itself
+    if (tokens.has('own')) {
+      const k = `${anchor.q},${anchor.r}`;
+      if (!seen.has(k)) { seen.add(k); hexes.push({ q: anchor.q, r: anchor.r }); }
+    }
+    // Default to anchor hex if no area specified
+    if (hexes.length === 0) hexes.push({ q: anchor.q, r: anchor.r });
+
+    // ── Identify terrain rule tokens (any unknown token checked against terrain rules) ──
+    const KEYWORDS = new Set([
+      'self', 'target', 'atktarget', 'attacker', 'occupant',
+      'around', 'adjacent', 'own', 'line',
+      'units', 'unit', 'spaces', 'empty', 'enemy', 'ally', 'terrain',
+      'alldamaged', 'linetotarget'
+    ]);
+    const terrainRuleTokens = [...tokens].filter(t => !KEYWORDS.has(t));
+
+    // ── Determine return type ──
+    const wantTerrain = tokens.has('terrain') || terrainRuleTokens.length > 0;
+    const wantUnits = tokens.has('units') || tokens.has('unit') ||
+                      tokens.has('enemy') || tokens.has('ally');
+    const wantSpaces = tokens.has('spaces') || tokens.has('empty');
+
+    // ── Return hex positions ──
+    if (wantSpaces) {
+      const result = [];
+      for (const h of hexes) {
+        if (!Board.getHex(h.q, h.r)) continue;
+        if (tokens.has('empty')) {
+          if (Game.state.units.some(u => u.q === h.q && u.r === h.r && u.health > 0)) continue;
+          const terr = Game.state.terrain.get(`${h.q},${h.r}`);
+          if (terr && terr.surface) continue;
+        }
+        result.push({ q: h.q, r: h.r });
+      }
+      return result;
+    }
+
+    // ── Mixed unit + terrain results ──
+    if (wantTerrain) {
+      const result = [];
+      // Collect matching units (if unit/enemy/ally tokens present)
+      if (wantUnits) {
+        for (const h of hexes) {
+          const u = Game.state.units.find(u => u.q === h.q && u.r === h.r && u.health > 0);
+          if (!u) continue;
+          if (tokens.has('enemy') && ctx.unit && u.player === ctx.unit.player) continue;
+          if (tokens.has('ally') && ctx.unit && u.player !== ctx.unit.player) continue;
+          result.push({ type: 'unit', unit: u, q: u.q, r: u.r });
+        }
+      }
+      // Collect matching terrain hexes
+      for (const h of hexes) {
+        const td = Game.state.terrain.get(`${h.q},${h.r}`);
+        if (!td || !td.surface) continue;
+        const info = Units.terrainRules[td.surface];
+        if (!info) continue;
+        if (terrainRuleTokens.length > 0 &&
+            !terrainRuleTokens.some(r => info.rules.includes(r))) continue;
+        result.push({ type: 'terrain', q: h.q, r: h.r, surface: td.surface });
+      }
+      return result;
+    }
+
+    // ── Return unit objects (default for 'around' with no type) ──
     const result = [];
-    for (const n of neighbors) {
-      const u = Game.state.units.find(
-        u => u.q === n.q && u.r === n.r && u.health > 0
-      );
-      if (u) result.push(u);
+    for (const h of hexes) {
+      const u = Game.state.units.find(u => u.q === h.q && u.r === h.r && u.health > 0);
+      if (!u) continue;
+      if (tokens.has('enemy') && ctx.unit && u.player === ctx.unit.player) continue;
+      if (tokens.has('ally') && ctx.unit && u.player !== ctx.unit.player) continue;
+      result.push(u);
     }
     return result;
   }
 
-  /** Empty hex positions adjacent to a unit (no living unit there). */
-  function emptyHexesAdjacentTo(unit) {
-    if (!unit) return [];
-    const neighbors = Board.getNeighbors(unit.q, unit.r);
-    const result = [];
-    for (const n of neighbors) {
-      const hex = Board.getHex(n.q, n.r);
-      if (!hex) continue;
-      const occupied = Game.state.units.some(
-        u => u.q === n.q && u.r === n.r && u.health > 0
-      );
-      if (!occupied) result.push({ q: n.q, r: n.r });
+  /** Line-to-target resolution for Piercing (extracted from old switch). */
+  function resolveLineToTarget(ctx) {
+    const act = Game.state.activationState;
+    if (act && act.attackPath && act.attackPath.length > 2) {
+      return unitsOnPath(act.attackPath);
     }
-    return result;
-  }
-
-  /** The unit's hex + all adjacent hexes (as { q, r } objects). */
-  function hexesAtAndAdjacent(unit) {
-    if (!unit) return [];
-    const result = [{ q: unit.q, r: unit.r }];
-    for (const n of Board.getNeighbors(unit.q, unit.r)) {
-      result.push({ q: n.q, r: n.r });
+    if (ctx.unit && ctx.target) {
+      const inter = [];
+      const dir = Board.straightLineDir(ctx.unit.q, ctx.unit.r, ctx.target.q, ctx.target.r, inter);
+      if (dir >= 0) {
+        return inter.map(h => Game.state.units.find(u => u.q === h.q && u.r === h.r && u.health > 0)).filter(Boolean);
+      }
     }
-    return result;
+    return [];
   }
 
   /** All living units in a straight line between attacker and target (exclusive of both). */
@@ -295,9 +304,9 @@ const Abilities = (() => {
     // Tag effect — identity marker, no runtime action
     if (lower === 'tag') return;
 
-    // Relocate effect — queue interactive movement for UI to handle
+    // Relocate effect — moves the target unit, range based on acting unit's move
     if (lower === 'relocate') {
-      const range = resolveValue(value, ctx) || (ctx.unit ? ctx.unit.move : 3);
+      const range = resolveValue(value, ctx) || (ctx.unit ? Game.getEffective(ctx.unit, 'move') : 3);
       const target = targets.length > 0 ? targets[0] : ctx.target;
       if (target && isUnit(target)) {
         effectQueue.push({ type: 'relocate', unit: target, range, sourceUnit: ctx.unit });
@@ -561,6 +570,9 @@ const Abilities = (() => {
 
   // ── Core Dispatch ────────────────────────────────────────────
 
+  // Pending endActivation targeting (needs interactive unit selection before effects fire)
+  let pendingEndActTarget = null;
+
   function dispatch(trigger, ctx) {
     const unit = ctx.unit;
     if (!unit || !unit.abilities) return false;
@@ -574,7 +586,6 @@ const Abilities = (() => {
     if (!ctx.damagedUnits) ctx.damagedUnits = [];
 
     // Enable queuing: push/pull/move effects get collected instead of executing
-    effectQueue = [];
     isQueuing = true;
 
     for (const ab of unit.abilities) {
@@ -582,9 +593,27 @@ const Abilities = (() => {
       const relevant = ab.ruleIds.filter(id => atomicRules[id]?.type === triggerType);
       if (relevant.length === 0) continue;
 
+      // Skip hit rules from abilities that have action rules — those fire via executeAction only
+      if (triggerType === 'hit' && ab.ruleIds.some(id => atomicRules[id]?.type === 'action')) continue;
+
       // Once-per-game / once-per-round check
       if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
       if (ab.oncePerRound && unit.usedAbilitiesThisRound && unit.usedAbilitiesThisRound.has(ab.name)) continue;
+
+      // EndActivation rules with validTargets need interactive target selection
+      if (triggerType === 'endActivation') {
+        const targetingRule = relevant.find(id => atomicRules[id]?.validTargets);
+        if (targetingRule) {
+          const rule = atomicRules[targetingRule];
+          pendingEndActTarget = {
+            ruleIds: relevant, ctx: { ...ctx }, ability: ab,
+            validTargets: rule.validTargets,
+            invalidTargets: rule.invalidTargets,
+          };
+          isQueuing = false;
+          return true; // signal UI to handle interactive targeting
+        }
+      }
 
       executeRules(ab.ruleIds, triggerType, ctx);
 
@@ -595,6 +624,61 @@ const Abilities = (() => {
     isQueuing = false;
     return effectQueue.length > 0;
   }
+
+  // ── EndActivation interactive targeting ──────────────────────
+
+  /** Get pending endActivation targeting info (for UI). */
+  function getPendingEndActTarget() { return pendingEndActTarget; }
+
+  /** Compute valid targets for a pending endActivation ability using tag-based filtering. */
+  function computeEndActTargets(unit) {
+    if (!pendingEndActTarget) return [];
+    const act = Game.state.activationState;
+    const validTags = pendingEndActTarget.validTargets.toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
+    const invalidTags = (pendingEndActTarget.invalidTargets || '').toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
+    const results = [];
+
+    for (const hex of Board.hexes) {
+      const livingUnit = Game.state.units.find(u => u.q === hex.q && u.r === hex.r && u.health > 0);
+      if (!livingUnit) continue;
+
+      const hexTags = [];
+      const isAlly = livingUnit.player === unit.player;
+      const isSelf = livingUnit === unit;
+      if (isAlly) hexTags.push('ally');
+      if (!isAlly) hexTags.push('enemy');
+      if (isSelf) hexTags.push('self');
+      // allDamaged: enemies damaged during this activation
+      if (!isAlly && act && act.damagedEnemies && act.damagedEnemies.includes(livingUnit)) {
+        hexTags.push('alldamaged');
+      }
+
+      if (!validTags.some(vt => hexTags.includes(vt))) continue;
+      if (invalidTags.length > 0 && invalidTags.some(it => hexTags.includes(it))) continue;
+
+      results.push({ type: 'unit', key: `${hex.q},${hex.r}`, q: hex.q, r: hex.r, unit: livingUnit });
+    }
+    return results;
+  }
+
+  /** Execute the pending endActivation ability with a chosen target. */
+  function executeEndActWithTarget(target) {
+    if (!pendingEndActTarget) return;
+    const { ruleIds, ctx, ability } = pendingEndActTarget;
+    ctx.target = target;
+    isQueuing = true;
+    executeRules(ruleIds, 'endActivation', ctx);
+    isQueuing = false;
+    // Track once-per usage
+    if (ability.oncePerGame) ctx.unit.usedAbilities.add(ability.name);
+    if (ability.oncePerRound) {
+      if (!ctx.unit.usedAbilitiesThisRound) ctx.unit.usedAbilitiesThisRound = new Set();
+      ctx.unit.usedAbilitiesThisRound.add(ability.name);
+    }
+    pendingEndActTarget = null;
+  }
+
+  function clearPendingEndAct() { pendingEndActTarget = null; }
 
   // ── Movement Dispatch (on entering occupied hex) ──────────────
 
@@ -1085,11 +1169,11 @@ const Abilities = (() => {
     if (!valueStr) return null;
     const lower = valueStr.toLowerCase();
     switch (lower) {
-      case 'unitsmove':    return ctx.unit ? (ctx.unit.move || 0) : 0;
+      case 'unitsmove':    return ctx.unit ? Game.getEffective(ctx.unit, 'move') : 0;
       case 'unitsdamage':  return ctx.unit ? Game.getEffective(ctx.unit, 'damage') : 0;
       case 'unitsrange':   return ctx.unit ? (ctx.unit.range || 0) : 0;
       case 'unitsarmor':   return ctx.unit ? Game.getEffective(ctx.unit, 'armor') : 0;
-      case 'targetmove':   return ctx.target ? (ctx.target.move || 0) : 0;
+      case 'targetmove':   return ctx.target ? Game.getEffective(ctx.target, 'move') : 0;
       case 'unitdamage':   return ctx.unit ? Game.getEffective(ctx.unit, 'damage') : 0;
       default: {
         const n = parseInt(valueStr, 10);
@@ -1164,7 +1248,7 @@ const Abilities = (() => {
         }
       }
 
-      if (!livingUnit && !terrain && !trap) {
+      if (!livingUnit && (!terrain || !terrain.surface) && !trap) {
         hexTags.push('empty');
         targetType = 'empty';
       }
@@ -1362,6 +1446,12 @@ const Abilities = (() => {
     getUnitTags,
     computeActionTargets,
     resolveValue,
+
+    // EndActivation interactive targeting
+    getPendingEndActTarget,
+    computeEndActTargets,
+    executeEndActWithTarget,
+    clearPendingEndAct,
 
     // Effect queue (interactive push/pull/move)
     hasPendingEffects,

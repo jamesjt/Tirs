@@ -1328,7 +1328,7 @@ const Board = (() => {
   function drawPathPreview(state) {
     // Draw on overlay canvas (above unit tokens) so arrows show over enemy units
     const oc = overlayCtx || ctx;
-    const unit = state.selectedUnit;
+    const unit = state.pathStartUnit || state.selectedUnit;
     const path = state.pathPreview;
     const wps = state.waypoints || [];
     const s = sz();

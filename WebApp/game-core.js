@@ -148,9 +148,11 @@ const Game = (() => {
     protected:    { armor: 1 },
     vulnerable:   { armor: -1 },
     strengthened: { damage: 1 },
+    leveled:      { damage: 1 },
     empowered:    { damage: 2 },
     weakness:     { damage: -1 },
     break:       { armor: -1 },
+    movebonus:    { move: 1 },
   };
 
   /** Get effective stat value after condition + ability modifiers. */
@@ -158,7 +160,7 @@ const Game = (() => {
     let val = unit[stat];
     for (const c of unit.conditions) {
       const mods = CONDITION_MODS[c.id];
-      if (mods && mods[stat] !== undefined) val += (c.value != null) ? c.value : mods[stat];
+      if (mods && mods[stat] !== undefined) val += (c.value != null) ? (mods[stat] < 0 ? -c.value : c.value) : mods[stat];
     }
     if (typeof Abilities !== 'undefined') {
       val += Abilities.getPassiveMod(unit, stat);
