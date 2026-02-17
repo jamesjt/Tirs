@@ -44,6 +44,7 @@ const Abilities = (() => {
     arcfire:      'permanent',
     moveintoenemies: 'endOfActivation',
     glidermark:     'manual',  // deferred damage marker, resolved in endActivation()
+    overwatch:      'endOfRound',
   };
 
   // ── Trigger Type Mapping ─────────────────────────────────────
@@ -825,6 +826,41 @@ const Abilities = (() => {
     return false;
   }
 
+  // ── Aura System ─────────────────────────────────────────────
+
+  /** Recalculate aura conditions from passive rules with "around" targeting.
+   *  Call after any position change (move, push, pull, relocate, deploy, death). */
+  function recalcAuras() {
+    // 1. Strip all existing aura conditions
+    for (const u of Game.state.units) {
+      if (u.health <= 0) continue;
+      u.conditions = u.conditions.filter(c => c.duration !== 'aura');
+    }
+    // 2. Scan for passive aura providers
+    for (const u of Game.state.units) {
+      if (u.health <= 0 || !u.abilities) continue;
+      for (const ab of u.abilities) {
+        for (const ruleId of ab.ruleIds) {
+          const rule = atomicRules[ruleId];
+          if (!rule || rule.type !== 'passive' || !rule.target) continue;
+          const lower = rule.target.toLowerCase();
+          if (!lower.includes('around') && !lower.includes('adjacent')) continue;
+          const targets = resolveTargets(rule.target, { unit: u }, rule);
+          for (const eff of rule.effects) {
+            if (!eff.effect) continue;
+            const effId = eff.effect.toLowerCase();
+            for (const t of targets) {
+              if (!isUnit(t) || t.player !== u.player) continue;
+              if (!Game.hasCondition(t, effId)) {
+                Game.addCondition(t, effId, 'aura', u.player);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   // ── Unit Tags ────────────────────────────────────────────────
 
   /** Get all tags on a unit from passive 'tag' effects. */
@@ -1427,6 +1463,7 @@ const Abilities = (() => {
     getPassiveMod,
     hasFlag,
     hasFlagPassive,
+    recalcAuras,
     hasDeployRule,
     getDeployTrapCount,
     ignoresTerrainRule,

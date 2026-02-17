@@ -389,6 +389,20 @@
     }
 
     for (const step of path) {
+      // Punish: check if moving away from adjacent enemies with punish
+      const prevQ = act.unit.q, prevR = act.unit.r;
+      for (const pu of G.state.units) {
+        if (pu.health <= 0 || pu.player === act.unit.player) continue;
+        if (typeof Abilities === 'undefined' || !Abilities.hasFlag(pu, 'punish')) continue;
+        const wasBeside = Board.hexDistance(pu.q, pu.r, prevQ, prevR) <= 1;
+        const stillBeside = Board.hexDistance(pu.q, pu.r, step.q, step.r) <= 1;
+        if (wasBeside && !stillBeside) {
+          damageUnit(act.unit, 1, pu, 'ability');
+          G.log(`${pu.name} Punish: 1 dmg to ${act.unit.name}${act.unit.health <= 0 ? ' \u2620' : ''}`, pu.player);
+        }
+      }
+      if (act.unit.health <= 0) break;
+
       act.unit.q = step.q;
       act.unit.r = step.r;
       // Fire movement triggers if hex is occupied by another unit
@@ -410,6 +424,7 @@
 
     // Update objective control
     updateObjectiveControl(act.unit);
+    if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
 
     G.state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ: act.unit.q, toR: act.unit.r, prevObjControl, prevMoveDistance, prevHealth, prevConditions, otherUnitPositions, prevTraps });
     G.log(`${act.unit.name} moved (${fromQ},${fromR}) \u2192 (${act.unit.q},${act.unit.r})`, act.unit.player);
@@ -483,6 +498,7 @@
     }
 
     updateObjectiveControl(unit);
+    if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
     G.log(`${unit.name} relocated (${fromQ},${fromR}) → (${unit.q},${unit.r})`, unit.player);
 
     return { unit, fromQ, fromR, prevHealth, prevConditions };
@@ -603,6 +619,18 @@
       }
       if (target.health <= 0) {
         Abilities.dispatch('afterDeath', { unit: target, killer: act.unit });
+      }
+    }
+
+    // Overwatch: units with overwatch condition deal 1 dmg to attackers in range
+    for (const w of G.state.units) {
+      if (w.health <= 0 || w.player === act.unit.player) continue;
+      if (w === target) continue; // not triggered when overwatch unit itself is the target
+      if (!G.hasCondition(w, 'overwatch')) continue;
+      if (canAttack(w, act.unit)) {
+        const owDmg = 1;
+        damageUnit(act.unit, owDmg, w, 'ability');
+        G.log(`${w.name} Overwatch: ${owDmg} dmg to ${act.unit.name}${act.unit.health <= 0 ? ' \u2620' : ''}`, w.player);
       }
     }
 
@@ -1235,6 +1263,7 @@
       }
     }
 
+    if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
     return true;
   }
 
@@ -1429,6 +1458,7 @@
 
     // Objective control
     if (u.health > 0) updateObjectiveControl(u);
+    if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
 
     // Auto-end
     if (act.moved && act.attacked && !G.state.rules.confirmEndTurn) {
@@ -1589,6 +1619,7 @@
     // 4. Update objective control
     updateObjectiveControl(u);
     if (data.enemy.health > 0) updateObjectiveControl(data.enemy);
+    if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
 
     // 5. Action history for undo
     G.state.actionHistory.push({
@@ -1643,6 +1674,7 @@
     }
     if (pushed > 0) {
       updateObjectiveControl(unit);
+      if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
       G.log(`${unit.name} pushed ${pushed} hex${pushed > 1 ? 'es' : ''}`, unit.player);
     }
     return pushed;
@@ -1673,6 +1705,7 @@
     }
     if (pulled > 0) {
       updateObjectiveControl(unit);
+      if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
       G.log(`${unit.name} pulled ${pulled} hex${pulled > 1 ? 'es' : ''}`, unit.player);
     }
     return pulled;

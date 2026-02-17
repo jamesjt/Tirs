@@ -102,6 +102,7 @@ const UI = (() => {
     movebonus:    '\u2B21',  // ⬡ hex (move bonus)
     break:       '\u2B07',  // ⬇ armor stripped
     arcfire:      '\u2316',  // ⌖ crosshair/target (flame seed)
+    overwatch:    '\u{1F441}',  // 👁 eye (overwatch mode)
   };
 
   // Conditions rendered as board overlay (not as token badge)

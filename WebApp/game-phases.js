@@ -484,6 +484,7 @@
       startRound();
     } else if (G.state.phase === G.PHASE.ROUND_START) {
       G.state.phase = G.PHASE.BATTLE;
+      if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
       // Skip player with no alive units so they don't get a stuck turn
       const alive = G.state.units.filter(u => u.player === G.state.currentPlayer && u.health > 0);
       if (alive.length === 0) {
