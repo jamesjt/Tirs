@@ -443,52 +443,100 @@ const Abilities = (() => {
 
   // ── Condition Evaluation (for passive/onActivation conditions) ──
 
-  function evaluateCondition(condStr, ctx) {
+  function parseComparison(val) {
+    const m = val.match(/^([<>!=]=?)(\d+)$/);
+    if (m) return { op: m[1], num: int(m[2]) };
+    return { op: '>=', num: int(val) };
+  }
+
+  function compare(actual, op, expected) {
+    switch (op) {
+      case '<':  return actual < expected;
+      case '<=': return actual <= expected;
+      case '>':  return actual > expected;
+      case '>=': return actual >= expected;
+      case '=': case '==': return actual === expected;
+      case '!=': return actual !== expected;
+      default:   return actual >= expected;
+    }
+  }
+
+  function evaluateCondition(condStr, condValue, ctx) {
     if (!condStr) return true;
+    const lower = condStr.toLowerCase().trim();
+    const val = (condValue || '').trim();
+
+    switch (lower) {
+      case 'adjenemies': {
+        const { op, num } = parseComparison(val);
+        const unit = ctx.unit;
+        if (!unit) return false;
+        const neighbors = Board.getNeighbors(unit.q, unit.r);
+        let count = 0;
+        for (const n of neighbors) {
+          if (Game.state.units.some(u => u.q === n.q && u.r === n.r && u.health > 0 && u.player !== unit.player)) count++;
+        }
+        return compare(count, op, num);
+      }
+
+      case 'not':
+      case 'ifnot':
+        return ctx.unit && !Game.hasCondition(ctx.unit, val.toLowerCase());
+
+      case 'has':
+      case 'ifhas':
+        return ctx.unit && Game.hasCondition(ctx.unit, val.toLowerCase());
+
+      case 'targetarmor':
+      case 'iftargetarmor': {
+        const { op, num } = parseComparison(val);
+        return ctx.target && compare(Game.getEffective(ctx.target, 'armor'), op, num);
+      }
+
+      case 'targetbasehealth':
+      case 'iftargetbasehealth': {
+        const { op, num } = parseComparison(val);
+        return ctx.target && compare(ctx.target.maxHealth, op, num);
+      }
+
+      default:
+        return evaluateConditionLegacy(condStr, ctx);
+    }
+  }
+
+  /** Legacy fallback — handles old monolithic condition strings until spreadsheet is fully migrated. */
+  function evaluateConditionLegacy(condStr, ctx) {
     const lower = condStr.toLowerCase();
 
-    // "adjEnemies<N" — fewer than N adjacent enemies
-    const adjMatch = lower.match(/^adjenemies<(\d+)$/);
+    const adjMatch = lower.match(/^adjenemies([<>!=]=?\d+)$/);
     if (adjMatch) {
-      const threshold = int(adjMatch[1]);
+      const { op, num } = parseComparison(adjMatch[1]);
       const unit = ctx.unit;
       if (!unit) return false;
       const neighbors = Board.getNeighbors(unit.q, unit.r);
       let count = 0;
       for (const n of neighbors) {
-        if (Game.state.units.some(
-          u => u.q === n.q && u.r === n.r && u.health > 0 && u.player !== unit.player
-        )) count++;
+        if (Game.state.units.some(u => u.q === n.q && u.r === n.r && u.health > 0 && u.player !== unit.player)) count++;
       }
-      return count < threshold;
+      return compare(count, op, num);
     }
 
-    // "ifNotX" — unit does NOT have condition X
     const notMatch = lower.match(/^ifnot(.+)$/);
-    if (notMatch) {
-      const condId = notMatch[1].trim();
-      return ctx.unit && !Game.hasCondition(ctx.unit, condId);
-    }
+    if (notMatch) return ctx.unit && !Game.hasCondition(ctx.unit, notMatch[1].trim());
 
-    // "ifHasX" — unit HAS condition X (e.g. ifHasGlider for Glider movement rules)
     const hasMatch = lower.match(/^ifhas(.+)$/);
-    if (hasMatch) {
-      const condId = hasMatch[1].trim();
-      return ctx.unit && Game.hasCondition(ctx.unit, condId);
-    }
+    if (hasMatch) return ctx.unit && Game.hasCondition(ctx.unit, hasMatch[1].trim());
 
-    // "ifTargetArmor>=N" — attack target has at least N effective armor
-    const tArmMatch = lower.match(/^iftargetarmor>=(\d+)$/);
+    const tArmMatch = lower.match(/^iftargetarmor([<>!=]=?\d+)$/);
     if (tArmMatch) {
-      const threshold = int(tArmMatch[1]);
-      return ctx.target && Game.getEffective(ctx.target, 'armor') >= threshold;
+      const { op, num } = parseComparison(tArmMatch[1]);
+      return ctx.target && compare(Game.getEffective(ctx.target, 'armor'), op, num);
     }
 
-    // "ifTargetBaseHealth>=N" — attack target has base health >= N
-    const tHpMatch = lower.match(/^iftargetbasehealth>=(\d+)$/);
+    const tHpMatch = lower.match(/^iftargetbasehealth([<>!=]=?\d+)$/);
     if (tHpMatch) {
-      const threshold = int(tHpMatch[1]);
-      return ctx.target && ctx.target.maxHealth >= threshold;
+      const { op, num } = parseComparison(tHpMatch[1]);
+      return ctx.target && compare(ctx.target.maxHealth, op, num);
     }
 
     console.warn(`[Abilities] Unknown condition: "${condStr}"`);
@@ -502,7 +550,7 @@ const Abilities = (() => {
     for (const ruleId of ruleIds) {
       const rule = atomicRules[ruleId];
       if (!rule || rule.type !== triggerType) continue;
-      if (rule.condition && !evaluateCondition(rule.condition, ctx)) continue;
+      if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, ctx)) continue;
 
       const targets = resolveTargets(rule.target, ctx, rule);
       for (const eff of rule.effects) {
@@ -624,7 +672,7 @@ const Abilities = (() => {
       for (const ruleId of ab.ruleIds) {
         const rule = atomicRules[ruleId];
         if (!rule || rule.type !== 'movement') continue;
-        if (rule.condition && !evaluateCondition(rule.condition, ctx)) continue;
+        if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, ctx)) continue;
 
         const targets = resolveTargets(rule.target, ctx, rule);
         for (const eff of rule.effects) {
@@ -647,7 +695,7 @@ const Abilities = (() => {
       for (const ruleId of ab.ruleIds) {
         const rule = atomicRules[ruleId];
         if (!rule || rule.type !== 'passive') continue;
-        if (rule.condition && !evaluateCondition(rule.condition, { unit })) continue;
+        if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit })) continue;
         for (const eff of rule.effects) {
           if (eff.effect && eff.effect.toLowerCase() === stat) mod += int(eff.value);
         }
@@ -724,7 +772,7 @@ const Abilities = (() => {
       for (const ruleId of ab.ruleIds) {
         const rule = atomicRules[ruleId];
         if (!rule || rule.type !== 'passive') continue;
-        if (rule.condition && !evaluateCondition(rule.condition, { unit })) continue;
+        if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit })) continue;
         for (const eff of rule.effects) {
           if (eff.effect && eff.effect.toLowerCase() === lower && eff.value) {
             items.push(...eff.value.toLowerCase().split(',').map(s => s.trim()));

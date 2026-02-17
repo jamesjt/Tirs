@@ -216,6 +216,7 @@ const Units = (() => {
         target: col(row, ['target']).trim() || col(row, ['validtargets', 'valid targets']).trim(),
         effects,
         condition: col(row, ['condition']).trim() || null,
+      conditionValue: col(row, ['condition value', 'conditionvalue']).trim() || null,
         stat: col(row, ['stat']).trim() || null,
         value: col(row, ['value']).trim() || null,
         range: col(row, ['range']).trim() || null,
