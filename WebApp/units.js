@@ -16,6 +16,7 @@ const Units = (() => {
   let activeFactions = [];           // e.g. ['Syli', 'Red Ridge', ...]
   const terrainRules = {};           // e.g. { forest: { element: 'earth', rules: ['difficult','cover'] } }
   const factionTerrain = {};         // e.g. { 'Syli': ['forest','brambles','fae mist'] }
+  const trapDefs = {};               // e.g. { clock: { damage: 1, effects: [], displayName: 'Clock' } }
 
   // faction name -> array of unit templates
   const catalog = {};
@@ -141,6 +142,7 @@ const Units = (() => {
 
         if (first.toUpperCase() === 'TERRAIN RULES') { section = 'rules'; continue; }
         if (first.toUpperCase() === 'FACTION TERRAIN') { section = 'factions'; continue; }
+        if (first.toUpperCase() === 'TRAPS') { section = 'traps'; continue; }
 
         const cells = row.map(c => (c || '').trim()).filter(Boolean);
         if (cells.length === 0) continue;
@@ -154,11 +156,27 @@ const Units = (() => {
           const factionName = cells[0];
           const terrains = cells.slice(1).map(t => t.toLowerCase());
           factionTerrain[factionName] = terrains;
+        } else if (section === 'traps') {
+          // Format: Name, Effect1, Value1, Effect2, ...
+          const name = cells[0].toLowerCase();
+          let damage = 1;
+          const effects = [];
+          for (let i = 1; i < cells.length; i += 2) {
+            const eff = cells[i].toLowerCase();
+            const val = cells[i + 1] || '';
+            if (eff === 'damage') {
+              damage = parseInt(val, 10) || 1;
+            } else {
+              effects.push(eff);
+            }
+          }
+          trapDefs[name] = { damage, effects, displayName: cells[0] };
         }
       }
 
       console.log('Terrain rules:', terrainRules);
       console.log('Faction terrain:', factionTerrain);
+      console.log('Trap definitions:', trapDefs);
     } catch (err) {
       console.warn('Failed to fetch terrain map:', err);
     }
@@ -425,6 +443,7 @@ const Units = (() => {
     get activeFactions() { return activeFactions; },
     get terrainRules() { return terrainRules; },
     get factionTerrain() { return factionTerrain; },
+    get trapDefs() { return trapDefs; },
     get catalog() { return catalog; },
     get loadingState() { return loadingState; },
     get loadingError() { return loadingError; },

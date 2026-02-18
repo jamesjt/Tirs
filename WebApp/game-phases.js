@@ -87,6 +87,37 @@
     G.state.currentPlayer = G.state.firstTurnPlayer;
   }
 
+  // ── Deploy Validation ────────────────────────────────────────
+
+  /** Get valid hexes for a deployment kind: 'unit', 'terrain', or 'trap'.
+   *  opts.unitQ/unitR/range: for traps, limit to hexes within range of unit. */
+  function getValidDeployHexes(kind, player, opts) {
+    const hexes = new Map();
+    const enemy = player === 1 ? 2 : 1;
+    const range = opts && opts.range ? opts.range : 0;
+    const hasRangeLimit = kind === 'trap' && range > 0 && opts && opts.unitQ != null;
+    for (const hex of Board.hexes) {
+      const key = `${hex.q},${hex.r}`;
+      // No deploying on objectives
+      if (Board.OBJECTIVES.some(o => o.q === hex.q && o.r === hex.r)) continue;
+
+      if (kind === 'unit') {
+        if (hex.zone !== `player${player}`) continue;
+        if (G.state.units.some(u => u.q === hex.q && u.r === hex.r && u.health > 0)) continue;
+      } else if (kind === 'terrain') {
+        if (hex.zone === `player${enemy}`) continue;
+        const td = G.state.terrain.get(key);
+        if (td && td.surface) continue;
+      } else if (kind === 'trap') {
+        if (hex.zone === `player${enemy}`) continue;
+        if (G.state.traps.has(key)) continue;
+        if (hasRangeLimit && Board.hexDistance(opts.unitQ, opts.unitR, hex.q, hex.r) > range) continue;
+      }
+      hexes.set(key, 1);
+    }
+    return hexes;
+  }
+
   // ── Phase: Terrain Deploy ─────────────────────────────────────
 
   function deployTerrain(player, q, r, surfaceType) {
@@ -158,11 +189,11 @@
     G.state.units.push(unit);
     template._deployed = true;
 
-    // Check for deploy trap ability (Clockwerk)
-    const deployTrapCount = typeof Abilities !== 'undefined'
-      ? Abilities.getDeployTrapCount(template) : 0;
-    if (deployTrapCount > 0) {
-      G.state.pendingDeployTraps = { unit, count: deployTrapCount, placed: 0 };
+    // Check for deploy trap ability (Clockwerk, Trapper: Spike, etc.)
+    const trapInfo = typeof Abilities !== 'undefined'
+      ? Abilities.getDeployTrapInfo(template) : null;
+    if (trapInfo && trapInfo.count > 0) {
+      G.state.pendingDeployTraps = { unit, count: trapInfo.count, placed: 0, trapType: trapInfo.type, deployRange: trapInfo.range };
       // UI will handle trap placement before continuing alternation
       return true;
     }
@@ -783,6 +814,7 @@
   G.removeFromRosterByIndex = removeFromRosterByIndex;
   G.confirmRoster = confirmRoster;
   G.rosterCost = rosterCost;
+  G.getValidDeployHexes = getValidDeployHexes;
   G.deployTerrain = deployTerrain;
   G.deployUnit = deployUnit;
   G.undeployUnit = undeployUnit;

@@ -570,11 +570,36 @@
       return true;
     }
 
-    const target = G.state.units.find(
+    let target = G.state.units.find(
       u => u.q === targetQ && u.r === targetR && u.health > 0 && u.player !== act.unit.player
     );
     if (!target) return false;
     if (!canAttack(act.unit, target)) return false;
+
+    // ── Guardian intercept: redirect lethal attacks to guardian ──
+    let guardianTriggered = false;
+    {
+      const hypAtkDmg = G.getEffective(act.unit, 'damage') + (bonusDamage || 0);
+      let hypArm = G.getEffective(target, 'armor');
+      if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'ignoreBaseArmor')) {
+        hypArm -= target.armor;
+      }
+      const hypDmg = Math.max(1, hypAtkDmg - hypArm);
+      if (hypDmg >= target.health) {
+        const intercept = tryGuardianIntercept(target, act.unit);
+        if (intercept) {
+          const { guardian, destHex } = intercept;
+          guardian.q = destHex.q;
+          guardian.r = destHex.r;
+          Abilities.markAbilityUsed(guardian, 'Guardian');
+          // Remove guarded condition
+          target.conditions = target.conditions.filter(c => !(c.id === 'guarded' && c.source === guardian));
+          G.log(`Guardian! ${guardian.name} intercepts attack on ${target.name}!`, guardian.player);
+          target = guardian;
+          guardianTriggered = true;
+        }
+      }
+    }
 
     // ── Miss check: pre-damage ability interception ──
     const missResult = typeof Abilities !== 'undefined' ? Abilities.checkMiss(target, act.unit) : null;
@@ -718,6 +743,7 @@
       healthSnapshots,
       tossData: tossData || null,
       attackPath: attackPath || null,
+      guardianTriggered: guardianTriggered || false,
     });
     const killText = target.health <= 0 ? ' \u2620 KILLED' : ` (${target.health}/${target.maxHealth} HP)`;
     G.log(`${act.unit.name} attacks ${target.name} for ${dmg} dmg${killText}`, act.unit.player);
@@ -836,9 +862,15 @@
       G.state.turnActions.push(e);
     }
 
+    const player = act ? act.unit.player : G.state.currentPlayer;
     G.state.activationState = null;
     G.state.actionHistory = [];
 
+    // Guardian: free action to pick guard target before switching turns
+    if (hasPendingGuardians(player)) {
+      G.state.pendingGuardian = buildGuardianQueue(player);
+      return; // UI picks up guardianTargeting, then calls finishGuardianTargeting → nextTurn
+    }
     G.nextTurn();
   }
 
@@ -876,6 +908,11 @@
     // Flush turn actions
     for (const e of G.state.turnActions) G.state.summaryLog.push(e);
     G.state.turnActions = [];
+    // Guardian: free action before switching turns
+    if (hasPendingGuardians(p)) {
+      G.state.pendingGuardian = buildGuardianQueue(p);
+      return true; // UI picks up guardian targeting
+    }
     G.nextTurn();
     return true;
   }
@@ -887,13 +924,17 @@
     const dist = Board.hexDistance(attacker.q, attacker.r, target.q, target.r);
     if (dist > atkRange) return false;
 
+    const hasTrueSight = typeof Abilities !== 'undefined' && Abilities.hasFlag(attacker, 'truesight');
+
     // Hidden: concealing terrain OR passive hidden ability — require adjacent attacker
-    if (typeof Abilities !== 'undefined' && Abilities.isHidden(target) && dist > 1) {
+    // True Sight: ignores Hidden entirely
+    if (!hasTrueSight && typeof Abilities !== 'undefined' && Abilities.isHidden(target) && dist > 1) {
       return false;
     }
 
     // Line of Sight (all attack types)
-    if (!hasLoS(attacker.q, attacker.r, target.q, target.r)) return false;
+    // True Sight: cover/concealing terrain doesn't block LoS
+    if (!hasLoS(attacker.q, attacker.r, target.q, target.r, hasTrueSight)) return false;
 
     // Targeting pattern
     const atkType = overrides?.atkType ?? (attacker.atkType || 'D').toUpperCase();
@@ -905,8 +946,14 @@
       if (dir === -1) return false;
       const isPiercing = typeof Abilities !== 'undefined' && Abilities.hasFlag(attacker, 'piercing');
       for (const h of intermediates) {
-        // Piercing: only cover terrain blocks LoE (attacks pass through units)
-        if (isPiercing ? hasTerrainRule(h.q, h.r, 'cover') : isBlockingLoE(h.q, h.r)) return false;
+        // True Sight + Piercing: nothing blocks
+        // Piercing only: cover terrain blocks (units pass through)
+        // True Sight only: units block (cover passes through)
+        // Neither: units and cover block
+        if (isPiercing && hasTrueSight) continue;
+        if (isPiercing) { if (hasTerrainRule(h.q, h.r, 'cover')) return false; continue; }
+        if (hasTrueSight) { if (G.state.units.some(u => u.q === h.q && u.r === h.r && u.health > 0)) return false; continue; }
+        if (isBlockingLoE(h.q, h.r)) return false;
       }
       return true;
     }
@@ -914,8 +961,9 @@
     if (atkType === 'P') {
       // Path: at least one shortest path with LoE clear on intermediates
       const isPiercing = typeof Abilities !== 'undefined' && Abilities.hasFlag(attacker, 'piercing');
+      if (isPiercing && hasTrueSight) return true; // nothing blocks
       if (isPiercing) return hasFreePathTerrainOnly(attacker.q, attacker.r, target.q, target.r, dist);
-      return hasFreePath(attacker.q, attacker.r, target.q, target.r, dist);
+      return hasFreePath(attacker.q, attacker.r, target.q, target.r, dist, hasTrueSight);
     }
 
     // Direct: in range + LoS + not hidden (all checked above)
@@ -993,13 +1041,21 @@
   function onEnterHex(unit, q, r) {
     if (!unit || unit.health <= 0) return;
 
-    // Clock Trap check (fires before terrain)
+    // Trap check (fires before terrain)
     const trapKey = `${q},${r}`;
     const trap = G.state.traps.get(trapKey);
     if (trap) {
       G.state.traps.delete(trapKey);
-      damageUnit(unit, 1, null, 'trap');
-      G.log(`${unit.name} triggers a Clock Trap! (${unit.health}/${unit.maxHealth} HP)`, unit.player);
+      const info = getTrapInfo(trap.type || 'clock');
+      damageUnit(unit, info.damage, null, 'trap');
+      G.log(`${unit.name} triggers a ${info.label}! (${unit.health}/${unit.maxHealth} HP)`, unit.player);
+      // Apply secondary effects (e.g. immobilize from spike traps)
+      if (unit.health > 0) {
+        for (const eff of info.effects) {
+          G.addCondition(unit, eff);
+          G.log(`${unit.name} is ${eff}!`, unit.player);
+        }
+      }
     }
     if (unit.health <= 0) return;
 
@@ -1025,9 +1081,16 @@
       unit.q = -99;
       unit.r = -99;
     }
+    // Forest Charged: refresh abilities on entering forest terrain
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'forestcharged')) {
+      const td = G.state.terrain.get(`${q},${r}`);
+      if (td && td.surface === 'forest') {
+        applyRecharge(unit, 'Forest Charged');
+      }
+    }
   }
 
-  function hasLoS(q1, r1, q2, r2) {
+  function hasLoS(q1, r1, q2, r2, ignoreTerrain) {
     // Simplified LoS: check pixel line for blocking hexes
     const h1 = Board.getHex(q1, r1);
     const h2 = Board.getHex(q2, r2);
@@ -1053,6 +1116,8 @@
         if (key === `${q1},${r1}` || key === `${q2},${r2}`) continue;
         if (checked.has(key)) continue;
         checked.add(key);
+        // True Sight: cover/concealing don't block LoS
+        if (ignoreTerrain) continue;
         // Cover terrain blocks LoS beyond (not into)
         if (hasTerrainRule(best.q, best.r, 'cover')) return false;
         // Concealing terrain blocks LoS beyond (not into — target hex is skipped)
@@ -1063,7 +1128,7 @@
     return true;
   }
 
-  function hasFreePath(q1, r1, q2, r2, maxDist) {
+  function hasFreePath(q1, r1, q2, r2, maxDist, ignoreCover) {
     // BFS: find at least one shortest path where no intermediate hex blocks LoE
     const target = `${q2},${r2}`;
     const visited = new Map();
@@ -1078,7 +1143,12 @@
         const nd = cur.dist + 1;
         if (key === target) return true; // reached target via clear path
         if (visited.has(key)) continue;
-        if (isBlockingLoE(n.q, n.r)) continue; // blocked
+        // True Sight: cover doesn't block, only units
+        if (ignoreCover) {
+          if (G.state.units.some(u => u.q === n.q && u.r === n.r && u.health > 0)) continue;
+        } else {
+          if (isBlockingLoE(n.q, n.r)) continue;
+        }
         visited.set(key, nd);
         queue.push({ q: n.q, r: n.r, dist: nd });
       }
@@ -1139,6 +1209,7 @@
     if (last.type === 'toter' && !G.state.rules.canUndoMove) return false;
     if (last.type === 'flareup' && !G.state.rules.canUndoMove) return false;
     if (last.type === 'attack' && !G.state.rules.canUndoAttack) return false;
+    if (last.type === 'attack' && last.guardianTriggered) return false;
     if (last.type === 'ability') {
       if (last.actionCost === 'move' && !G.state.rules.canUndoMove) return false;
       if (last.actionCost === 'attack' && !G.state.rules.canUndoAttack) return false;
@@ -1830,9 +1901,124 @@
     return true;
   }
 
-  // ── Clock Traps ──────────────────────────────────────────────
+  // ── Traps ────────────────────────────────────────────────────
 
-  /** Get valid hexes for placing a trap adjacent to a unit. */
+  // Image overrides for trap types (defaults to {type}trap.png)
+  const TRAP_IMAGES = { clock: 'toytrap.png' };
+
+  // ── Guardian (intercept lethal attacks on guarded ally) ──────
+
+  /** Check if a player has guardian units that can set targets this turn. */
+  function hasPendingGuardians(player) {
+    return G.state.units.some(u =>
+      u.player === player && u.health > 0 &&
+      typeof Abilities !== 'undefined' && Abilities.hasFlag(u, 'guardian') &&
+      !G.hasCondition(u, 'silenced') &&
+      !u.usedAbilities.has('Guardian')
+    );
+  }
+
+  /** Build a queue of guardian units needing target selection. */
+  function buildGuardianQueue(player) {
+    const units = [];
+    for (const u of G.state.units) {
+      if (u.player !== player || u.health <= 0) continue;
+      if (typeof Abilities === 'undefined' || !Abilities.hasFlag(u, 'guardian')) continue;
+      if (G.hasCondition(u, 'silenced')) continue;
+      if (u.usedAbilities.has('Guardian')) continue;
+      const allies = getGuardableAllies(u);
+      if (allies.length > 0) units.push({ unit: u, allies });
+    }
+    return { units, currentIndex: 0 };
+  }
+
+  /** Get allies within move range that this guardian can protect. */
+  function getGuardableAllies(guardianUnit) {
+    const allies = [];
+    for (const u of G.state.units) {
+      if (u === guardianUnit || u.player !== guardianUnit.player || u.health <= 0) continue;
+      if (Board.hexDistance(guardianUnit.q, guardianUnit.r, u.q, u.r) <= guardianUnit.move) {
+        allies.push(u);
+      }
+    }
+    return allies;
+  }
+
+  /** Set a guardian's target ally. Adds 'guarded' condition. */
+  function setGuardTarget(guardianUnit, ally) {
+    // Remove any previous guarded condition from this guardian
+    for (const u of G.state.units) {
+      u.conditions = u.conditions.filter(c => !(c.id === 'guarded' && c.source === guardianUnit));
+    }
+    // Add guarded condition to the ally
+    G.addCondition(ally, 'guarded', 'manual', guardianUnit);
+    G.log(`${guardianUnit.name} guards ${ally.name}`, guardianUnit.player);
+    advanceGuardianQueue();
+  }
+
+  /** Skip guardian targeting for the current guardian in queue. */
+  function skipGuardian() {
+    advanceGuardianQueue();
+  }
+
+  /** Advance to next guardian in queue. Does NOT call finishGuardianTargeting —
+   *  the UI (or net handler) is responsible for detecting queue completion and
+   *  calling finishGuardianTargeting exactly once. */
+  function advanceGuardianQueue() {
+    const pg = G.state.pendingGuardian;
+    if (!pg) return;
+    pg.currentIndex++;
+  }
+
+  /** Complete guardian targeting, proceed to next turn. */
+  function finishGuardianTargeting() {
+    G.state.pendingGuardian = null;
+    G.nextTurn();
+  }
+
+  /** Find a guardian that can intercept an attack on the target. Returns { guardian, destHex } or null. */
+  function tryGuardianIntercept(target, attacker) {
+    // Find guarded condition with a valid guardian source
+    const cond = target.conditions.find(c =>
+      c.id === 'guarded' && c.source && c.source.health > 0 &&
+      !c.source.usedAbilities.has('Guardian')
+    );
+    if (!cond) return null;
+    const guardian = cond.source;
+
+    // Find best hex: empty, adjacent to ally, closest to attacker
+    const neighbors = Board.getNeighbors(target.q, target.r);
+    let bestHex = null;
+    let bestDist = Infinity;
+    for (const n of neighbors) {
+      // Must be empty (no living unit)
+      if (G.state.units.some(u => u.q === n.q && u.r === n.r && u.health > 0)) continue;
+      const dist = Board.hexDistance(n.q, n.r, attacker.q, attacker.r);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestHex = n;
+      }
+    }
+    if (!bestHex) return null;
+
+    return { guardian, destHex: bestHex };
+  }
+
+  // ── Traps ────────────────────────────────────────────────────
+
+  /** Get trap definition: { damage, label, image, effects }. Reads from Units.trapDefs at runtime. */
+  function getTrapInfo(type) {
+    const def = (typeof Units !== 'undefined' && Units.trapDefs) ? Units.trapDefs[type] : null;
+    const name = def ? def.displayName : (type.charAt(0).toUpperCase() + type.slice(1));
+    return {
+      damage: def ? def.damage : 1,
+      label: name + ' Trap',
+      image: TRAP_IMAGES[type] || type + 'trap.png',
+      effects: def ? def.effects : [],
+    };
+  }
+
+  /** Get valid hexes for placing a trap adjacent to a unit (battle-time). */
   function getValidTrapHexes(unit) {
     const hexes = new Map();
     const neighbors = Board.getNeighbors(unit.q, unit.r);
@@ -1846,11 +2032,12 @@
     return hexes;
   }
 
-  /** Place a clock trap at (q, r) for the given player. */
-  function placeTrap(q, r, player) {
+  /** Place a trap at (q, r) for the given player. */
+  function placeTrap(q, r, player, type) {
     const key = `${q},${r}`;
-    G.state.traps.set(key, { player });
-    G.log(`Clock Trap placed at (${q},${r})`, player);
+    G.state.traps.set(key, { player, type: type || 'clock' });
+    const info = getTrapInfo(type || 'clock');
+    G.log(`${info.label} placed at (${q},${r})`, player);
   }
 
   /** Remove a clock trap at (q, r). Returns the trap data or null. */
@@ -1884,7 +2071,7 @@
     if (!neighbors.some(n => n.q === q && n.r === r)) return false;
     if (G.state.traps.has(key)) return false;
 
-    placeTrap(q, r, unit.player);
+    placeTrap(q, r, unit.player, 'clock');
 
     // Mark spent resource
     if (costType === 'move') act.moved = true;
@@ -2108,6 +2295,18 @@
     });
   }
 
+  /** Shared recharge: clear usedAbilities unless empowered. Returns true if recharged. */
+  function applyRecharge(unit, ruleName) {
+    if (G.hasCondition(unit, 'empowered')) {
+      G.log(`${ruleName} blocked — ${unit.name} is empowered`, unit.player);
+      return false;
+    }
+    if (!unit.usedAbilities || unit.usedAbilities.size === 0) return false;
+    unit.usedAbilities.clear();
+    G.log(`${ruleName}! ${unit.name}'s abilities refreshed`, unit.player);
+    return true;
+  }
+
   /** Deal damage to a unit from a source.
    *  sourceType: 'ability' | 'terrain' | 'terrain-cinder' | 'burning' | 'poison' | 'arcfire' | undefined */
   function damageUnit(unit, amount, source, sourceType) {
@@ -2130,12 +2329,14 @@
       const isAllyAbility = sourceType === 'ability' && source &&
                             typeof source === 'object' && source.player === unit.player;
       if (isCinder || isArcfire || isAllyAbility) {
-        if (G.hasCondition(unit, 'empowered')) {
-          G.log(`Fire Charged blocked — ${unit.name} is empowered`, unit.player);
-        } else {
-          unit.usedAbilities.clear();
-          G.log(`Fire Charged! ${unit.name}'s abilities refreshed`, unit.player);
-        }
+        applyRecharge(unit, 'Fire Charged');
+      }
+    }
+
+    // Guardian death: remove guarded conditions sourced from this unit
+    if (unit.health <= 0) {
+      for (const u of G.state.units) {
+        u.conditions = u.conditions.filter(c => !(c.id === 'guarded' && c.source === unit));
       }
     }
   }
@@ -2393,7 +2594,16 @@
   G.executeGustPush = executeGustPush;
   G.executeGustPushCinder = executeGustPushCinder;
 
-  // Clock Trap helpers
+  // Guardian helpers
+  G.hasPendingGuardians = hasPendingGuardians;
+  G.buildGuardianQueue = buildGuardianQueue;
+  G.getGuardableAllies = getGuardableAllies;
+  G.setGuardTarget = setGuardTarget;
+  G.skipGuardian = skipGuardian;
+  G.finishGuardianTargeting = finishGuardianTargeting;
+
+  // Trap helpers
+  G.getTrapInfo = getTrapInfo;
   G.getValidTrapHexes = getValidTrapHexes;
   G.placeTrap = placeTrap;
   G.removeTrap = removeTrap;

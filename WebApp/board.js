@@ -599,9 +599,20 @@ const Board = (() => {
     surfaceIcons[name] = img;
   }
 
-  // Clock trap image
-  const trapImg = new Image();
-  trapImg.src = '../nandeck/images/unitImages/RedRidge/toytrap.png';
+  // Trap image cache — keyed by trap type
+  const trapImages = {};
+  function getTrapImage(type) {
+    if (trapImages[type]) return trapImages[type];
+    const info = (typeof Game !== 'undefined' && Game.getTrapInfo)
+      ? Game.getTrapInfo(type) : null;
+    const file = info?.image || 'toytrap.png';
+    const img = new Image();
+    img.src = `../nandeck/images/unitImages/RedRidge/${file}`;
+    trapImages[type] = img;
+    return img;
+  }
+  // Pre-load clock trap image
+  getTrapImage('clock');
 
   // Unit art image cache — keyed by image path
   const unitImageCache = {};
@@ -1055,17 +1066,18 @@ const Board = (() => {
       }
     }
 
-    // 4a. Traps (clock traps — rendered above objectives)
+    // 4a. Traps (rendered above objectives)
     if (state.traps) {
-      for (const [key] of state.traps) {
+      for (const [key, trap] of state.traps) {
         const [q, r] = key.split(',').map(Number);
         const hex = getHex(q, r);
         if (!hex) continue;
         const { x, y } = px(hex);
         const s = sz();
-        if (trapImg.complete && trapImg.naturalWidth > 0) {
+        const img = getTrapImage(trap.type || 'clock');
+        if (img.complete && img.naturalWidth > 0) {
           const size = s * 1.2;
-          ctx.drawImage(trapImg, x - size / 2, y - size / 2, size, size);
+          ctx.drawImage(img, x - size / 2, y - size / 2, size, size);
         } else {
           drawCircle(hex, 0.4, '#C44', '#fff', 2);
           drawLabel(hex, 'T', '#fff');

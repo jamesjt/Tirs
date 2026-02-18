@@ -153,6 +153,7 @@ const Game = (() => {
     weakness:     { damage: -1 },
     break:       { armor: -1 },
     movebonus:    { move: 1 },
+    bonusarmor:   { armor: 1 },
   };
 
   /** Get effective stat value after condition + ability modifiers. */

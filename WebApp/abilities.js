@@ -48,6 +48,7 @@ const Abilities = (() => {
     suppressed:     'manual',   // cleared when any teammate finishes activation
     dodgy:          'endOfRound',
     tumbler:        'endOfRound',
+    guarded:        'manual',   // cleared on guardian intercept or guardian death
   };
 
   // ── Trigger Type Mapping ─────────────────────────────────────
@@ -118,6 +119,17 @@ const Abilities = (() => {
     const tokens = new Set(input.split(' ').filter(t => t && !TARGET_NOISE.has(t)));
 
     // ── Special non-compositional keywords ──
+    if (tokens.has('closestally')) {
+      const src = ctx.unit;
+      if (!src) return [];
+      let closest = null, minDist = Infinity;
+      for (const u of Game.state.units) {
+        if (u === src || u.health <= 0 || u.player !== src.player) continue;
+        const d = Board.hexDistance(src.q, src.r, u.q, u.r);
+        if (d < minDist) { minDist = d; closest = u; }
+      }
+      return closest ? [closest] : [];
+    }
     if (tokens.has('damaged'))
       return ctx.damagedUnits || (ctx.target ? [ctx.target] : []);
     // lineToTarget as sole spec → return units on line (e.g. Piercing)
@@ -308,12 +320,78 @@ const Abilities = (() => {
     // Tag effect — identity marker, no runtime action
     if (lower === 'tag') return;
 
-    // Relocate effect — moves the target unit, range based on acting unit's move
+    // Grant ability — pushes named ability defs to the target unit (Parting Gift etc.)
+    if (lower === 'grantability') {
+      const names = (value || '').split(',').map(s => s.trim()).filter(Boolean);
+      for (const t of targets) {
+        if (!isUnit(t)) continue;
+        for (const name of names) {
+          const def = abilityDefs[name];
+          if (!def) { console.warn(`[grantability] Unknown ability: "${name}"`); continue; }
+          if (t.abilities.some(a => a.name === def.name)) continue;
+          t.abilities.push(def);
+        }
+        Game.log(`${t.name} inherits abilities from ${ctx.unit ? ctx.unit.name : '?'}`, t.player);
+        recalcAuras();
+      }
+      return;
+    }
+
+    // Stat modification — directly modify unit base stats (for permanent changes like Parting Gift)
+    // Value format: comma-separated "stat:N" (add) or "stat=V" (set)
+    // e.g. "range:1,atkType=D" or "maxHealth:1" or "armor=2"
+    if (lower === 'statmod') {
+      const mods = (value || '').split(',').map(s => s.trim()).filter(Boolean);
+      for (const t of targets) {
+        if (!isUnit(t)) continue;
+        for (const mod of mods) {
+          const setMatch = mod.match(/^(\w+)=(.+)$/);
+          const addMatch = mod.match(/^(\w+):(\d+)$/);
+          if (setMatch) {
+            const [, stat, val] = setMatch;
+            const s = stat.toLowerCase();
+            if (s === 'atktype') t.atkType = val;
+            else if (s === 'armor') t.armor = Math.max(t.armor, parseInt(val, 10));
+            else t[stat] = parseInt(val, 10) || t[stat];
+          } else if (addMatch) {
+            const [, stat, val] = addMatch;
+            const n = parseInt(val, 10);
+            const s = stat.toLowerCase();
+            if (s === 'range') t.range += n;
+            else if (s === 'maxhealth') { t.maxHealth += n; t.health = Math.min(t.health + n, t.maxHealth); }
+            else if (s === 'move') t.move += n;
+            else if (s === 'damage') t.damage += n;
+          }
+        }
+      }
+      return;
+    }
+
+    // Relocate effect — moves the target unit (or terrain), range based on acting unit's move
     if (lower === 'relocate') {
       const range = resolveValue(value, ctx) || (ctx.unit ? Game.getEffective(ctx.unit, 'move') : 3);
       const target = targets.length > 0 ? targets[0] : ctx.target;
       if (target && isUnit(target)) {
         effectQueue.push({ type: 'relocate', unit: target, range, sourceUnit: ctx.unit });
+      } else if (ctx.targetQ != null && ctx.targetR != null) {
+        // Terrain relocate: move terrain piece to a new hex within range
+        const srcQ = ctx.targetQ, srcR = ctx.targetR;
+        const terrain = Game.state.terrain.get(`${srcQ},${srcR}`);
+        if (terrain && terrain.surface) {
+          const validHexes = new Set();
+          for (const hex of Board.hexes) {
+            if (hex.q === srcQ && hex.r === srcR) continue;
+            if (Board.hexDistance(srcQ, srcR, hex.q, hex.r) > range) continue;
+            const existing = Game.state.terrain.get(`${hex.q},${hex.r}`);
+            if (existing && existing.surface) continue;
+            validHexes.add(`${hex.q},${hex.r}`);
+          }
+          effectQueue.push({
+            type: 'relocateTerrain', surface: terrain.surface,
+            player: terrain.player || 0, srcQ, srcR,
+            validHexes, sourceUnit: ctx.unit,
+          });
+        }
       }
       return;
     }
@@ -576,6 +654,9 @@ const Abilities = (() => {
         const count = Game.state.units.filter(u => u.health > 0 && u.player === unit.player).length;
         return compare(count, op, num);
       }
+
+      case 'hidden':
+        return ctx.unit ? isHidden(ctx.unit) : false;
 
       default:
         return evaluateConditionLegacy(condStr, ctx);
@@ -1136,7 +1217,10 @@ const Abilities = (() => {
   }
 
   /** Get the deploy trap count for a unit template (0 if no deploy trap rule). */
-  function getDeployTrapCount(template) {
+  /** Get deploy trap info from a unit template. Returns { type, count } or null.
+   *  Spreadsheet value format: "type,count" (e.g. "clock,2" or "spike,2").
+   *  Backward compat: bare number defaults to type "clock". */
+  function getDeployTrapInfo(template) {
     const names = (template.specialRules || []).map(r => r.name);
     for (const name of names) {
       const def = abilityDefs[name];
@@ -1146,13 +1230,16 @@ const Abilities = (() => {
         if (rule && rule.type === 'deploy') {
           for (const eff of rule.effects) {
             if (eff.effect && eff.effect.toLowerCase() === 'deploytrap') {
-              return parseInt(eff.value, 10) || 0;
+              const parts = (eff.value || '').split(',').map(s => s.trim());
+              const range = rule.range ? parseInt(rule.range, 10) || 0 : 0;
+              if (parts.length >= 2) return { type: parts[0], count: parseInt(parts[1], 10) || 0, range };
+              return { type: 'clock', count: parseInt(eff.value, 10) || 0, range };
             }
           }
         }
       }
     }
-    return 0;
+    return null;
   }
 
   // ── On-Attack Helpers (Toss and similar pre-attack abilities) ──
@@ -1518,8 +1605,9 @@ const Abilities = (() => {
     const eff = effectQueue[0];
     if (!eff) return null;
 
-    // Create effect: valid hexes pre-computed at queue time
+    // Create / relocateTerrain: valid hexes pre-computed at queue time
     if (eff.type === 'create') return eff.validHexes;
+    if (eff.type === 'relocateTerrain') return eff.validHexes;
 
     const unit = eff.unit;
     if (!unit || unit.health <= 0) return null;
@@ -1561,6 +1649,18 @@ const Abilities = (() => {
       const src = eff.unit ? eff.unit.name : 'Effect';
       const player = eff.unit ? eff.unit.player : 0;
       Game.log(`${src} creates ${tName} terrain at (${q},${r})`, player);
+      effectQueue.shift();
+      return true;
+    }
+
+    // Relocate terrain: remove from source, place at destination
+    if (eff.type === 'relocateTerrain') {
+      Game.state.terrain.delete(`${eff.srcQ},${eff.srcR}`);
+      Game.placeTerrain(q, r, eff.surface, eff.player);
+      const tName = (Units.terrainRules[eff.surface] || {}).displayName || eff.surface;
+      const src = eff.sourceUnit ? eff.sourceUnit.name : 'Effect';
+      const player = eff.sourceUnit ? eff.sourceUnit.player : 0;
+      Game.log(`${src} moves ${tName} to (${q},${r})`, player);
       effectQueue.shift();
       return true;
     }
@@ -1632,7 +1732,7 @@ const Abilities = (() => {
     isHidden,
     recalcAuras,
     hasDeployRule,
-    getDeployTrapCount,
+    getDeployTrapInfo,
     ignoresTerrainRule,
     hasOnAttackRules,
     getTossSourceHexes,

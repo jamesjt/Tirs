@@ -177,6 +177,7 @@ const UI = (() => {
     deployTrapTargeting = null;
     clockToysTargeting = null;
     woundUpTargeting = null;
+    guardianTargeting = null;
     hotSuitTargeting = false;
     delayedTargeting = false;
     hideLevelChoiceOverlay();
@@ -468,6 +469,9 @@ const UI = (() => {
   // ── Wound Up Targeting Mode (move traps on activation) ──
   let woundUpTargeting = null; // { trapIndex, validHexes: Map, currentTrap: {q,r} }
 
+  // ── Guardian Targeting Mode (pick ally to guard) ──
+  let guardianTargeting = null; // { validHexes: Map }
+
   // ── Delayed Targeting Mode (space-targeting attack for delayed effect) ──
   let delayedTargeting = false;
 
@@ -532,8 +536,8 @@ const UI = (() => {
     uiState.highlights = new Map([...validHexes].map(k => [k, 1]));
     uiState.highlightColor = 'rgba(255, 165, 0, 0.4)';
     uiState.attackTargets = null;
-    // Gold ring on the unit being moved
-    uiState.selectedUnit = eff.unit;
+    // Gold ring on the unit being moved (or source unit for terrain effects)
+    uiState.selectedUnit = eff.unit || eff.sourceUnit || null;
 
     showPhase();
     render();
@@ -1251,6 +1255,11 @@ const UI = (() => {
     const s = Game.state;
     let text = '';
 
+    // Auto-enter guardian targeting mode when pendingGuardian is set
+    if (s.pendingGuardian && !guardianTargeting) {
+      enterGuardianTargeting();
+    }
+
     if (s.phase === Game.PHASE.BATTLE) {
       // Relocate targeting messages
       if (endActTargeting) {
@@ -1320,10 +1329,17 @@ const UI = (() => {
         const act = s.activationState;
         text = act ? `${act.unit.name} activated` : 'Select a unit to activate';
       }
+    } else if (guardianTargeting) {
+      const pg = s.pendingGuardian;
+      const entry = pg ? pg.units[pg.currentIndex] : null;
+      const name = entry ? entry.unit.name : 'Guardian';
+      text = `Guardian: choose ally for ${name} to guard (ESC to skip)`;
     } else if (deployTrapTargeting) {
       const pdt = s.pendingDeployTraps;
       const n = pdt ? `${pdt.placed + 1}/${pdt.count}` : '';
-      text = `Place Clock Trap ${n} adjacent to Clockwerk (ESC to skip)`;
+      const trapLabel = (pdt && Game.getTrapInfo)
+        ? Game.getTrapInfo(pdt.trapType).label : 'Trap';
+      text = `Place ${trapLabel} ${n} (ESC to skip)`;
     } else if (clockToysTargeting) {
       text = `Clock Toys: place trap adjacent to Clockwerk (ESC to cancel)`;
     } else if (woundUpTargeting) {
@@ -2776,6 +2792,22 @@ const UI = (() => {
   function onKeyDown(e) {
     const key = e.key.toLowerCase();
 
+    // ESC: Guardian targeting — skip this guardian
+    if (key === 'escape' && guardianTargeting) {
+      Game.skipGuardian();
+      netSend({ type: 'guardianSkip' });
+      guardianTargeting = null;
+      uiState.highlights = null;
+      const s = Game.state;
+      if (s.pendingGuardian && s.pendingGuardian.currentIndex < s.pendingGuardian.units.length) {
+        enterGuardianTargeting();
+      } else {
+        finishGuardianTargeting();
+      }
+      e.preventDefault();
+      return;
+    }
+
     // ESC: Deploy Trap targeting — skip remaining traps
     if (key === 'escape' && deployTrapTargeting) {
       netSend({ type: 'deployTrapSkip' });
@@ -3826,14 +3858,15 @@ const UI = (() => {
       const key = `${hex.q},${hex.r}`;
       if (!deployTrapTargeting.validHexes.has(key)) return;
       const pdt = Game.state.pendingDeployTraps;
-      Game.placeTrap(hex.q, hex.r, pdt.unit.player);
+      Game.placeTrap(hex.q, hex.r, pdt.unit.player, pdt.trapType);
       pdt.placed++;
-      netSend({ type: 'deployTrap', q: hex.q, r: hex.r, player: pdt.unit.player });
+      netSend({ type: 'deployTrap', q: hex.q, r: hex.r, player: pdt.unit.player, trapType: pdt.trapType });
       if (pdt.placed >= pdt.count) {
         finishDeployTrapPlacement();
       } else {
         // Refresh valid hexes for next trap
-        deployTrapTargeting.validHexes = Game.getValidTrapHexes(pdt.unit);
+        deployTrapTargeting.validHexes = Game.getValidDeployHexes('trap', pdt.unit.player,
+          { unitQ: pdt.unit.q, unitR: pdt.unit.r, range: pdt.deployRange });
         uiState.highlights = deployTrapTargeting.validHexes;
         showPhase();
         render();
@@ -3865,7 +3898,8 @@ const UI = (() => {
   function enterDeployTrapPlacement() {
     const pdt = Game.state.pendingDeployTraps;
     if (!pdt) return;
-    const validHexes = Game.getValidTrapHexes(pdt.unit);
+    const validHexes = Game.getValidDeployHexes('trap', pdt.unit.player,
+      { unitQ: pdt.unit.q, unitR: pdt.unit.r, range: pdt.deployRange });
     if (validHexes.size === 0) {
       finishDeployTrapPlacement();
       return;
@@ -3882,6 +3916,40 @@ const UI = (() => {
     deployTrapTargeting = null;
     Game.finishDeployTraps();
     uiState.highlights = null;
+    showPhase();
+    render();
+  }
+
+  // ── Guardian Targeting ───────────────────────────────────────
+
+  function enterGuardianTargeting() {
+    const pg = Game.state.pendingGuardian;
+    if (!pg || pg.currentIndex >= pg.units.length) {
+      finishGuardianTargeting();
+      return;
+    }
+    const entry = pg.units[pg.currentIndex];
+    const validHexes = new Map();
+    for (const ally of entry.allies) {
+      validHexes.set(`${ally.q},${ally.r}`, 1);
+    }
+    if (validHexes.size === 0) {
+      Game.skipGuardian();
+      enterGuardianTargeting(); // advance to next
+      return;
+    }
+    guardianTargeting = { validHexes, guardianUnit: entry.unit };
+    uiState.highlights = validHexes;
+    uiState.highlightColor = 'rgba(0,200,200,0.35)';
+    uiState.highlightStyle = 'dots';
+    showPhase();
+    render();
+  }
+
+  function finishGuardianTargeting() {
+    guardianTargeting = null;
+    uiState.highlights = null;
+    Game.finishGuardianTargeting();
     showPhase();
     render();
   }
@@ -4036,6 +4104,24 @@ const UI = (() => {
 
     const s = Game.state;
     const key = `${hex.q},${hex.r}`;
+
+    // Guardian targeting mode (pick ally to guard)
+    if (guardianTargeting) {
+      if (!guardianTargeting.validHexes.has(key)) return;
+      const ally = s.units.find(u => u.q === hex.q && u.r === hex.r && u.health > 0);
+      if (!ally) return;
+      Game.setGuardTarget(guardianTargeting.guardianUnit, ally);
+      netSend({ type: 'guardianTarget', guardianIdx: s.units.indexOf(guardianTargeting.guardianUnit), allyIdx: s.units.indexOf(ally) });
+      guardianTargeting = null;
+      uiState.highlights = null;
+      // Check if more guardians need targeting
+      if (s.pendingGuardian && s.pendingGuardian.currentIndex < s.pendingGuardian.units.length) {
+        enterGuardianTargeting();
+      } else {
+        finishGuardianTargeting();
+      }
+      return;
+    }
 
     // Falcon Gust targeting mode (on activation: move ally or place cinder)
     if (falconGustTargeting) {
@@ -4934,7 +5020,7 @@ const UI = (() => {
         // Remote side: if pending deploy traps, just wait for deployTrap messages
         break;
       case 'deployTrap':
-        Game.placeTrap(data.q, data.r, data.player);
+        Game.placeTrap(data.q, data.r, data.player, data.trapType);
         if (Game.state.pendingDeployTraps) {
           Game.state.pendingDeployTraps.placed++;
           if (Game.state.pendingDeployTraps.placed >= Game.state.pendingDeployTraps.count) {
@@ -4945,6 +5031,21 @@ const UI = (() => {
       case 'deployTrapSkip':
         if (Game.state.pendingDeployTraps) {
           Game.finishDeployTraps();
+        }
+        break;
+      case 'guardianTarget': {
+        const guardian = Game.state.units[data.guardianIdx];
+        const ally = Game.state.units[data.allyIdx];
+        if (guardian && ally) Game.setGuardTarget(guardian, ally);
+        if (!Game.state.pendingGuardian || Game.state.pendingGuardian.currentIndex >= Game.state.pendingGuardian.units.length) {
+          Game.finishGuardianTargeting();
+        }
+        break;
+      }
+      case 'guardianSkip':
+        Game.skipGuardian();
+        if (!Game.state.pendingGuardian || Game.state.pendingGuardian.currentIndex >= Game.state.pendingGuardian.units.length) {
+          Game.finishGuardianTargeting();
         }
         break;
       case 'confirmDeploy':
