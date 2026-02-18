@@ -1,109 +1,184 @@
 # Ability Implementation Tracker
 
-## Syli Faction
+---
 
-### Faction Rules
-- [x] Fae Walkers — ignore forest/brambles penalties (passive.Fae Walkers)
-- [x] Forest Charged — recharge abilities on entering forest (passive.ForestCharged + applyRecharge)
+## Needs Testing
 
-### Custom Code (implemented)
-- [x] Guardian (Lyair) — end-of-turn guard targeting + lethal intercept
-- [x] Dancer (Falling Leaf) — round-start poise choice (4 options, once-per-game each)
-- [x] Trapper: Spike (Way Watcher) — deploy spike traps
-- [x] Tree Song (Kodama) — terrain relocate (Move cost, move any forest)
-- [x] Toter (Acroci) — afterMove teleport ally (replaces old Phoretic Host)
+Code-complete but not verified in gameplay. Only move to Tested after user confirms.
 
-### Data-Driven (rules + ability defs exist in spreadsheet, dispatch handles them)
-- [ ] Empowered Poison (Purse) — hit.Poison, once-per-game. **Needs testing**
-- [ ] Empowered Dizzy (Fion) — hit.Dizzy, once-per-game. **Needs testing**
-- [ ] Touch Me Not (Jewel) — whenAttacked.dodge, once-per-game. **Needs testing**
-- [ ] Dodgy (Hazel) — whenAttacked.dodge, once-per-round. **Needs testing**
-- [ ] Trickster (Hazel) — action.move.swap.ally + action.attack.swap.ally. **Needs testing**
-- [ ] Foul Hemolymph (Lidae) — whenAttacked.foul (weaken adjacent enemies). **Needs testing**
-- [ ] Zephyr (Ael) — action.relocate.rng.2 (push or pull 1). **Needs testing**
-- [ ] Harbringer (Celae) — hit.suppress + hit.vulnerable.1. **Needs testing**
-- [ ] Furious Charge (Ocype) — hit.charge.3 (bonus dmg if 5+ from start). **Needs testing**
-- [ ] Serenity (Kinnara) — hit.heal.around.2 (allies in range heal 1). **Needs testing**
-- [ ] PBAoE (Kinnara) — hit.pbaoe.rng2.dmg1 (attack all enemies in range). **Needs testing**
-- [ ] Fae Fire (Light Weaver) — hit.vulnerable.1. **Needs testing**
-- [ ] Life's Thread (Lotter) — hit.heal.line (allies in line heal 2). **Needs testing**
-- [ ] Infatuate (Laurel) — hit.taunt. **Needs testing**
-- [ ] Entrancing (Smoak) — hit.weakness.2 + hit.pull.2. **Needs testing**
-- [ ] Noroi (Kodama) — whenAttacked.curse.attacker + death.curse.attacker (permanent if killed). **Needs testing**
-- [ ] Cross Worlds (Ash) — hit.forests.bonusDmg.within.2. **Needs testing**
+### Syli (data-driven, all dispatched via spreadsheet)
+- [ ] Empowered Poison (Purse) — hit.Poison, once-per-game
+- [ ] Empowered Dizzy (Fion) — hit.Dizzy, once-per-game
+- [ ] Touch Me Not (Jewel) — whenAttacked.dodge, once-per-game
+- [ ] Dodgy (Hazel) — whenAttacked.dodge, once-per-round
+- [ ] Trickster (Hazel) — action.move.swap.ally + action.attack.swap.ally
+- [ ] Foul Hemolymph (Lidae) — whenAttacked.foul (weaken adjacent enemies)
+- [ ] Zephyr (Ael) — action.relocate.rng.2 (push or pull 1)
+- [ ] Harbringer (Celae) — hit.suppress + hit.vulnerable.1
+- [ ] Furious Charge (Ocype) — hit.charge.3 (bonus dmg if 5+ from start)
+- [ ] Serenity (Kinnara) — hit.heal.around.2 (allies in range heal 1)
+- [ ] PBAoE (Kinnara) — hit.pbaoe.rng2.dmg1 (attack all enemies in range)
+- [ ] Fae Fire (Light Weaver) — hit.vulnerable.1
+- [ ] Life's Thread (Lotter) — hit.heal.line (allies in line heal 2)
+- [ ] Infatuate (Laurel) — hit.taunt
+- [ ] Entrancing (Smoak) — hit.weakness.2 + hit.pull.2
+- [ ] Noroi (Kodama) — whenAttacked.curse.attacker + death.curse.attacker
+- [ ] Cross Worlds (Ash) — hit.forests.bonusDmg.within.2
 
-### Needs Custom Code
-- [ ] Honeydew (Ash) — "When ally dies place Manna terrain. Allies entering Manna heal 1. End of round replace Manna with Forest." New terrain lifecycle.
+### Dusters (data-driven, dispatched via spreadsheet)
+- [ ] Sand Stormed (faction rule) — Hidden in Sand
+- [ ] Parting Gift system — all 12 death rules + ability defs
+- [ ] Protector (Shield PG) — bonusarmor aura
+- [ ] True Sight (Scope PG) — truesight bypasses Hidden/Cover/Concealing
+- [ ] Sneak Attack (Sniper PG) — +1 dmg if attacker hidden
+- [ ] Regen (Stimpak PG) — activation heal
+- [ ] Tumbler (Slider PG) — move into enemies action
+- [ ] Hidden (Cloak PG) — passive hidden
+- [ ] Mobile (Greaves PG) — passive mobile
+- [ ] Bump (Lance PG) — hit push + move self
+
+### Stonehart
+- [ ] All Stonehart abilities — via spreadsheet. Known issue: column 12 header typo may affect Lightning Rune card text.
+
+### Red Ridge
+- [ ] Fire Charged (faction rule) + 5 core abilities
 
 ---
 
-## Dusters Faction
+## Needs Spreadsheet
 
-### Faction Rule
-- [ ] Sand Stormed — Hidden in Sand. Spreadsheet + code done. **Needs testing.**
+Code handlers exist. Just needs rules/ability defs added to Google Sheets.
 
-### Parting Gift System (core Dusters mechanic) — CODE + SPREADSHEET DONE
-Code primitives: `closestAlly` target type, `grantability` effect, `statmod` effect. Chains recursively.
-Spreadsheet: All 12 death rules + ability defs wired. **Needs testing.**
+### Dusters — Existing effects, need sheet entries
+- [ ] Shove (Lance, Bouncer) — hit.Push.1. Needs "Shove" ability def.
+- [ ] Poison Attack (Ashen) — hit.Poison. Ability def may exist.
+- [ ] HAZWOPER (Hook, Diffuser, Aeolus, Bouncer) — `passive.hazwoper`, effect=`ignoreTerrainRule`, value=`dangerous,poisonous`
+- [ ] Shifting Winds (Aeolus) — `action.shiftingwinds`, effect=`relocate` (same as Tree Song for shifting terrain)
+- [ ] Enfeebling Attack (Dearth) — `hit.weakness.1`
 
+### Dusters — Code done, need sheet wiring
+- [ ] Flanker: Brutal (Cloak) — `targetAdjAlly` condition done. Sheet: hit rule, condition=`targetAdjAlly`, condValue=`>=1`, effect=`bonusDamage`, value=`2`
+- [ ] Hover (Jump Pack) — whenAttacked + relocate exist. Sheet: whenAttacked rule, target=self, effect=relocate
+- [ ] Hook Pull (Hook) — hit + move + pull exist. Sheet: hit rule, effect1=move value=1, effect2=pull value=1
+- [ ] Diffuser (Diffuser) — `onTerrain` condition + `destroyTerrain` effect done. Sheet: two activation rules with condition=`onTerrain`, condValue=`dangerous`
+- [ ] Collector (Shiney) — grantability hook done. Sheet: passive rule with `collector` tag
+- [ ] Haboob death damage — absorber redirect + `absorbedGifts` value done. Sheet: passive `absorber` tag + death rule, target=`enemy around self`, range=2, effect=damage, value=`absorbedGifts`
+
+### Dusters — Legendaries (code done, need sheet passive flags)
+- [ ] Plagued Memories (Ashen) — `plaguedmemories` flag hook done. Sheet: passive rule with `plaguedmemories` tag
+- [ ] Sanguine Echoes (Enmity) — `sanguineechoes` flag hook done. Sheet: passive rule with `sanguineechoes` tag
+
+### Dusters — Remember Abilities (allyDeath trigger done)
+- [ ] Remember - Affliction (Ashen) — Sheet: type=`allyDeath`, target=killer, effect=`poisoned`
+- [ ] Remember - Conquest (Apocrypha) — Sheet: type=`allyDeath`, target=`closestAlly`, effect=`heal`, value=1
+- [ ] Remember - Hunger (Dearth) — Sheet: type=`allyDeath`, target=killer, effect=`weakness`
+
+---
+
+## Needs Spreadsheet (code done)
+
+### Dusters — Legendaries
+- [ ] Dutiful Reflection (Apocrypha) — Code done (`dutifulreflection` flag). Sheet: passive rule with `dutifulreflection` tag
+- [ ] Deprived Recollection (Dearth) — Code done (`bonusactivation` effect). Sheet: action rule, effect1=damage/1/self, effect2=damage/1/ally, effect3=bonusactivation/ally
+- [ ] Remember - Slaughter (Enmity) — Code done (`laststand` effect). Sheet: allyDeath rule, target=`deadAlly`, effect=`laststand`
+- [ ] Sand Elemental (Haboob) — Deploy terrain code done (`deployterrain` flag). Sheet: passive rule with `deployterrain` tag (value = terrain name). "Is Earth Terrain" NOT yet implemented.
+
+### Syli
+- [ ] Honeydew (Ash) — Code done (`placeterrain` effect + `healing` terrain + Manna→Forest). Sheet: allyDeath rule, target=`deadAlly`, effect=`placeterrain`, value=`manna`. Also needs Manna in terrain sheet with `healing` rule.
+
+---
+
+## Tested & Confirmed
+
+Verified working by user in gameplay. *(None yet.)*
+
+---
+
+## Completed
+
+### Syli — Faction Rules
+- [x] Fae Walkers — ignore forest/brambles penalties
+- [x] Forest Charged — recharge abilities on entering forest
+
+### Syli — Custom Code
+- [x] Guardian (Lyair) — end-of-turn guard targeting + lethal intercept
+- [x] Dancer (Falling Leaf) — round-start poise choice
+- [x] Trapper: Spike (Way Watcher) — deploy spike traps
+- [x] Tree Song (Kodama) — terrain relocate
+- [x] Toter (Acroci) — afterMove teleport ally
+
+### Dusters — Core Systems
 - [x] closestAlly target resolution
-- [x] grantability effect (transfers ability defs to recipient)
-- [x] statmod effect (direct base stat changes: range, maxHealth, move, damage, armor, atkType)
-- [x] Spreadsheet wiring — all 12 variants (Bracer, Cloak, Cuirass, Greaves, Jump Pack, Lance, Scope, Shield, Slider, Sniper, Stimpak, Visor)
+- [x] grantability effect (transfers ability defs)
+- [x] statmod effect (direct base stat changes)
+- [x] Spreadsheet wiring — all 12 Parting Gift variants
+- [x] allyDeath trigger — `dispatchAllyDeath()` fires on surviving allies
+- [x] targetAdjAlly condition — for Flanker: Brutal
+- [x] onTerrain condition + destroyTerrain effect — for Diffuser
+- [x] Collector hook — +1 damage per grantability in grantability handler
+- [x] Haboob absorber redirect — intercepts grantability, tracks `_absorbedGifts`
+- [x] absorbedGifts value resolver — death rule can reference gift count
+- [x] Plagued Memories pre-damage hook — deal 1 to allies within 3, reduce incoming
+- [x] Sanguine Echoes pre-damage hook — closest ally within 3 takes excess damage
 
-### Secondary PG Abilities — CODE DONE
-These abilities are granted to recipients via Parting Gift. Code handlers implemented:
+### Dusters — Legendaries (Phase 2)
+- [x] Dutiful Reflection (Apocrypha) — pre-attack target redirect, pulls closest ally to intercept
+- [x] Bonus activation queue system — `queueBonusActivation()`, nextTurn check, _bonusActivation flag
+- [x] bonusactivation effect — grants target a bonus activation (for Deprived Recollection)
+- [x] laststand effect + deadally target — dying unit revives at 1 HP, activates, then dies
+- [x] Sand Elemental deploy terrain — interactive placement (like traps), empty hexes not in enemy zone
 
-- [x] Protector (Shield) — `bonusarmor` condition in CONDITION_MODS, aura system handles targeting
-- [x] True Sight (Scope) — `truesight` flag bypasses Hidden, Cover/Concealing LoS, Cover LoE in canAttack
-- [x] Sneak Attack (Sniper) — `hidden` condition evaluator in evaluateCondition(), +1 dmg if attacker hidden
-- [x] Regen (Stimpak) — activation.regen rule, `heal` effect already handled
-- [x] Tumbler (Slider) — action.Tumbler rule, `MoveIntoEnemies` already handled
-- [x] Hidden (Cloak) — passive.hidden rule already handled
-- [x] Mobile (Greaves) — passive.Mobile rule already handled
-- [x] Bump (Lance) — hit.Push.1 + hit.Move.Self.1 already handled
+### Terrain Effects (Phase 2)
+- [x] placeterrain effect — places terrain at target hex
+- [x] healing terrain rule — allies entering heal 1 (for Manna/Honeydew)
+- [x] Manna→Forest end-of-round conversion — after evanescent step
 
-### Data-Driven (need spreadsheet entries + testing)
-- [ ] Shove (Lance, Bouncer) — hit.Push.1 already exists. **Needs "Shove" ability def in Abilities tab.**
-- [ ] Poison Attack (Ashen) — hit.Poison already exists. Ability def exists. **Needs testing.**
-- [ ] HAZWOPER (Hook, Diffuser, Aeolus, Bouncer) — ignoreTerrainRule for dangerous+poisonous. **Needs rule:** `passive.hazwoper | passive | self | ignoreTerrainRule | dangerous,poisonous` + ability def.
-- [ ] Shifting Winds (Aeolus) — "Move: Move any Shifting Terrain." Same as Tree Song but targeting shifting. **Needs rule:** `action.shiftingwinds | action | shifting | Move | relocate` + ability def.
-- [ ] Enfeebling Attack (Dearth) — hit weakness on attack. **Needs rule:** `hit.weakness.1` + ability def.
+### Primordial Mists — Core Systems
+- [x] `extraNeighborsFn` in Board.getReachableHexes() — generic portal/teleport BFS extension with per-neighbor cost
+- [x] "Is Terrain" flag (`_isTerrain`, `_isTerrainSurface`, `_isTerrainElement`) in bindUnit()
+- [x] `getTerrainElementAt(q, r)` — terrain element lookup including is-terrain units
+- [x] Spirit teleportation in getMoveRange() + getMovementContext() — cost-0 portals between matching-element terrain
+- [x] Teleport-aware path traversal in moveUnit() — skips Punish/occupant checks for non-adjacent steps
+- [x] Fix deployterrain value reading — getPassiveList instead of getPassiveMod for string terrain names
 
-### Needs Custom Code — Unique Abilities
-- [ ] Flanker: Brutal (Cloak) — "+2 damage if target is adjacent to an ally." Conditional bonus damage.
-- [ ] Hover (Jump Pack) — "When damaged by enemy, you may move this unit." whenAttacked → relocate self.
-- [ ] Hook Pull (Hook) — "On damage, Move 1 and Pull target 1." Hit trigger → move self + pull target.
-- [ ] Diffuser (Diffuser) — "On activation, destroy Dangerous terrain in this space: deal 1 dmg to all enemies in range."
-- [ ] Collector (Shiney) — "When gaining a Parting Gift, permanently get +1 Damage." Hook into grantability.
-- [ ] Haboob (Sweeping) — "Absorb Parting Gifts from units dying in Range. On death, deal damage = gift count to enemies within 2."
+---
 
-### Needs Custom Code — Remember Abilities (trigger on ANY ally death)
-Current `afterDeath` dispatch fires on the dying unit. Remember abilities fire on alive units when a different ally dies. Needs `allyDeath` trigger.
-
-- [ ] Remember - Affliction (Ashen) — "On ally death, Poison the enemy that killed them."
-- [ ] Remember - Conquest (Apocrypha) — "On ally death, Heal an ally 1."
-- [ ] Remember - Slaughter (Enmity) — "On ally death, if they haven't activated this round, activate them now before they die."
-- [ ] Remember - Hunger (Dearth) — "On ally death, Weaken the enemy that killed them."
-
-### Needs Custom Code — Complex Legendaries
-- [ ] Plagued Memories (Ashen) — "Once/round when damaged, deal 1 dmg to all allies within 3. Reduce incoming damage by amount dealt."
-- [ ] Dutiful Reflection (Apocrypha) — "Once/round when targeted, pull ally adjacent, that ally becomes target instead."
-- [ ] Sanguine Echoes (Enmity) — "Once/round when damaged, ally within 3 takes all but 1 damage instead."
-- [ ] Deprived Recollection (Dearth) — "Attack: Take 1 dmg, deal 1 dmg to ally, that ally activates now."
-- [ ] Sand Elemental (Haboob) — "Is Earth Terrain. On deploy, deploy Sand."
+## Future Factions
+- Seri — Not Started
+- Soli — Not Started
+- Tidehaven — Not Started
+- Primordial Mists — Spirit Teleportation + Is Terrain done. Needs: mana system, Hymns of Creation, terrain-move variants, signature passives, spreadsheet wiring.
+- Down Town — Not Started
 
 ---
 
 ## Notes
-- All "data-driven" abilities have rules in the Rules tab + defs in the Abilities tab. The dispatch system handles them automatically. They just need gameplay testing.
-- `whenAttacked` trigger, `swap` effect, `heal` effect, `bonusDamagePerTerrain`, `lineToTarget` targeting, `miss` effect, PBAoE around-targeting, `death` trigger — all fully implemented in abilities.js dispatch.
-- `suppressed` condition (Harbringer): defined in CONDITION_DEFAULTS, gating logic in selectUnit(), clearing in completeEndActivation(). Applied via hit.suppress rule.
-- `relocateTerrain` effect: supports Tree Song and Shifting Winds (move terrain to new hex).
-- `ignoreTerrainRule` passive: fully supports comma-separated rule names (e.g., `dangerous,poisonous`).
-- `closestAlly` target type: returns single closest alive ally of ctx.unit.
-- `grantability` effect: pushes named ability defs to target's abilities array. Skips duplicates. Recalcs auras.
-- `statmod` effect: direct stat changes — `stat:N` (add) or `stat=V` (set). Supports range, maxHealth, move, damage, armor, atkType.
-- `bonusarmor` condition: added to CONDITION_MODS (+1 armor). Used by Protector aura.
-- `truesight` flag: checked in canAttack() — bypasses Hidden, Cover/Concealing LoS, Cover LoE. Combo with Piercing fully handled.
-- `hidden` condition evaluator: checks isHidden(ctx.unit) for Sneak Attack's conditional bonus damage.
+- All "data-driven" abilities have rules in the Rules tab + defs in the Abilities tab. The dispatch system handles them automatically.
+- `whenAttacked`, `swap`, `heal`, `bonusDamagePerTerrain`, `lineToTarget`, `miss`, PBAoE, `death` trigger — all implemented in abilities.js.
+- `suppressed` condition: gating in selectUnit(), clearing in completeEndActivation().
+- `relocateTerrain` effect: supports Tree Song and Shifting Winds.
+- `ignoreTerrainRule` passive: comma-separated rule names.
+- `closestAlly` target: returns single closest alive ally.
+- `grantability`: transfers abilities, redirects to absorber in range, triggers Collector +1 dmg.
+- `statmod`: `stat:N` (add) or `stat=V` (set).
+- `bonusarmor` condition: +1 armor via CONDITION_MODS.
+- `truesight` flag: bypasses Hidden/Cover/Concealing in canAttack().
+- `hidden` evaluator: conditional bonus damage for Sneak Attack.
+- `onTerrain` condition: checks unit standing on terrain with specific rule.
+- `destroyTerrain` effect: nulls terrain surface at target positions.
+- `targetAdjAlly` condition: checks target has attacker's allies adjacent.
+- `absorbedGifts` value: reads `unit._absorbedGifts` for Haboob death damage.
+- `plaguedmemories` flag: pre-damage hook in attackUnit(), once/round.
+- `sanguineechoes` flag: pre-damage hook in attackUnit(), once/round.
+- `dutifulreflection` flag: pre-attack target redirect in attackUnit(), pulls closest ally within 3, once/round.
+- `placeterrain` effect: places terrain at target hex position.
+- `healing` terrain rule: allies entering heal 1 (owner check via terrain.player).
+- Manna→Forest: end-of-round step in game-phases.js converts manna terrain to forest.
+- `deployterrain` flag: interactive terrain placement on deploy (like traps). Uses `pendingDeployTerrain` state.
+- `bonusactivation` effect: queues target for bonus activation via `queueBonusActivation()`.
+- Bonus activation queue: `G.state.bonusActivations[]`, checked at start of `nextTurn()`. Unit gets `_bonusActivation` flag.
+- `laststand` effect: revives `deadAlly` at 1 HP, queues bonus activation. Cleaned up in `completeEndActivation()`.
+- `deadally` target type: resolves to `ctx.deadAlly` in `resolveTargets()`.
+- Spirit teleportation: `spirit` passive flag (value=element like `earth`). While on matching terrain, all other matching terrain hexes are cost-0 BFS neighbors. Uses `buildSpiritPortals()` in game-battle.js + `extraNeighborsFn` in Board.getReachableHexes().
+- "Is Terrain": `isterrain` passive flag (value=surface like `forest`). Sets `unit._isTerrain`, `_isTerrainSurface`, `_isTerrainElement`. Checked by `getTerrainElementAt()` for Spirit portals.
+- Teleport path traversal: non-adjacent path steps (hexDistance > 1) skip Punish and occupant/Tumbler checks. `onEnterHex` still fires at destination.

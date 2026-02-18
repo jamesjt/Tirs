@@ -198,6 +198,15 @@
       return true;
     }
 
+    // Check for deploy terrain ability (Sand Elemental, etc.)
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'deployterrain')) {
+      const dtVals = Abilities.getPassiveList(unit, 'deployterrain');
+      const terrainType = dtVals.length > 0 ? dtVals[0] : 'sand';
+      G.state.pendingDeployTerrain = { unit, terrainType, player };
+      // UI will handle terrain placement before continuing alternation
+      return true;
+    }
+
     finishDeploy(player, p);
     return true;
   }
@@ -232,6 +241,37 @@
     finishDeploy(player, playerData);
   }
 
+  /** Place terrain for deploy terrain ability (Sand Elemental etc.). */
+  function placeDeployTerrain(q, r) {
+    const pdt = G.state.pendingDeployTerrain;
+    if (!pdt) return false;
+    const hex = Board.getHex(q, r);
+    if (!hex) return false;
+    // Must be empty (no unit, no existing terrain surface, no objective)
+    if (G.state.units.some(u => u.q === q && u.r === r && u.health > 0)) return false;
+    const td = G.state.terrain.get(`${q},${r}`);
+    if (td && td.surface) return false;
+    if (Board.OBJECTIVES.some(o => o.q === q && o.r === r)) return false;
+    // Cannot place in enemy deployment zone
+    const enemyZone = `player${pdt.player === 1 ? 2 : 1}`;
+    if (hex.zone === enemyZone) return false;
+
+    G.placeTerrain(q, r, pdt.terrainType, pdt.player);
+    G.log(`${pdt.unit.name} deploys ${pdt.terrainType} terrain at (${q},${r})`, pdt.player);
+    finishDeployTerrain();
+    return true;
+  }
+
+  /** Called by UI after deploy terrain is placed (or skipped). */
+  function finishDeployTerrain() {
+    const pdt = G.state.pendingDeployTerrain;
+    if (!pdt) return;
+    const player = pdt.player;
+    const playerData = G.state.players[player];
+    G.state.pendingDeployTerrain = null;
+    finishDeploy(player, playerData);
+  }
+
   function undeployUnit(player, rosterIndex) {
     if (G.state.phase !== G.PHASE.UNIT_DEPLOY) return false;
     if (!G.state.rules.hiddenDeploy) return false;
@@ -257,6 +297,19 @@
   // ── Turn & Round management ───────────────────────────────────
 
   function nextTurn() {
+    // Bonus activations: process queued bonus turns before normal turn switching
+    if (G.state.bonusActivations && G.state.bonusActivations.length > 0) {
+      const bonus = G.state.bonusActivations.shift();
+      if (bonus.unit.health > 0) {
+        // Temporarily allow reactivation
+        bonus.unit.activated = false;
+        bonus.unit._bonusActivation = true;
+        G.state.currentPlayer = bonus.player;
+        return; // UI will let player select the bonus unit
+      }
+      // Unit died before bonus could fire — skip and continue
+    }
+
     const other = G.state.currentPlayer === 1 ? 2 : 1;
     const currentAlive = G.state.units.filter(u => u.player === G.state.currentPlayer && u.health > 0);
     const otherAlive = G.state.units.filter(u => u.player === other && u.health > 0);
@@ -312,6 +365,20 @@
               const tName = (Units.terrainRules[td.surface] || {}).displayName || td.surface;
               G.log(`${tName} terrain at (${q},${r}) fades`, 0);
               G.state.terrain.delete(key);
+            }
+          }
+        },
+      },
+      {
+        id: 'mannaToForest',
+        label: 'Manna becomes Forest',
+        auto: true,
+        execute() {
+          for (const [key, td] of G.state.terrain) {
+            if (td.surface === 'manna') {
+              td.surface = 'forest';
+              td.player = 0;
+              G.log(`Manna terrain at (${key}) transforms into Forest`, 0);
             }
           }
         },
@@ -851,5 +918,9 @@
 
   // Deploy trap helpers
   G.finishDeployTraps = finishDeployTraps;
+
+  // Deploy terrain helpers
+  G.placeDeployTerrain = placeDeployTerrain;
+  G.finishDeployTerrain = finishDeployTerrain;
 
 })(Game);

@@ -748,8 +748,10 @@ const Board = (() => {
   /** BFS reachable hexes within moveRange steps.
    *  blockedHexes: Set of "q,r" strings that cannot be entered.
    *  costFn(fromQ, fromR, toQ, toR): optional, returns movement cost to enter (default 1).
+   *  extraNeighborsFn(q, r): optional, returns [{q, r, cost?}] of additional neighbors
+   *    (e.g. terrain teleport portals). If an entry has a `cost` property, it overrides costFn.
    *  Returns Map<"q,r", distance>. */
-  function getReachableHexes(startQ, startR, moveRange, blockedHexes, costFn, parentMap) {
+  function getReachableHexes(startQ, startR, moveRange, blockedHexes, costFn, parentMap, extraNeighborsFn) {
     const blocked = blockedHexes || new Set();
     const visited = new Map();
     visited.set(`${startQ},${startR}`, 0);
@@ -758,10 +760,13 @@ const Board = (() => {
     while (queue.length > 0) {
       const cur = queue.shift();
       if (cur.dist >= moveRange) continue;
-      for (const n of getNeighbors(cur.q, cur.r)) {
+      const neighbors = getNeighbors(cur.q, cur.r);
+      const extras = extraNeighborsFn ? extraNeighborsFn(cur.q, cur.r) : [];
+      const allNeighbors = extras.length > 0 ? neighbors.concat(extras) : neighbors;
+      for (const n of allNeighbors) {
         const key = `${n.q},${n.r}`;
         if (blocked.has(key)) continue;
-        const cost = costFn ? costFn(cur.q, cur.r, n.q, n.r) : 1;
+        const cost = (n.cost != null) ? n.cost : (costFn ? costFn(cur.q, cur.r, n.q, n.r) : 1);
         const nd = cur.dist + cost;
         if (nd > moveRange) continue;
         if (!visited.has(key) || visited.get(key) > nd) {

@@ -57,6 +57,8 @@ const Game = (() => {
       delayedEffects: [],       // [{ unit, player, targetQ, targetR, atkDmg, round }]
       traps: new Map(),         // "q,r" -> { player } — clock traps (4th hex layer)
       pendingDeployTraps: null, // { unit, count, placed } — interactive trap placement after deploy
+      pendingDeployTerrain: null, // { unit, terrainType, player } — interactive terrain placement after deploy
+      bonusActivations: [],   // [{ unit, player }] — queued bonus activations (Deprived Recollection, etc.)
       terrainChangedThisRound: new Set(),  // "q,r" keys — hexes where terrain was placed/moved during battle
       objectiveControl: {},     // "q,r" -> player (1|2|0)
       passedThisRound: new Set(),  // players who used Calculated pass this round

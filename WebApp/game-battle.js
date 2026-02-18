@@ -55,6 +55,7 @@
         Abilities.dispatch('afterAttack', { unit, target: dispatchTarget, damage: dmg, damagedUnits: target ? [target] : [] });
         if (target && target.health <= 0) {
           Abilities.dispatch('afterDeath', { unit: target, killer: unit });
+          Abilities.dispatchAllyDeath(target, unit);
         }
         delete G.state.activationState.attackPath;
       }
@@ -104,6 +105,47 @@
       );
     }
     G.state.activationState = null;
+  }
+
+  /** Build an extraNeighborsFn for spirit terrain teleportation.
+   *  When a spirit unit is on matching-element terrain, all other matching terrain
+   *  hexes are cost-0 neighbors (effectively adjacent). Returns null if unit has no spirit. */
+  function buildSpiritPortals(u) {
+    if (typeof Abilities === 'undefined') return null;
+    const spiritElements = Abilities.getPassiveList(u, 'spirit');
+    if (spiritElements.length === 0) return null;
+    const isChaos = spiritElements.includes('chaos');
+
+    // Pre-compute all matching terrain hexes (including "is terrain" units)
+    const portalsByElement = new Map();
+    for (const [key, td] of G.state.terrain) {
+      if (!td.surface) continue;
+      const info = Units.terrainRules[td.surface];
+      if (!info || !info.element) continue;
+      if (!isChaos && !spiritElements.includes(info.element)) continue;
+      if (!portalsByElement.has(info.element)) portalsByElement.set(info.element, []);
+      portalsByElement.get(info.element).push(key);
+    }
+    for (const other of G.state.units) {
+      if (other.health <= 0 || !other._isTerrain || !other._isTerrainElement) continue;
+      if (other === u) continue;
+      const elem = other._isTerrainElement;
+      if (!isChaos && !spiritElements.includes(elem)) continue;
+      if (!portalsByElement.has(elem)) portalsByElement.set(elem, []);
+      const uk = `${other.q},${other.r}`;
+      if (!portalsByElement.get(elem).includes(uk)) portalsByElement.get(elem).push(uk);
+    }
+
+    return (q, r) => {
+      const elem = getTerrainElementAt(q, r);
+      if (!elem) return [];
+      if (!isChaos && !spiritElements.includes(elem)) return [];
+      const portals = portalsByElement.get(elem) || [];
+      const curKey = `${q},${r}`;
+      return portals
+        .filter(k => k !== curKey)
+        .map(k => { const [pq, pr] = k.split(',').map(Number); return { q: pq, r: pr, cost: 0 }; });
+    };
   }
 
   function getMoveRange() {
@@ -168,8 +210,9 @@
       if (hasTerrainRule(toQ, toR, 'difficult') && !ignoresTerrain('difficult', toQ, toR)) return 2;
       return 1;
     }
+    const extraNeighborsFn = buildSpiritPortals(u);
     const parentMap = new Map();
-    const reachable = Board.getReachableHexes(u.q, u.r, range, blocked, moveCost, parentMap);
+    const reachable = Board.getReachableHexes(u.q, u.r, range, blocked, moveCost, parentMap, extraNeighborsFn);
     act._parentMap = parentMap;
     // Remove hexes occupied by allies (can't stop there)
     for (const key of allyOccupied) {
@@ -226,7 +269,8 @@
     const em = G.getEffective(u, 'move');
     const range = (isMobile || isImpactful) ? (em - act.moveDistance) : em;
 
-    return { blocked, moveCost, range, unit: u, enemyOccupied };
+    const extraNeighborsFn = buildSpiritPortals(u);
+    return { blocked, moveCost, range, unit: u, enemyOccupied, extraNeighborsFn };
   }
 
   function getAttackTargets() {
@@ -402,24 +446,28 @@
     }
 
     for (const step of path) {
-      // Punish: check if moving away from adjacent enemies with punish
       const prevQ = act.unit.q, prevR = act.unit.r;
-      for (const pu of G.state.units) {
-        if (pu.health <= 0 || pu.player === act.unit.player) continue;
-        if (typeof Abilities === 'undefined' || !Abilities.hasFlag(pu, 'punish')) continue;
-        const wasBeside = Board.hexDistance(pu.q, pu.r, prevQ, prevR) <= 1;
-        const stillBeside = Board.hexDistance(pu.q, pu.r, step.q, step.r) <= 1;
-        if (wasBeside && !stillBeside) {
-          damageUnit(act.unit, 1, pu, 'ability');
-          G.log(`${pu.name} Punish: 1 dmg to ${act.unit.name}${act.unit.health <= 0 ? ' \u2620' : ''}`, pu.player);
+      const isTeleport = Board.hexDistance(prevQ, prevR, step.q, step.r) > 1;
+
+      // Punish: check if moving away from adjacent enemies (skip for teleport)
+      if (!isTeleport) {
+        for (const pu of G.state.units) {
+          if (pu.health <= 0 || pu.player === act.unit.player) continue;
+          if (typeof Abilities === 'undefined' || !Abilities.hasFlag(pu, 'punish')) continue;
+          const wasBeside = Board.hexDistance(pu.q, pu.r, prevQ, prevR) <= 1;
+          const stillBeside = Board.hexDistance(pu.q, pu.r, step.q, step.r) <= 1;
+          if (wasBeside && !stillBeside) {
+            damageUnit(act.unit, 1, pu, 'ability');
+            G.log(`${pu.name} Punish: 1 dmg to ${act.unit.name}${act.unit.health <= 0 ? ' \u2620' : ''}`, pu.player);
+          }
         }
       }
       if (act.unit.health <= 0) break;
 
       act.unit.q = step.q;
       act.unit.r = step.r;
-      // Fire movement triggers if hex is occupied by another unit
-      if (typeof Abilities !== 'undefined') {
+      // Fire movement triggers if hex is occupied by another unit (skip for teleport)
+      if (!isTeleport && typeof Abilities !== 'undefined') {
         const occupant = G.state.units.find(
           u => u !== act.unit && u.q === step.q && u.r === step.r && u.health > 0
         );
@@ -601,6 +649,25 @@
       }
     }
 
+    // ── Dutiful Reflection: pull ally adjacent, ally becomes target ──
+    if (!guardianTriggered && typeof Abilities !== 'undefined'
+        && Abilities.hasFlag(target, 'dutifulreflection')
+        && !(target.usedAbilitiesThisRound && target.usedAbilitiesThisRound.has('Dutiful Reflection'))) {
+      let closest = null, minDist = Infinity;
+      for (const u of G.state.units) {
+        if (u.health <= 0 || u.player !== target.player || u === target) continue;
+        const d = Board.hexDistance(target.q, target.r, u.q, u.r);
+        if (d <= 3 && d < minDist) { minDist = d; closest = u; }
+      }
+      if (closest) {
+        pullUnit(closest, target.q, target.r, 3);
+        if (!target.usedAbilitiesThisRound) target.usedAbilitiesThisRound = new Set();
+        target.usedAbilitiesThisRound.add('Dutiful Reflection');
+        G.log(`Dutiful Reflection! ${closest.name} takes the hit for ${target.name}!`, target.player);
+        target = closest;
+      }
+    }
+
     // ── Miss check: pre-damage ability interception ──
     const missResult = typeof Abilities !== 'undefined' ? Abilities.checkMiss(target, act.unit) : null;
     if (missResult) {
@@ -671,7 +738,49 @@
     if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'ignoreBaseArmor')) {
       defArm = defArm - target.armor;
     }
-    const dmg = Math.max(1, atkDmg - defArm);
+    let dmg = Math.max(1, atkDmg - defArm);
+
+    // Plagued Memories: deal 1 dmg to allies within 3, reduce incoming by amount dealt (once/round)
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(target, 'plaguedmemories')
+        && !(target.usedAbilitiesThisRound && target.usedAbilitiesThisRound.has('Plagued Memories'))) {
+      const alliesInRange = G.state.units.filter(u =>
+        u.health > 0 && u.player === target.player && u !== target
+        && Board.hexDistance(target.q, target.r, u.q, u.r) <= 3
+      );
+      let dealt = 0;
+      for (const ally of alliesInRange) {
+        damageUnit(ally, 1, target, 'ability');
+        dealt++;
+        G.log(`Plagued Memories: ${target.name} deals 1 dmg to ${ally.name}${ally.health <= 0 ? ' \u2620' : ''}`, target.player);
+      }
+      if (dealt > 0) {
+        dmg = Math.max(0, dmg - dealt);
+        G.log(`Plagued Memories: ${target.name} reduces incoming damage by ${dealt}`, target.player);
+      }
+      if (!target.usedAbilitiesThisRound) target.usedAbilitiesThisRound = new Set();
+      target.usedAbilitiesThisRound.add('Plagued Memories');
+    }
+
+    // Sanguine Echoes: ally within 3 takes all but 1 damage instead (once/round)
+    if (typeof Abilities !== 'undefined' && Abilities.hasFlag(target, 'sanguineechoes')
+        && !(target.usedAbilitiesThisRound && target.usedAbilitiesThisRound.has('Sanguine Echoes'))
+        && dmg > 1) {
+      let closest = null, minDist = Infinity;
+      for (const u of G.state.units) {
+        if (u.health <= 0 || u.player !== target.player || u === target) continue;
+        const d = Board.hexDistance(target.q, target.r, u.q, u.r);
+        if (d <= 3 && d < minDist) { minDist = d; closest = u; }
+      }
+      if (closest) {
+        const redirected = dmg - 1;
+        dmg = 1;
+        damageUnit(closest, redirected, target, 'ability');
+        G.log(`Sanguine Echoes: ${closest.name} takes ${redirected} dmg for ${target.name}${closest.health <= 0 ? ' \u2620' : ''}`, target.player);
+        if (!target.usedAbilitiesThisRound) target.usedAbilitiesThisRound = new Set();
+        target.usedAbilitiesThisRound.add('Sanguine Echoes');
+      }
+    }
+
     target.health -= dmg;
 
     // Track damaged enemies for endActivation abilities (Guiding Gale)
@@ -723,6 +832,7 @@
       }
       if (target.health <= 0) {
         Abilities.dispatch('afterDeath', { unit: target, killer: act.unit, attacker: act.unit });
+        Abilities.dispatchAllyDeath(target, act.unit);
       }
     }
 
@@ -853,6 +963,16 @@
           u.conditions = u.conditions.filter(c => c.id !== 'suppressed');
         }
       }
+      // Last Stand: unit dies after their bonus activation
+      if (act.unit._lastStand) {
+        act.unit._lastStand = false;
+        act.unit.health = 0;
+        G.log(`${act.unit.name}'s last stand ends — they fall.`, act.unit.player);
+        if (typeof Abilities !== 'undefined') {
+          Abilities.dispatch('afterDeath', { unit: act.unit, killer: act.unit._lastStandKiller || null });
+        }
+        delete act.unit._lastStandKiller;
+      }
     }
 
     // Snapshot committed log entries for summary (exclude "activated" messages)
@@ -872,6 +992,13 @@
       return; // UI picks up guardianTargeting, then calls finishGuardianTargeting → nextTurn
     }
     G.nextTurn();
+  }
+
+  /** Queue a bonus activation for a unit (fires after current activation ends). */
+  function queueBonusActivation(unit) {
+    if (!unit) return;
+    if (!G.state.bonusActivations) G.state.bonusActivations = [];
+    G.state.bonusActivations.push({ unit, player: unit.player });
   }
 
   /** Spend the attack action to remove all Burning instances. */
@@ -1029,6 +1156,18 @@
     return info && info.rules.includes(rule);
   }
 
+  /** Get the terrain element (earth/water/air/fire) at a hex, including "is terrain" units. */
+  function getTerrainElementAt(q, r) {
+    const td = G.state.terrain.get(`${q},${r}`);
+    if (td && td.surface) {
+      const info = Units.terrainRules[td.surface];
+      if (info && info.element) return info.element;
+    }
+    const tu = G.state.units.find(u => u.q === q && u.r === r && u.health > 0 && u._isTerrain);
+    if (tu && tu._isTerrainElement) return tu._isTerrainElement;
+    return null;
+  }
+
   function isBlockingLoE(q, r) {
     // Any unit blocks LoE
     if (G.state.units.some(u => u.q === q && u.r === r && u.health > 0)) return true;
@@ -1080,6 +1219,14 @@
       G.log(`${unit.name} consumed by terrain`, unit.player);
       unit.q = -99;
       unit.r = -99;
+    }
+    // Healing terrain: heal 1 for friendly units entering
+    if (hasTerrainRule(q, r, 'healing')) {
+      const td = G.state.terrain.get(`${q},${r}`);
+      if (td && (td.player === unit.player || td.player === 0)) {
+        unit.health = Math.min(unit.health + 1, unit.maxHealth);
+        G.log(`${unit.name} heals 1 from ${td.surface || 'healing'} terrain (${unit.health}/${unit.maxHealth} HP)`, unit.player);
+      }
     }
     // Forest Charged: refresh abilities on entering forest terrain
     if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'forestcharged')) {
@@ -2557,6 +2704,7 @@
   G.skipAction = skipAction;
   G.endActivation = endActivation;
   G.completeEndActivation = completeEndActivation;
+  G.queueBonusActivation = queueBonusActivation;
   G.removeBurning = removeBurning;
   G.forceEndActivation = forceEndActivation;
   G.passTurn = passTurn;
@@ -2564,6 +2712,7 @@
   G.canAttackHex = canAttackHex;
   G.getDelayedTargetHexes = getDelayedTargetHexes;
   G.hasTerrainRule = hasTerrainRule;
+  G.getTerrainElementAt = getTerrainElementAt;
   G.onEnterHex = onEnterHex;
   G.hasLoS = hasLoS;
   G.getAttackPathBFS = getAttackPathBFS;

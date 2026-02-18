@@ -30,7 +30,8 @@
       "Bash(Select-String -Pattern \"ignore\" -SimpleMatch)",
       "Bash(git log:*)",
       "Bash(node -c:*)",
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "Bash(xargs:*)"
     ]
   }
 }

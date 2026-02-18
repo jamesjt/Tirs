@@ -64,6 +64,7 @@ const Abilities = (() => {
     afterMove:     'afterMove',
     whenAttacked:  'whenAttacked',
     endActivation: 'endActivation',
+    allyDeath:     'afterAllyDeath',
   };
 
   // Reverse map: trigger string -> ability type
@@ -119,6 +120,9 @@ const Abilities = (() => {
     const tokens = new Set(input.split(' ').filter(t => t && !TARGET_NOISE.has(t)));
 
     // ── Special non-compositional keywords ──
+    if (tokens.has('deadally')) {
+      return ctx.deadAlly ? [ctx.deadAlly] : [];
+    }
     if (tokens.has('closestally')) {
       const src = ctx.unit;
       if (!src) return [];
@@ -323,13 +327,32 @@ const Abilities = (() => {
     // Grant ability — pushes named ability defs to the target unit (Parting Gift etc.)
     if (lower === 'grantability') {
       const names = (value || '').split(',').map(s => s.trim()).filter(Boolean);
-      for (const t of targets) {
+      for (let t of targets) {
         if (!isUnit(t)) continue;
+        // Haboob absorber: redirect Parting Gift to absorber unit in range of dying unit
+        if (ctx.unit) {
+          const absorber = Game.state.units.find(u =>
+            u.health > 0 && u.player === ctx.unit.player && u !== ctx.unit && u !== t
+            && hasFlag(u, 'absorber')
+            && Board.hexDistance(ctx.unit.q, ctx.unit.r, u.q, u.r) <= (u.range || 3)
+          );
+          if (absorber) {
+            t = absorber;
+            if (!absorber._absorbedGifts) absorber._absorbedGifts = 0;
+            absorber._absorbedGifts++;
+            Game.log(`${absorber.name} absorbs Parting Gift (${absorber._absorbedGifts} total)`, absorber.player);
+          }
+        }
         for (const name of names) {
           const def = abilityDefs[name];
           if (!def) { console.warn(`[grantability] Unknown ability: "${name}"`); continue; }
           if (t.abilities.some(a => a.name === def.name)) continue;
           t.abilities.push(def);
+          // Collector: permanent +1 damage when gaining abilities via Parting Gift
+          if (hasFlag(t, 'collector')) {
+            t.damage += 1;
+            Game.log(`Collector! ${t.name} gains +1 damage (now ${t.damage})`, t.player);
+          }
         }
         Game.log(`${t.name} inherits abilities from ${ctx.unit ? ctx.unit.name : '?'}`, t.player);
         recalcAuras();
@@ -485,9 +508,8 @@ const Abilities = (() => {
 
       case 'piercing':
       case 'damage': {
-        const rawDmg = value === 'unitDamage'
-          ? Game.getEffective(ctx.unit, 'damage')
-          : int(value);
+        const resolved = resolveValue(value, ctx);
+        const rawDmg = resolved !== null ? resolved : int(value);
         for (const t of targets) {
           if (!isUnit(t)) continue;
           const arm = Game.getEffective(t, 'armor');
@@ -547,6 +569,48 @@ const Abilities = (() => {
           }
         }
         break;
+
+      case 'destroyterrain':
+        for (const t of targets) {
+          const key = `${t.q},${t.r}`;
+          const td = Game.state.terrain.get(key);
+          if (td && td.surface) {
+            const surfaceName = td.surface;
+            td.surface = null;
+            const src = ctx.unit ? ctx.unit.name : 'Effect';
+            Game.log(`${src} destroys ${surfaceName} terrain`, ctx.unit ? ctx.unit.player : 0);
+          }
+        }
+        break;
+
+      case 'placeterrain':
+        for (const t of targets) {
+          Game.placeTerrain(t.q, t.r, value, ctx.unit ? ctx.unit.player : 0);
+          const src = ctx.unit ? ctx.unit.name : 'Effect';
+          Game.log(`${src} creates ${value} terrain at (${t.q},${t.r})`, ctx.unit ? ctx.unit.player : 0);
+        }
+        break;
+
+      case 'bonusactivation':
+        for (const t of targets) {
+          if (!isUnit(t) || t.activated || t.health <= 0) continue;
+          Game.queueBonusActivation(t);
+          Game.log(`${ctx.unit ? ctx.unit.name : 'Effect'} grants bonus activation to ${t.name}`, t.player);
+        }
+        break;
+
+      case 'laststand': {
+        // Revive the dead ally for one last activation
+        const dead = ctx.deadAlly;
+        if (dead && !dead.activated && dead.health <= 0) {
+          dead.health = 1;
+          dead._lastStand = true;
+          dead._lastStandKiller = ctx.killer || null;
+          Game.queueBonusActivation(dead);
+          Game.log(`Last Stand! ${dead.name} gets one final activation!`, dead.player);
+        }
+        break;
+      }
 
       case 'swap':
         if (ctx.unit && ctx.target && isUnit(ctx.target)) {
@@ -657,6 +721,25 @@ const Abilities = (() => {
 
       case 'hidden':
         return ctx.unit ? isHidden(ctx.unit) : false;
+
+      case 'onterrain': {
+        // Check if ctx.unit is standing on terrain with a specific rule (e.g. "dangerous")
+        if (!ctx.unit) return false;
+        return Game.hasTerrainRule(ctx.unit.q, ctx.unit.r, val.toLowerCase());
+      }
+
+      case 'targetadjally': {
+        // Check if the attack target has at least N of the attacker's allies adjacent
+        const { op, num } = parseComparison(val || '>=1');
+        if (!ctx.target || !ctx.unit) return false;
+        const neighbors = Board.getNeighbors(ctx.target.q, ctx.target.r);
+        let count = 0;
+        for (const n of neighbors) {
+          if (Game.state.units.some(u => u.q === n.q && u.r === n.r && u.health > 0
+              && u.player === ctx.unit.player && u !== ctx.unit)) count++;
+        }
+        return compare(count, op, num);
+      }
 
       default:
         return evaluateConditionLegacy(condStr, ctx);
@@ -785,6 +868,38 @@ const Abilities = (() => {
 
     isQueuing = false;
     return effectQueue.length > 0;
+  }
+
+  // ── Ally Death Dispatch ─────────────────────────────────────
+
+  /** Fire allyDeath rules on all surviving allies of the dead unit. */
+  function dispatchAllyDeath(deadUnit, killer) {
+    if (!deadUnit) return;
+    const allies = Game.state.units.filter(u =>
+      u.health > 0 && u.player === deadUnit.player && u !== deadUnit
+    );
+    for (const ally of allies) {
+      if (!ally.abilities) continue;
+      if (Game.hasCondition(ally, 'silenced')) continue;
+
+      isQueuing = true;
+      for (const ab of ally.abilities) {
+        const relevant = ab.ruleIds.filter(id => atomicRules[id]?.type === 'allyDeath');
+        if (relevant.length === 0) continue;
+        if (ab.oncePerGame && ally.usedAbilities.has(ab.name)) continue;
+        if (ab.oncePerRound && ally.usedAbilitiesThisRound && ally.usedAbilitiesThisRound.has(ab.name)) continue;
+
+        const ctx = { unit: ally, deadAlly: deadUnit, killer, target: killer };
+        executeRules(ab.ruleIds, 'allyDeath', ctx);
+
+        if (ab.oncePerGame) ally.usedAbilities.add(ab.name);
+        if (ab.oncePerRound) {
+          if (!ally.usedAbilitiesThisRound) ally.usedAbilitiesThisRound = new Set();
+          ally.usedAbilitiesThisRound.add(ab.name);
+        }
+      }
+      isQueuing = false;
+    }
   }
 
   // ── EndActivation interactive targeting ──────────────────────
@@ -1188,6 +1303,15 @@ const Abilities = (() => {
       unit.abilities.push(abilityDefs[unit.faction]);
     }
 
+    // "Is Terrain" flag — unit's hex counts as terrain of its element type
+    const isTerrainVals = getPassiveList(unit, 'isterrain');
+    if (isTerrainVals.length > 0) {
+      unit._isTerrain = true;
+      unit._isTerrainSurface = isTerrainVals[0];
+      const info = typeof Units !== 'undefined' ? Units.terrainRules[isTerrainVals[0]] : null;
+      unit._isTerrainElement = info ? info.element : null;
+    }
+
     // Warn about unresolved abilities
     for (const r of (unit.specialRules || [])) {
       if (r.name && !abilityDefs[r.name]) {
@@ -1463,6 +1587,7 @@ const Abilities = (() => {
       case 'unitsarmor':   return ctx.unit ? Game.getEffective(ctx.unit, 'armor') : 0;
       case 'targetmove':   return ctx.target ? Game.getEffective(ctx.target, 'move') : 0;
       case 'unitdamage':   return ctx.unit ? Game.getEffective(ctx.unit, 'damage') : 0;
+      case 'absorbedgifts': return ctx.unit ? (ctx.unit._absorbedGifts || 0) : 0;
       default: {
         const n = parseInt(valueStr, 10);
         return isNaN(n) ? null : n;
@@ -1724,6 +1849,7 @@ const Abilities = (() => {
     setAbilityDefs,
     bindUnit,
     dispatch,
+    dispatchAllyDeath,
     dispatchMovement,
     getPassiveMod,
     hasFlag,

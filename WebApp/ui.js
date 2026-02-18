@@ -463,6 +463,9 @@ const UI = (() => {
   // ── Deploy Trap Targeting Mode (place traps after Clockwerk deploys) ──
   let deployTrapTargeting = null; // { validHexes: Map }
 
+  // ── Deploy Terrain Targeting Mode (place terrain after Sand Elemental deploys) ──
+  let deployTerrainTargeting = null; // { validHexes: Map }
+
   // ── Clock Toys Targeting Mode (place trap via action ability) ──
   let clockToysTargeting = null; // { validHexes: Map, costType: 'move'|'attack' }
 
@@ -1334,6 +1337,10 @@ const UI = (() => {
       const entry = pg ? pg.units[pg.currentIndex] : null;
       const name = entry ? entry.unit.name : 'Guardian';
       text = `Guardian: choose ally for ${name} to guard (ESC to skip)`;
+    } else if (deployTerrainTargeting) {
+      const pdt = s.pendingDeployTerrain;
+      const terrainName = pdt ? pdt.terrainType : 'terrain';
+      text = `Place ${terrainName} terrain (ESC to skip)`;
     } else if (deployTrapTargeting) {
       const pdt = s.pendingDeployTraps;
       const n = pdt ? `${pdt.placed + 1}/${pdt.count}` : '';
@@ -2808,6 +2815,14 @@ const UI = (() => {
       return;
     }
 
+    // ESC: Deploy Terrain targeting — skip
+    if (key === 'escape' && deployTerrainTargeting) {
+      netSend({ type: 'deployTerrainSkip' });
+      finishDeployTerrainPlacement();
+      e.preventDefault();
+      return;
+    }
+
     // ESC: Deploy Trap targeting — skip remaining traps
     if (key === 'escape' && deployTrapTargeting) {
       netSend({ type: 'deployTrapSkip' });
@@ -3265,7 +3280,7 @@ const UI = (() => {
       const to = points[i + 1];
       const parentMap = new Map();
       const reachable = Board.getReachableHexes(
-        from.q, from.r, remainingRange, ctx.blocked, ctx.moveCost, parentMap
+        from.q, from.r, remainingRange, ctx.blocked, ctx.moveCost, parentMap, ctx.extraNeighborsFn
       );
 
       const toKey = `${to.q},${to.r}`;
@@ -3853,6 +3868,16 @@ const UI = (() => {
   }
 
   function handleDeployClick(hex) {
+    // Deploy terrain placement mode (Sand Elemental etc.)
+    if (deployTerrainTargeting) {
+      const key = `${hex.q},${hex.r}`;
+      if (!deployTerrainTargeting.validHexes.has(key)) return;
+      Game.placeDeployTerrain(hex.q, hex.r);
+      netSend({ type: 'placeDeployTerrain', q: hex.q, r: hex.r });
+      finishDeployTerrainPlacement();
+      return;
+    }
+
     // Deploy trap placement mode
     if (deployTrapTargeting) {
       const key = `${hex.q},${hex.r}`;
@@ -3889,6 +3914,12 @@ const UI = (() => {
         return;
       }
 
+      // Check for pending deploy terrain (Sand Elemental)
+      if (Game.state.pendingDeployTerrain) {
+        enterDeployTerrainPlacement();
+        return;
+      }
+
       uiState.highlights = null;
       showPhase();
       render();
@@ -3915,6 +3946,30 @@ const UI = (() => {
   function finishDeployTrapPlacement() {
     deployTrapTargeting = null;
     Game.finishDeployTraps();
+    uiState.highlights = null;
+    showPhase();
+    render();
+  }
+
+  function enterDeployTerrainPlacement() {
+    const pdt = Game.state.pendingDeployTerrain;
+    if (!pdt) return;
+    const validHexes = Game.getValidDeployHexes('terrain', pdt.player);
+    if (validHexes.size === 0) {
+      finishDeployTerrainPlacement();
+      return;
+    }
+    deployTerrainTargeting = { validHexes };
+    uiState.highlights = validHexes;
+    uiState.highlightColor = 'rgba(200,200,0,0.35)';
+    uiState.highlightStyle = 'dots';
+    showPhase();
+    render();
+  }
+
+  function finishDeployTerrainPlacement() {
+    deployTerrainTargeting = null;
+    Game.finishDeployTerrain();
     uiState.highlights = null;
     showPhase();
     render();
