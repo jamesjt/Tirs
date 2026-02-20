@@ -17,6 +17,7 @@ const Units = (() => {
   const terrainRules = {};           // e.g. { forest: { element: 'earth', rules: ['difficult','cover'] } }
   const factionTerrain = {};         // e.g. { 'Syli': ['forest','brambles','fae mist'] }
   const trapDefs = {};               // e.g. { clock: { damage: 1, effects: [], displayName: 'Clock' } }
+  let textIcons = {};                // e.g. { manaIcon: '../nandeck/images/Icons/mana4.png' }
 
   // faction name -> array of unit templates
   const catalog = {};
@@ -328,6 +329,22 @@ const Units = (() => {
     }
   }
 
+  async function fetchIconMap() {
+    try {
+      const rows = await fetchSheet('Icon Map', true);
+      for (const row of rows) {
+        const placeholder = col(row, ['placeholder']);
+        const path = col(row, ['path']);
+        if (placeholder && path) {
+          textIcons[placeholder] = path;
+        }
+      }
+      console.log('Icon map loaded:', Object.keys(textIcons).length, 'entries');
+    } catch (err) {
+      console.warn('Icon Map tab not found, text icons disabled:', err);
+    }
+  }
+
   // ── Fetch everything ────────────────────────────────────────
 
   function setLoadingState(newState, error = null) {
@@ -339,7 +356,7 @@ const Units = (() => {
   async function fetchAll() {
     setLoadingState('loading');
     try {
-      await Promise.all([fetchActiveFactions(), fetchTerrainMap(), fetchGameRules()]);
+      await Promise.all([fetchActiveFactions(), fetchTerrainMap(), fetchGameRules(), fetchIconMap()]);
       if (activeFactions.length === 0) {
         throw new Error('No active factions found. Check your internet connection.');
       }
@@ -449,6 +466,7 @@ const Units = (() => {
     get loadingError() { return loadingError; },
     get factionRules() { return factionRuleData; },
     get gameRuleDefaults() { return gameRuleDefaults; },
+    get textIcons() { return textIcons; },
     setStateChangeCallback(cb) { onStateChange = cb; },
     fetchAll,
     fetchFaction,

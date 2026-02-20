@@ -65,7 +65,7 @@
     }
 
     // Invigorating terrain: heal 1 or gain strengthened if full
-    if (hasTerrainRule(unit.q, unit.r, 'invigorating')) {
+    if (hasTerrainRule(unit.q, unit.r, 'invigorating', unit)) {
       if (unit.health < unit.maxHealth) {
         unit.health = Math.min(unit.health + 1, unit.maxHealth);
         G.log(`${unit.name} healed by invigorating terrain (${unit.health}/${unit.maxHealth} HP)`, unit.player);
@@ -107,44 +107,73 @@
     G.state.activationState = null;
   }
 
-  /** Build an extraNeighborsFn for spirit terrain teleportation.
-   *  When a spirit unit is on matching-element terrain, all other matching terrain
-   *  hexes are cost-0 neighbors (effectively adjacent). Returns null if unit has no spirit. */
+  /** Build an extraNeighborsFn for terrain teleportation.
+   *  Values can be element names (earth/water/air/fire/chaos) or terrain rule names (concealing/difficult/etc.).
+   *  Element matching uses info.element; rule matching uses unit's effective rules (respects swapterrainrule).
+   *  Portals are grouped by match key — only same-group hexes connect to each other. */
   function buildSpiritPortals(u) {
     if (typeof Abilities === 'undefined') return null;
-    const spiritElements = Abilities.getPassiveList(u, 'spirit');
-    if (spiritElements.length === 0) return null;
-    const isChaos = spiritElements.includes('chaos');
+    const spiritValues = Abilities.getPassiveList(u, 'teleportthrough');
+    if (spiritValues.length === 0) return null;
 
-    // Pre-compute all matching terrain hexes (including "is terrain" units)
-    const portalsByElement = new Map();
+    const ELEMENTS = new Set(['earth', 'water', 'air', 'fire', 'chaos']);
+    const isChaos = spiritValues.includes('chaos');
+    const spiritElements = spiritValues.filter(v => ELEMENTS.has(v));
+    const spiritRules = spiritValues.filter(v => !ELEMENTS.has(v));
+
+    // Group portal hexes by match key (element name or rule name)
+    const portalsByKey = new Map();
+    function addPortal(matchKey, hexKey) {
+      if (!portalsByKey.has(matchKey)) portalsByKey.set(matchKey, []);
+      const arr = portalsByKey.get(matchKey);
+      if (!arr.includes(hexKey)) arr.push(hexKey);
+    }
+
     for (const [key, td] of G.state.terrain) {
       if (!td.surface) continue;
       const info = Units.terrainRules[td.surface];
-      if (!info || !info.element) continue;
-      if (!isChaos && !spiritElements.includes(info.element)) continue;
-      if (!portalsByElement.has(info.element)) portalsByElement.set(info.element, []);
-      portalsByElement.get(info.element).push(key);
+      if (!info) continue;
+
+      // Element match — chaos groups all into one pool for cross-element teleportation
+      if (info.element && (isChaos || spiritElements.includes(info.element))) {
+        addPortal(isChaos ? 'chaos' : info.element, key);
+      }
+
+      // Rule match (uses unit's perception via getEffectiveRules)
+      if (spiritRules.length > 0) {
+        const effectiveRules = Abilities.getEffectiveRules(u, td.surface);
+        for (const sr of spiritRules) {
+          if (effectiveRules.includes(sr)) addPortal(sr, key);
+        }
+      }
     }
+
+    // "Is terrain" units (element match only)
     for (const other of G.state.units) {
       if (other.health <= 0 || !other._isTerrain || !other._isTerrainElement) continue;
       if (other === u) continue;
       const elem = other._isTerrainElement;
-      if (!isChaos && !spiritElements.includes(elem)) continue;
-      if (!portalsByElement.has(elem)) portalsByElement.set(elem, []);
-      const uk = `${other.q},${other.r}`;
-      if (!portalsByElement.get(elem).includes(uk)) portalsByElement.get(elem).push(uk);
+      if (isChaos || spiritElements.includes(elem)) {
+        addPortal(isChaos ? 'chaos' : elem, `${other.q},${other.r}`);
+      }
     }
 
+    if (portalsByKey.size === 0) return null;
+
     return (q, r) => {
-      const elem = getTerrainElementAt(q, r);
-      if (!elem) return [];
-      if (!isChaos && !spiritElements.includes(elem)) return [];
-      const portals = portalsByElement.get(elem) || [];
       const curKey = `${q},${r}`;
-      return portals
-        .filter(k => k !== curKey)
-        .map(k => { const [pq, pr] = k.split(',').map(Number); return { q: pq, r: pr, cost: 0 }; });
+      const results = [];
+      const seen = new Set();
+      for (const [, hexes] of portalsByKey) {
+        if (!hexes.includes(curKey)) continue;
+        for (const k of hexes) {
+          if (k === curKey || seen.has(k)) continue;
+          seen.add(k);
+          const [pq, pr] = k.split(',').map(Number);
+          results.push({ q: pq, r: pr, cost: 0 });
+        }
+      }
+      return results;
     };
   }
 
@@ -182,7 +211,7 @@
       ? (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r) : () => false;
     for (const [key] of G.state.terrain) {
       const [tq, tr] = key.split(',').map(Number);
-      if (hasTerrainRule(tq, tr, 'impassable') && !ignoresTerrain('impassable', tq, tr)) blocked.add(key);
+      if (hasTerrainRule(tq, tr, 'impassable', u) && !ignoresTerrain('impassable', tq, tr)) blocked.add(key);
     }
     // Hexes occupied by allies: can move through but not stop
     const allyOccupied = new Set();
@@ -203,11 +232,11 @@
 
     const range = (isMobile || isImpactful) ? (effectiveMove - act.moveDistance) : effectiveMove;
     function moveCost(fromQ, fromR, toQ, toR) {
-      if (hasTerrainRule(toQ, toR, 'flow')) {
+      if (hasTerrainRule(toQ, toR, 'flow', u)) {
         const td = G.state.terrain.get(`${toQ},${toR}`);
         return (td && td.player === u.player) ? 0 : 2;
       }
-      if (hasTerrainRule(toQ, toR, 'difficult') && !ignoresTerrain('difficult', toQ, toR)) return 2;
+      if (hasTerrainRule(toQ, toR, 'difficult', u) && !ignoresTerrain('difficult', toQ, toR)) return 2;
       return 1;
     }
     const extraNeighborsFn = buildSpiritPortals(u);
@@ -242,15 +271,15 @@
     }
     for (const [key] of G.state.terrain) {
       const [tq, tr] = key.split(',').map(Number);
-      if (hasTerrainRule(tq, tr, 'impassable') && !ignoresTerrain('impassable', tq, tr)) blocked.add(key);
+      if (hasTerrainRule(tq, tr, 'impassable', u) && !ignoresTerrain('impassable', tq, tr)) blocked.add(key);
     }
 
     function moveCost(fromQ, fromR, toQ, toR) {
-      if (hasTerrainRule(toQ, toR, 'flow')) {
+      if (hasTerrainRule(toQ, toR, 'flow', u)) {
         const td = G.state.terrain.get(`${toQ},${toR}`);
         return (td && td.player === u.player) ? 0 : 2;
       }
-      if (hasTerrainRule(toQ, toR, 'difficult') && !ignoresTerrain('difficult', toQ, toR)) return 2;
+      if (hasTerrainRule(toQ, toR, 'difficult', u) && !ignoresTerrain('difficult', toQ, toR)) return 2;
       return 1;
     }
 
@@ -295,8 +324,9 @@
         if (typeof Abilities !== 'undefined' && Abilities.hasFlag(u, 'ignoreBaseArmor')) {
           defArm = defArm - enemy.armor;
         }
-        const dmg = Math.max(1, atkDmg - defArm);
-        targets.set(`${enemy.q},${enemy.r}`, { damage: dmg });
+        const baseDmg = Math.max(1, atkDmg - defArm);
+        const hitBonus = typeof Abilities !== 'undefined' ? Abilities.getHitBonusDamage(u, enemy) : 0;
+        targets.set(`${enemy.q},${enemy.r}`, { damage: baseDmg + hitBonus });
       }
     }
 
@@ -386,9 +416,10 @@
       act.attacked = true;
     }
 
-    // Snapshot for undo (terrain effects may change health/conditions during traversal)
+    // Snapshot for undo (terrain effects may change health/conditions/resources during traversal)
     const prevHealth = act.unit.health;
     const prevConditions = act.unit.conditions.map(c => ({ ...c }));
+    const prevResources = JSON.parse(JSON.stringify(act.unit.resources || {}));
     // Snapshot other units for movement-trigger undo (push positions + Glider damage)
     const otherUnitPositions = G.state.units
       .filter(u => u !== act.unit && u.health > 0)
@@ -492,7 +523,7 @@
     updateObjectiveControl(act.unit);
     if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
 
-    G.state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ: act.unit.q, toR: act.unit.r, prevObjControl, prevMoveDistance, prevHealth, prevConditions, otherUnitPositions, prevTraps });
+    G.state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ: act.unit.q, toR: act.unit.r, prevObjControl, prevMoveDistance, prevHealth, prevConditions, otherUnitPositions, prevTraps, prevResources });
     G.log(`${act.unit.name} moved (${fromQ},${fromR}) \u2192 (${act.unit.q},${act.unit.r})`, act.unit.player);
 
     // If both actions used, end activation (unless confirmEndTurn, pending effects,
@@ -579,6 +610,7 @@
     if (isDelayed) {
       if (!canAttackHex(act.unit, targetQ, targetR)) return false;
       const prevAttackerHealth = act.unit.health;
+      const prevResources = JSON.parse(JSON.stringify(act.unit.resources || {}));
       const atkDmg = G.getEffective(act.unit, 'damage') + (bonusDamage || 0);
       G.state.delayedEffects.push({
         unit: act.unit, player: act.unit.player,
@@ -603,6 +635,7 @@
         type: 'attack', delayed: true,
         targetQ, targetR, atkDmg, prevAttackerHealth,
         tossData: tossData || null,
+        prevResources,
       });
       G.log(`${act.unit.name} targets space [${targetQ},${targetR}] (delayed)`, act.unit.player);
       if (burningCount > 0 && !act.pendingBurningRedirect && prevAttackerHealth !== act.unit.health) {
@@ -672,6 +705,8 @@
     const missResult = typeof Abilities !== 'undefined' ? Abilities.checkMiss(target, act.unit) : null;
     if (missResult) {
       const prevAttackerHealth = act.unit.health;
+      const prevAttackerResources = JSON.parse(JSON.stringify(act.unit.resources || {}));
+      const prevTargetResources = JSON.parse(JSON.stringify(target.resources || {}));
       act.attacked = true;
       if (G.hasCondition(act.unit, 'dizzy')) act.moved = true;
       if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'moveorfire')) act.moved = true;
@@ -705,6 +740,8 @@
         missOncePerGame: missResult.oncePerGame,
         missOncePerRound: missResult.oncePerRound,
         tossData: tossData || null,
+        prevResources: prevAttackerResources,
+        prevTargetResources,
       });
       G.log(`${act.unit.name} attacks ${target.name} \u2014 MISS! (${missResult.abilityName})`, act.unit.player);
       if (burningCount > 0 && !act.pendingBurningRedirect && prevAttackerHealth !== act.unit.health) {
@@ -732,6 +769,15 @@
     // Deal damage using effective stats (conditions applied)
     const prevHealth = target.health;
     const prevAttackerHealth = act.unit.health;
+    const prevAttackerResources = JSON.parse(JSON.stringify(act.unit.resources || {}));
+    const prevTargetResources = JSON.parse(JSON.stringify(target.resources || {}));
+    const prevTargetConditions = target.conditions.map(c => ({ ...c }));
+    const prevAttackerConditions = act.unit.conditions.map(c => ({ ...c }));
+    const prevHymnRepetition = G.state.hymnRepetition[act.unit.player];
+    // whenAttacked dispatch: fires BEFORE damage so defensive effects (protected, etc.) apply
+    if (typeof Abilities !== 'undefined') {
+      Abilities.dispatch('whenAttacked', { unit: target, attacker: act.unit });
+    }
     const atkDmg = G.getEffective(act.unit, 'damage') + (bonusDamage || 0);
     let defArm = G.getEffective(target, 'armor');
     // Precise: ignore target's base armor (only condition-granted armor applies)
@@ -813,23 +859,25 @@
       }
     }
 
-    // Snapshot other units' health before ability dispatch (Piercing, Explosive, etc.)
+    // Snapshot other units before ability dispatch (Piercing, Hymn effects, etc.)
     const healthSnapshots = [];
     for (const u of G.state.units) {
       if (u.health <= 0 || u === target || u === act.unit) continue;
-      healthSnapshots.push({ unit: u, prevHealth: u.health });
+      healthSnapshots.push({
+        unit: u, prevHealth: u.health,
+        prevConditions: u.conditions.map(c => ({ ...c })),
+        prevQ: u.q, prevR: u.r,
+        prevResources: JSON.parse(JSON.stringify(u.resources || {})),
+      });
     }
 
     // Store attack path for Piercing + Path resolution
     if (attackPath) act.attackPath = attackPath;
 
-    // Ability dispatch: afterAttack + afterDeath + whenAttacked
+    // Ability dispatch: afterAttack + afterDeath (whenAttacked already fired pre-damage)
     if (typeof Abilities !== 'undefined') {
       Abilities.clearEffectQueue();
       Abilities.dispatch('afterAttack', { unit: act.unit, target, damage: dmg, damagedUnits: [target] });
-      if (target.health > 0) {
-        Abilities.dispatch('whenAttacked', { unit: target, attacker: act.unit, damage: dmg });
-      }
       if (target.health <= 0) {
         Abilities.dispatch('afterDeath', { unit: target, killer: act.unit, attacker: act.unit });
         Abilities.dispatchAllyDeath(target, act.unit);
@@ -850,10 +898,15 @@
 
     G.state.actionHistory.push({
       type: 'attack', target, prevHealth, prevAttackerHealth,
+      prevTargetConditions, prevAttackerConditions,
       healthSnapshots,
       tossData: tossData || null,
       attackPath: attackPath || null,
       guardianTriggered: guardianTriggered || false,
+      replacementTriggered: !!G.state.pendingReplacement,
+      prevResources: prevAttackerResources,
+      prevTargetResources,
+      prevHymnRepetition,
     });
     const killText = target.health <= 0 ? ' \u2620 KILLED' : ` (${target.health}/${target.maxHealth} HP)`;
     G.log(`${act.unit.name} attacks ${target.name} for ${dmg} dmg${killText}`, act.unit.player);
@@ -999,6 +1052,32 @@
     if (!unit) return;
     if (!G.state.bonusActivations) G.state.bonusActivations = [];
     G.state.bonusActivations.push({ unit, player: unit.player });
+  }
+
+  /** Execute Hymn replacement: remove old unit, create new at same position. */
+  function executeReplacement(templateName) {
+    const pr = G.state.pendingReplacement;
+    if (!pr) return null;
+    const template = pr.available.find(t => t.name === templateName);
+    if (!template) return null;
+
+    const oldUnit = pr.unit;
+    // Kill old unit, move off-board
+    oldUnit.health = 0;
+    oldUnit.q = -99;
+    oldUnit.r = -99;
+
+    // Create new unit at same position
+    const newUnit = G.createUnit(template, pr.player, pr.q, pr.r);
+    G.state.units.push(newUnit);
+    newUnit.activated = true; // this activation is spent
+
+    // Capture objectives at the hex
+    updateObjectiveControl(newUnit);
+
+    G.log(`${oldUnit.name} transforms into ${newUnit.name}!`, pr.player);
+    G.state.pendingReplacement = null;
+    return newUnit;
   }
 
   /** Spend the attack action to remove all Burning instances. */
@@ -1149,9 +1228,12 @@
   }
 
   /** Check if a terrain hex has a specific rule (e.g. 'cover', 'difficult'). */
-  function hasTerrainRule(q, r, rule) {
+  function hasTerrainRule(q, r, rule, unit) {
     const td = G.state.terrain.get(`${q},${r}`);
     if (!td || !td.surface) return false;
+    if (unit && typeof Abilities !== 'undefined') {
+      return Abilities.getEffectiveRules(unit, td.surface).includes(rule);
+    }
     const info = Units.terrainRules[td.surface];
     return info && info.rules.includes(rule);
   }
@@ -1200,28 +1282,28 @@
 
     const ignores = typeof Abilities !== 'undefined'
       ? (rule) => Abilities.ignoresTerrainRule(unit, rule, q, r) : () => false;
-    if (hasTerrainRule(q, r, 'dangerous') && !ignores('dangerous')) {
+    if (hasTerrainRule(q, r, 'dangerous', unit) && !ignores('dangerous')) {
       const td = G.state.terrain.get(`${q},${r}`);
       const surface = td ? td.surface : '';
       damageUnit(unit, 1, null, surface === 'cinder' ? 'terrain-cinder' : 'terrain');
       G.log(`${unit.name} takes 1 terrain damage (${unit.health}/${unit.maxHealth} HP)`, unit.player);
     }
-    if (hasTerrainRule(q, r, 'poisonous') && !ignores('poisonous')) {
+    if (hasTerrainRule(q, r, 'poisonous', unit) && !ignores('poisonous')) {
       G.addCondition(unit, 'poisoned', 'endOfActivation');
       G.log(`${unit.name} poisoned by terrain`, unit.player);
     }
-    if (hasTerrainRule(q, r, 'revealing') && !ignores('revealing')) {
+    if (hasTerrainRule(q, r, 'revealing', unit) && !ignores('revealing')) {
       G.addCondition(unit, 'vulnerable', 'endOfRound', 'revealing');
       G.log(`${unit.name} revealed (vulnerable)`, unit.player);
     }
-    if (hasTerrainRule(q, r, 'consuming')) {
+    if (hasTerrainRule(q, r, 'consuming', unit)) {
       G.state.consumedUnits.push({ unit, fromQ: q, fromR: r });
       G.log(`${unit.name} consumed by terrain`, unit.player);
       unit.q = -99;
       unit.r = -99;
     }
     // Healing terrain: heal 1 for friendly units entering
-    if (hasTerrainRule(q, r, 'healing')) {
+    if (hasTerrainRule(q, r, 'healing', unit)) {
       const td = G.state.terrain.get(`${q},${r}`);
       if (td && (td.player === unit.player || td.player === 0)) {
         unit.health = Math.min(unit.health + 1, unit.maxHealth);
@@ -1233,6 +1315,34 @@
       const td = G.state.terrain.get(`${q},${r}`);
       if (td && td.surface === 'forest') {
         applyRecharge(unit, 'Forest Charged');
+      }
+    }
+    // Terrain Resource: gain resource on entering matching terrain
+    if (typeof Abilities !== 'undefined') {
+      const trList = Abilities.getPassiveList(unit, 'terrainresource');
+      if (trList.length > 0) {
+        const td = G.state.terrain.get(`${q},${r}`);
+        if (td && td.surface) {
+          const surface = td.surface.toLowerCase();
+          const info = typeof Units !== 'undefined' ? Units.terrainRules[surface] : null;
+          const element = info && info.element ? info.element.toLowerCase() : '';
+          for (const entry of trList) {
+            const parts = entry.split(':').map(s => s.trim());
+            if (parts.length < 3) continue;
+            const [match, resType, amtStr] = parts;
+            if (match !== surface && match !== element) continue;
+            const amount = parseInt(amtStr, 10) || 1;
+            if (!unit.resources) unit.resources = {};
+            const max = Abilities.getMaxResource(unit, resType);
+            const prev = unit.resources[resType] || 0;
+            if (prev >= max) continue;
+            unit.resources[resType] = Math.min(prev + amount, max);
+            const gained = unit.resources[resType] - prev;
+            if (gained > 0) {
+              G.log(`${unit.name} gains ${gained} ${resType} from ${td.surface} (${unit.resources[resType]}/${max})`, unit.player);
+            }
+          }
+        }
       }
     }
   }
@@ -1357,6 +1467,7 @@
     if (last.type === 'flareup' && !G.state.rules.canUndoMove) return false;
     if (last.type === 'attack' && !G.state.rules.canUndoAttack) return false;
     if (last.type === 'attack' && last.guardianTriggered) return false;
+    if (last.type === 'attack' && last.replacementTriggered) return false;
     if (last.type === 'ability') {
       if (last.actionCost === 'move' && !G.state.rules.canUndoMove) return false;
       if (last.actionCost === 'attack' && !G.state.rules.canUndoAttack) return false;
@@ -1474,6 +1585,8 @@
         if (last.missOncePerRound && last.target && last.target.usedAbilitiesThisRound) {
           last.target.usedAbilitiesThisRound.delete(last.missAbilityName);
         }
+        if (last.prevResources) act.unit.resources = last.prevResources;
+        if (last.prevTargetResources && last.target) last.target.resources = last.prevTargetResources;
         return true;
       }
       // Delayed attack undo: remove from delayedEffects
@@ -1485,18 +1598,28 @@
         if (last.prevAttackerHealth !== undefined) act.unit.health = last.prevAttackerHealth;
         act.attacked = false;
         if (G.hasCondition(act.unit, 'dizzy')) act.moved = false;
+        if (last.prevResources) act.unit.resources = last.prevResources;
         return true;
       }
       last.target.health = last.prevHealth;
-      // Restore attacker health (Burning self-damage)
+      if (last.prevTargetConditions) last.target.conditions = last.prevTargetConditions;
+      // Restore attacker health and conditions (Burning self-damage, hit rule conditions)
       if (last.prevAttackerHealth !== undefined) {
         act.unit.health = last.prevAttackerHealth;
       }
-      // Restore other units' health (Piercing, Explosive, etc.)
+      if (last.prevAttackerConditions) act.unit.conditions = last.prevAttackerConditions;
+      // Restore other units (health, conditions, position, resources — Piercing, Hymn, etc.)
       if (last.healthSnapshots) {
         for (const snap of last.healthSnapshots) {
           snap.unit.health = snap.prevHealth;
+          if (snap.prevConditions) snap.unit.conditions = snap.prevConditions;
+          if (snap.prevQ != null) { snap.unit.q = snap.prevQ; snap.unit.r = snap.prevR; }
+          if (snap.prevResources) snap.unit.resources = snap.prevResources;
         }
+      }
+      // Restore hymn repetition counter
+      if (last.prevHymnRepetition != null) {
+        G.state.hymnRepetition[act.unit.player] = last.prevHymnRepetition;
       }
       delete act.attackPath;
       act.attacked = false;
@@ -1576,6 +1699,10 @@
         last.unitRef.usedAbilitiesThisRound.delete(last.abilityName);
       }
     }
+
+    // Restore resources on undo (generic for all action types)
+    if (last.prevResources) act.unit.resources = last.prevResources;
+    if (last.prevTargetResources && last.target) last.target.resources = last.prevTargetResources;
 
     if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
     return true;
@@ -1768,6 +1895,7 @@
       fromQ, fromR, toQ, toR,
       prevHealth, prevConditions,
       otherSnapshots, prevTraps,
+      prevResources: JSON.parse(JSON.stringify(u.resources || {})),
     });
 
     // Objective control
@@ -1948,6 +2076,7 @@
       prevMoveDistance,
       prevHealth, prevConditions,
       otherUnitPositions, prevTraps,
+      prevResources: JSON.parse(JSON.stringify(u.resources || {})),
     });
 
     G.log(`${u.name} pushes ${data.enemy.name} and moves to (${u.q},${u.r})`, u.player);
@@ -2479,6 +2608,34 @@
         applyRecharge(unit, 'Fire Charged');
       }
     }
+    // Damage Resource: gain resource on taking specific damage types
+    if (typeof Abilities !== 'undefined') {
+      const drList = Abilities.getPassiveList(unit, 'damageresource');
+      if (drList.length > 0) {
+        for (const entry of drList) {
+          const parts = entry.split(':').map(s => s.trim());
+          if (parts.length < 3) continue;
+          const [match, resType, amtStr] = parts;
+          const matches = match === 'any' ||
+            (match === 'cinder' && sourceType === 'terrain-cinder') ||
+            (match === 'arcfire' && sourceType === 'arcfire') ||
+            (match === 'ally' && sourceType === 'ability' && source &&
+              typeof source === 'object' && source.player === unit.player) ||
+            (match === sourceType);
+          if (!matches) continue;
+          const drAmount = parseInt(amtStr, 10) || 1;
+          if (!unit.resources) unit.resources = {};
+          const max = Abilities.getMaxResource(unit, resType);
+          const prev = unit.resources[resType] || 0;
+          if (prev >= max) continue;
+          unit.resources[resType] = Math.min(prev + drAmount, max);
+          const gained = unit.resources[resType] - prev;
+          if (gained > 0) {
+            G.log(`${unit.name} gains ${gained} ${resType} (${unit.resources[resType]}/${max})`, unit.player);
+          }
+        }
+      }
+    }
 
     // Guardian death: remove guarded conditions sourced from this unit
     if (unit.health <= 0) {
@@ -2705,6 +2862,7 @@
   G.endActivation = endActivation;
   G.completeEndActivation = completeEndActivation;
   G.queueBonusActivation = queueBonusActivation;
+  G.executeReplacement = executeReplacement;
   G.removeBurning = removeBurning;
   G.forceEndActivation = forceEndActivation;
   G.passTurn = passTurn;

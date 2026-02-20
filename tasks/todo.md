@@ -90,7 +90,18 @@ Code handlers exist. Just needs rules/ability defs added to Google Sheets.
 
 ## Tested & Confirmed
 
-Verified working by user in gameplay. *(None yet.)*
+Verified working by user in gameplay.
+
+### Primordial Mists
+- [x] Teleport Through Earth — `teleportthrough: earth` via spreadsheet
+- [x] Teleport Through Water — `teleportthrough: water` via spreadsheet
+- [x] Teleport Through Air — `teleportthrough: air` via spreadsheet
+- [x] Teleport Through Chaos — `teleportthrough: chaos`, cross-element teleportation (all terrain in one pool)
+- [x] Sharp Thorn (Briar Thorn / Pointy Thicket) — hit: consume mana → burning; whenAttacked: consumeall mana → damage permana
+
+### Seri
+- [x] Light's Shadow (faction rule) — `swapterrainrule: fae mist:revealing:concealing`, terrain rule swap system
+- [x] One with Shadow — `teleportthrough: concealing`, rule-based teleportation
 
 ---
 
@@ -140,14 +151,22 @@ Verified working by user in gameplay. *(None yet.)*
 - [x] Spirit teleportation in getMoveRange() + getMovementContext() — cost-0 portals between matching-element terrain
 - [x] Teleport-aware path traversal in moveUnit() — skips Punish/occupant checks for non-adjacent steps
 - [x] Fix deployterrain value reading — getPassiveList instead of getPassiveMod for string terrain names
+- [x] Hymns of Creation — litany effect increments per-player repetition counter, hymn fires at 3
+- [x] `allallies`/`allenemies` target types in resolveTargets()
+- [x] `pushfromterrain`/`pulltoterrain` effects + `findNearestTerrainByElement()` helper
+- [x] Hymn repetition HUD display (♪ N/3) for Primordial Mists players
+- [x] Attack undo expanded: healthSnapshots capture conditions/positions/resources + hymnRepetition restore
+- [x] Litany of Potential — `replace` effect, interactive unit selection UI, `executeReplacement()` in game-battle.js
+- [x] `covered` condition — ray-cast for cover terrain between attacker/target
+- [x] `flanked` condition — direction-aware check for allies opposite the target
 
 ---
 
 ## Future Factions
-- Seri — Not Started
+- Seri — Light's Shadow + One with Shadow done. Needs: remaining unit abilities, spreadsheet wiring.
 - Soli — Not Started
 - Tidehaven — Not Started
-- Primordial Mists — Spirit Teleportation + Is Terrain done. Needs: mana system, Hymns of Creation, terrain-move variants, signature passives, spreadsheet wiring.
+- Primordial Mists — Spirit Teleportation + Is Terrain + Hymns of Creation + Litany of Potential done. Needs: mana system (resource primitives done), terrain-move variants, signature passives, spreadsheet wiring.
 - Down Town — Not Started
 
 ---
@@ -179,6 +198,7 @@ Verified working by user in gameplay. *(None yet.)*
 - Bonus activation queue: `G.state.bonusActivations[]`, checked at start of `nextTurn()`. Unit gets `_bonusActivation` flag.
 - `laststand` effect: revives `deadAlly` at 1 HP, queues bonus activation. Cleaned up in `completeEndActivation()`.
 - `deadally` target type: resolves to `ctx.deadAlly` in `resolveTargets()`.
-- Spirit teleportation: `spirit` passive flag (value=element like `earth`). While on matching terrain, all other matching terrain hexes are cost-0 BFS neighbors. Uses `buildSpiritPortals()` in game-battle.js + `extraNeighborsFn` in Board.getReachableHexes().
+- Teleport Through: `teleportthrough` passive flag. Values can be element names (`earth`, `water`, `air`, `fire`, `chaos`) or terrain rule names (`concealing`, `difficult`, etc.). Element matching uses `info.element`; rule matching uses `getEffectiveRules()` for per-unit perception. Portals grouped by match key. Uses `buildSpiritPortals()` in game-battle.js + `extraNeighborsFn` in Board.getReachableHexes().
+- `swapterrainrule` passive: value format `surface:oldRule:newRule` (e.g. `fae mist:revealing:concealing`). `getEffectiveRules(unit, surface)` in abilities.js applies swaps. `hasTerrainRule(q,r,rule,unit)` in game-battle.js uses it when unit param provided. Threaded into onEnterHex, getMoveRange, getMovementContext, selectUnit (invigorating), isHidden.
 - "Is Terrain": `isterrain` passive flag (value=surface like `forest`). Sets `unit._isTerrain`, `_isTerrainSurface`, `_isTerrainElement`. Checked by `getTerrainElementAt()` for Spirit portals.
 - Teleport path traversal: non-adjacent path steps (hexDistance > 1) skip Punish and occupant/Tumbler checks. `onEnterHex` still fires at destination.

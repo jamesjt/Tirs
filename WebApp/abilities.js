@@ -65,6 +65,8 @@ const Abilities = (() => {
     whenAttacked:  'whenAttacked',
     endActivation: 'endActivation',
     allyDeath:     'afterAllyDeath',
+    deploy:        'afterDeploy',
+    hymn:          'hymn',
   };
 
   // Reverse map: trigger string -> ability type
@@ -133,6 +135,16 @@ const Abilities = (() => {
         if (d < minDist) { minDist = d; closest = u; }
       }
       return closest ? [closest] : [];
+    }
+    if (tokens.has('allallies')) {
+      const src = ctx.unit;
+      if (!src) return [];
+      return Game.state.units.filter(u => u.health > 0 && u.player === src.player);
+    }
+    if (tokens.has('allenemies')) {
+      const src = ctx.unit;
+      if (!src) return [];
+      return Game.state.units.filter(u => u.health > 0 && u.player !== src.player);
     }
     if (tokens.has('damaged'))
       return ctx.damagedUnits || (ctx.target ? [ctx.target] : []);
@@ -209,7 +221,7 @@ const Abilities = (() => {
       'self', 'target', 'atktarget', 'attacker', 'occupant',
       'around', 'adjacent', 'own', 'line',
       'units', 'unit', 'spaces', 'empty', 'enemy', 'ally', 'terrain',
-      'alldamaged', 'linetotarget'
+      'alldamaged', 'linetotarget', 'allallies', 'allenemies'
     ]);
     const terrainRuleTokens = [...tokens].filter(t => !KEYWORDS.has(t));
 
@@ -321,8 +333,13 @@ const Abilities = (() => {
     if (!effect) return;
     const lower = effect.toLowerCase();
 
-    // Tag effect — identity marker, no runtime action
+    // Tag/passive-only effects — no runtime action
     if (lower === 'tag') return;
+    if (lower === 'maxresource') return;
+    if (lower === 'resetresource') return;
+    if (lower === 'resourcemod') return;
+    if (lower === 'terrainresource') return;
+    if (lower === 'damageresource') return;
 
     // Grant ability — pushes named ability defs to the target unit (Parting Gift etc.)
     if (lower === 'grantability') {
@@ -612,6 +629,29 @@ const Abilities = (() => {
         break;
       }
 
+      case 'replace': {
+        // Replace the acting unit with a new unit from the faction catalog
+        // Value: faction name (defaults to unit's own faction)
+        const rSrc = ctx.unit;
+        if (!rSrc || rSrc.health <= 0) break;
+        const rFaction = value || rSrc.faction;
+        const rTemplates = (typeof Units !== 'undefined' && Units.catalog[rFaction]) || [];
+        // Exclude currently deployed units (alive or dead — they occupied a roster slot)
+        const rDeployed = new Set(
+          Game.state.units.filter(u => u.player === rSrc.player).map(u => u.name)
+        );
+        const rAvailable = rTemplates.filter(t => !rDeployed.has(t.name));
+        if (rAvailable.length === 0) {
+          Game.log(`No replacement units available for ${rSrc.name}`, rSrc.player);
+          break;
+        }
+        Game.state.pendingReplacement = {
+          unit: rSrc, player: rSrc.player, q: rSrc.q, r: rSrc.r, available: rAvailable,
+        };
+        Game.log(`Hymn of Creation! ${rSrc.name} begins transformation!`, rSrc.player);
+        break;
+      }
+
       case 'swap':
         if (ctx.unit && ctx.target && isUnit(ctx.target)) {
           const uQ = ctx.unit.q, uR = ctx.unit.r;
@@ -639,10 +679,120 @@ const Abilities = (() => {
         }
         break;
 
+      case 'consume': {
+        // Value: "type:N" or "type:all" — spend resources, store consumed count in ctx
+        const unit = ctx.unit;
+        if (!unit || !unit.resources) break;
+        const parts = (value || '').split(':').map(s => s.trim());
+        const resType = parts[0].toLowerCase();
+        const current = unit.resources[resType] || 0;
+        let amount;
+        if (parts.length >= 2 && parts[1].toLowerCase() === 'all') {
+          amount = current;
+        } else {
+          amount = parts.length >= 2 ? (parseInt(parts[1], 10) || 1) : 1;
+        }
+        const actual = Math.min(amount, current);
+        unit.resources[resType] = current - actual;
+        if (!ctx.consumed) ctx.consumed = {};
+        ctx.consumed[resType] = (ctx.consumed[resType] || 0) + actual;
+        if (actual > 0) {
+          Game.log(`${unit.name} consumes ${actual} ${resType} (${unit.resources[resType]} remaining)`, unit.player);
+        }
+        break;
+      }
+
+      case 'gainresource': {
+        // Value: "type:N" — add resources capped by max
+        const tgts = targets.length > 0 ? targets.filter(isUnit) : (ctx.unit ? [ctx.unit] : []);
+        for (const t of tgts) {
+          if (!t.resources) t.resources = {};
+          const parts = (value || '').split(':').map(s => s.trim());
+          const resType = parts[0].toLowerCase();
+          const amount = parts.length >= 2 ? (parseInt(parts[1], 10) || 1) : 1;
+          if (!(resType in t.resources)) t.resources[resType] = 0;
+          const max = getMaxResource(t, resType);
+          const prev = t.resources[resType];
+          t.resources[resType] = Math.min(prev + amount, max);
+          const gained = t.resources[resType] - prev;
+          if (gained > 0) {
+            Game.log(`${t.name} gains ${gained} ${resType} (${t.resources[resType]}/${max})`, t.player);
+          }
+        }
+        break;
+      }
+
+      case 'litany': {
+        // Value = hymn ability def name. Increments repetition counter, triggers hymn at 3.
+        const player = ctx.unit ? ctx.unit.player : 0;
+        if (!player) break;
+        Game.state.hymnRepetition[player] = (Game.state.hymnRepetition[player] || 0) + 1;
+        const repCount = Game.state.hymnRepetition[player];
+        Game.log(`Litany! Repetition ${repCount}/3`, player);
+        if (repCount >= 3) {
+          Game.state.hymnRepetition[player] = 0;
+          Game.log(`HYMN OF CREATION triggers!`, player);
+          const hymnDef = abilityDefs[value];
+          if (hymnDef) {
+            executeRules(hymnDef.ruleIds, 'hymn', ctx);
+          } else {
+            console.warn(`[Abilities] No hymn ability def: "${value}"`);
+          }
+        }
+        break;
+      }
+
+      case 'pushfromterrain': {
+        // Value: "element:distance". Push each target away from nearest terrain of element.
+        const parts = (value || '').split(':').map(s => s.trim());
+        const terrainType = parts[0].toLowerCase();
+        const dist = parseInt(parts[1], 10) || 1;
+        for (const t of targets) {
+          if (!isUnit(t)) continue;
+          const nearest = findNearestTerrainByElement(t, terrainType);
+          if (nearest) {
+            Game.pushUnit(t, nearest.q, nearest.r, dist);
+          }
+        }
+        break;
+      }
+
+      case 'pulltoterrain': {
+        // Value: "element:distance". Pull each target toward nearest terrain of element.
+        const parts = (value || '').split(':').map(s => s.trim());
+        const terrainType = parts[0].toLowerCase();
+        const dist = parseInt(parts[1], 10) || 1;
+        for (const t of targets) {
+          if (!isUnit(t)) continue;
+          const nearest = findNearestTerrainByElement(t, terrainType);
+          if (nearest) {
+            Game.pullUnit(t, nearest.q, nearest.r, dist);
+          }
+        }
+        break;
+      }
+
       default:
         console.warn(`[Abilities] Unknown effect: "${effect}"`);
         break;
     }
+  }
+
+  // ── Helper: find nearest terrain hex by element ──
+
+  function findNearestTerrainByElement(unit, element) {
+    if (!unit || !Game.state.terrain) return null;
+    let best = null, bestDist = Infinity;
+    for (const [key, td] of Game.state.terrain) {
+      if (!td || !td.surface) continue;
+      const info = typeof Units !== 'undefined' ? Units.terrainRules[td.surface.toLowerCase()] : null;
+      if (!info || !info.element) continue;
+      if (info.element.toLowerCase() !== element) continue;
+      const [q, r] = key.split(',').map(Number);
+      const d = Board.hexDistance(unit.q, unit.r, q, r);
+      if (d < bestDist) { bestDist = d; best = { q, r }; }
+    }
+    return best;
   }
 
   // ── Condition Evaluation (for passive/onActivation conditions) ──
@@ -739,6 +889,75 @@ const Abilities = (() => {
               && u.player === ctx.unit.player && u !== ctx.unit)) count++;
         }
         return compare(count, op, num);
+      }
+
+      case 'covered': {
+        // True if cover terrain exists between attacker and target on the LoS line
+        // Relevant for Direct attacks (L/P attacks are fully blocked by cover)
+        const cAttacker = ctx.attacker || ctx.unit;
+        const cTarget = ctx.target || ctx.unit;
+        if (!cAttacker || !cTarget || cAttacker === cTarget) return false;
+        const cH1 = Board.getHex(cAttacker.q, cAttacker.r);
+        const cH2 = Board.getHex(cTarget.q, cTarget.r);
+        if (!cH1 || !cH2) return false;
+        const cSteps = 20;
+        const cChecked = new Set();
+        for (let ci = 1; ci < cSteps; ci++) {
+          const ct = ci / cSteps;
+          const cmx = cH1.x + (cH2.x - cH1.x) * ct;
+          const cmy = cH1.y + (cH2.y - cH1.y) * ct;
+          let cBest = null, cBestD = Infinity;
+          for (const hex of Board.hexes) {
+            const cd = Math.hypot(hex.x - cmx, hex.y - cmy);
+            if (cd < Board.hexSize * 0.8 && cd < cBestD) { cBest = hex; cBestD = cd; }
+          }
+          if (cBest) {
+            const cKey = `${cBest.q},${cBest.r}`;
+            if (cKey === `${cAttacker.q},${cAttacker.r}` || cKey === `${cTarget.q},${cTarget.r}`) continue;
+            if (cChecked.has(cKey)) continue;
+            cChecked.add(cKey);
+            if (Game.hasTerrainRule(cBest.q, cBest.r, 'cover')) return true;
+          }
+        }
+        return false;
+      }
+
+      case 'flanked': {
+        // True if attacker's allies are on the opposite side of the target
+        const { op: fOp, num: fNum } = parseComparison(val || '>=1');
+        const fAttacker = ctx.attacker || ctx.unit;
+        const fTarget = ctx.target;
+        if (!fAttacker || !fTarget) return false;
+        const fTHex = Board.getHex(fTarget.q, fTarget.r);
+        const fAHex = Board.getHex(fAttacker.q, fAttacker.r);
+        if (!fTHex || !fAHex) return false;
+        // Direction from target to attacker
+        let fAngle = Math.atan2(fAHex.y - fTHex.y, fAHex.x - fTHex.x) * 180 / Math.PI;
+        if (fAngle < 0) fAngle += 360;
+        const attackDir = Math.round(fAngle / 60) % 6;
+        const oppositeDir = (attackDir + 3) % 6;
+        // Count attacker's allies adjacent to target in opposite direction
+        const fNeighbors = Board.getNeighbors(fTarget.q, fTarget.r);
+        let fCount = 0;
+        for (const fn of fNeighbors) {
+          if (fn.dir !== oppositeDir) continue;
+          if (Game.state.units.some(u => u.q === fn.q && u.r === fn.r && u.health > 0
+              && u.player === fAttacker.player && u !== fAttacker)) fCount++;
+        }
+        return compare(fCount, fOp, fNum);
+      }
+
+      case 'resource': {
+        // condValue: "type" (defaults >=1) or "type:>=N"
+        if (!ctx.unit || !ctx.unit.resources) return false;
+        const parts = val.split(':').map(s => s.trim());
+        const resType = parts[0].toLowerCase();
+        const current = ctx.unit.resources[resType] || 0;
+        if (parts.length >= 2) {
+          const { op, num } = parseComparison(parts[1]);
+          return compare(current, op, num);
+        }
+        return current >= 1;
       }
 
       default:
@@ -1058,7 +1277,20 @@ const Abilities = (() => {
         if (!rule || rule.type !== 'passive') continue;
         if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit })) continue;
         for (const eff of rule.effects) {
-          if (eff.effect && eff.effect.toLowerCase() === stat) mod += int(eff.value);
+          if (!eff.effect) continue;
+          const effLower = eff.effect.toLowerCase();
+          if (effLower === stat) {
+            mod += int(eff.value);
+          } else if (effLower === 'resourcemod' && eff.value) {
+            // Value: "type:stat:perUnit" e.g. "mana:armor:1"
+            const parts = eff.value.split(':').map(s => s.trim());
+            if (parts.length >= 3 && parts[1].toLowerCase() === stat) {
+              const resType = parts[0].toLowerCase();
+              const perUnit = parseInt(parts[2], 10) || 1;
+              const count = (unit.resources && unit.resources[resType]) || 0;
+              mod += count * perUnit;
+            }
+          }
         }
       }
     }
@@ -1166,8 +1398,8 @@ const Abilities = (() => {
     const td = Game.state.terrain.get(`${unit.q},${unit.r}`);
     const surface = td?.surface?.toLowerCase() || null;
     if (surface) {
-      const info = Units.terrainRules[td.surface];
-      if (info && info.rules.includes('concealing')) return true;
+      const effectiveRules = getEffectiveRules(unit, td.surface);
+      if (effectiveRules.includes('concealing')) return true;
     }
 
     // Passive hidden from abilities
@@ -1264,6 +1496,75 @@ const Abilities = (() => {
     return items;
   }
 
+  // ── Resource Helpers ────────────────────────────────────────
+
+  /** Get the max cap for a resource type on a unit.
+   *  Scans passive 'maxresource' effects for "type:N" values.
+   *  Returns N if found, or 1 as default. */
+  function getMaxResource(unit, resourceType) {
+    if (!unit || !unit.abilities) return 1;
+    const rtLower = resourceType.toLowerCase();
+    let max = 1;
+    for (const ab of unit.abilities) {
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule || rule.type !== 'passive') continue;
+        for (const eff of rule.effects) {
+          if (eff.effect && eff.effect.toLowerCase() === 'maxresource' && eff.value) {
+            const parts = eff.value.split(':').map(s => s.trim());
+            if (parts[0].toLowerCase() === rtLower && parts.length >= 2) {
+              max = Math.max(max, parseInt(parts[1], 10) || 1);
+            }
+          }
+        }
+      }
+    }
+    return max;
+  }
+
+  /** Get current resource count for a unit. */
+  function getResourceCount(unit, resourceType) {
+    if (!unit || !unit.resources) return 0;
+    return unit.resources[resourceType.toLowerCase()] || 0;
+  }
+
+  /** Scan all passive 'maxresource' effects to find which resource types a unit uses.
+   *  Returns { type: maxValue } map. */
+  function getPassiveResourceDefs(unit) {
+    const result = {};
+    if (!unit || !unit.abilities) return result;
+    for (const ab of unit.abilities) {
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule || rule.type !== 'passive') continue;
+        for (const eff of rule.effects) {
+          if (eff.effect && eff.effect.toLowerCase() === 'maxresource' && eff.value) {
+            const parts = eff.value.split(':').map(s => s.trim());
+            if (parts.length >= 2) {
+              const type = parts[0].toLowerCase();
+              const m = parseInt(parts[1], 10) || 1;
+              result[type] = Math.max(result[type] || 0, m);
+            }
+          }
+        }
+      }
+    }
+    return result;
+  }
+
+  /** Get all resource types known across all deployed units (for debug UI). */
+  function getAllResourceTypes() {
+    const types = new Set();
+    for (const u of Game.state.units) {
+      if (u.resources) {
+        for (const type of Object.keys(u.resources)) types.add(type);
+      }
+      const defs = getPassiveResourceDefs(u);
+      for (const type of Object.keys(defs)) types.add(type);
+    }
+    return [...types];
+  }
+
   // Terrain rules considered "negative" for ignoreTerrain surface immunity
   const NEGATIVE_TERRAIN_RULES = ['difficult', 'impassable', 'dangerous', 'poisonous', 'revealing'];
 
@@ -1288,6 +1589,27 @@ const Abilities = (() => {
     return ignoredSurfaces.includes(td.surface.toLowerCase());
   }
 
+  /** Get the effective terrain rules for a surface as perceived by a specific unit.
+   *  Applies swapterrainrule passive effects (format: "surface:oldRule:newRule").
+   *  Returns raw rules when unit is null/undefined. */
+  function getEffectiveRules(unit, surface) {
+    const info = typeof Units !== 'undefined' ? Units.terrainRules[surface] : null;
+    if (!info) return [];
+    if (!unit) return info.rules;
+    const swaps = getPassiveList(unit, 'swapterrainrule');
+    if (swaps.length === 0) return info.rules;
+    const rules = [...info.rules];
+    for (const swap of swaps) {
+      const parts = swap.split(':').map(s => s.trim());
+      if (parts.length !== 3) continue;
+      const [targetSurface, oldRule, newRule] = parts;
+      if (targetSurface !== surface.toLowerCase()) continue;
+      const idx = rules.indexOf(oldRule);
+      if (idx !== -1) rules[idx] = newRule;
+    }
+    return rules;
+  }
+
   // ── Unit Binding ─────────────────────────────────────────────
 
   /** Attach resolved ability definitions to a unit instance. */
@@ -1296,7 +1618,7 @@ const Abilities = (() => {
       .map(r => abilityDefs[r.name])
       .filter(Boolean);
     unit.usedAbilities = new Set();
-    unit.mana = 0;
+    unit.resources = {};
 
     // Auto-apply faction-wide ability (ability named after the faction)
     if (unit.faction && abilityDefs[unit.faction]) {
@@ -1422,6 +1744,28 @@ const Abilities = (() => {
       }
     }
     return 0;
+  }
+
+  /** Predict total bonus damage from hit rules whose conditions currently pass.
+   *  Used by getAttackTargets() for damage preview on reticles. */
+  function getHitBonusDamage(unit, target) {
+    if (!unit || !unit.abilities) return 0;
+    let total = 0;
+    const ctx = { unit, target };
+    for (const ab of unit.abilities) {
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule || rule.type !== 'hit') continue;
+        if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, ctx)) continue;
+        for (const eff of rule.effects) {
+          const effLower = (eff.effect || '').toLowerCase();
+          if (effLower === 'bonusdamage') {
+            total += resolveValue(eff.value, ctx);
+          }
+        }
+      }
+    }
+    return total;
   }
 
   // ── After-Move Helpers (Level and similar post-move abilities) ──
@@ -1589,6 +1933,16 @@ const Abilities = (() => {
       case 'unitdamage':   return ctx.unit ? Game.getEffective(ctx.unit, 'damage') : 0;
       case 'absorbedgifts': return ctx.unit ? (ctx.unit._absorbedGifts || 0) : 0;
       default: {
+        // Dynamic consumed resource: "consumedmana", "consumedlightning", etc.
+        if (lower.startsWith('consumed')) {
+          const resType = lower.slice(8);
+          return (ctx.consumed && ctx.consumed[resType]) || 0;
+        }
+        // Dynamic resource count: "resourcemana", "resourcelightning", etc.
+        if (lower.startsWith('resource')) {
+          const resType = lower.slice(8);
+          return ctx.unit ? ((ctx.unit.resources && ctx.unit.resources[resType]) || 0) : 0;
+        }
         const n = parseInt(valueStr, 10);
         return isNaN(n) ? null : n;
       }
@@ -1852,6 +2206,7 @@ const Abilities = (() => {
     dispatchAllyDeath,
     dispatchMovement,
     getPassiveMod,
+    getPassiveList,
     hasFlag,
     hasFlagPassive,
     checkMiss,
@@ -1860,10 +2215,16 @@ const Abilities = (() => {
     hasDeployRule,
     getDeployTrapInfo,
     ignoresTerrainRule,
+    getEffectiveRules,
+    getMaxResource,
+    getResourceCount,
+    getPassiveResourceDefs,
+    getAllResourceTypes,
     hasOnAttackRules,
     getTossSourceHexes,
     getTossDestHexes,
     getOnAttackBonusDamage,
+    getHitBonusDamage,
     hasAfterMoveRules,
     getAfterMoveData,
     markAbilityUsed,

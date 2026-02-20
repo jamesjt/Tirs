@@ -1,0 +1,47 @@
+Abilities	1/game	1/round	Ability1	Ability2	Ability3	Ability4
+Tangled Roots	FALSE	FALSE	hit.TangledRoots.Immob	passive.TangledRoots.Prevent
+Sharp Thorn	FALSE	FALSE	hit.SharpThorn.Burning	whenAttacked.SharpThorn.Retaliate
+Flowing River	FALSE	FALSE	hit.FlowingRiver.Push	afterMove.FlowingRiver.Pull
+Grasping Bog	FALSE	FALSE	hit.GraspingBog.Pull	passive.GraspingBog.Aura
+Rejuvenating Rain	FALSE	FALSE	hit.RejuvenatingRain.Heal	movement.RejuvenatingRain.Cleanse
+Chilling Mist	FALSE	FALSE	hit.ChillingMist.Vuln	whenAttacked.ChillingMist.Reduce
+Gusting Gale	FALSE	FALSE	hit.GustingGale.Push	whenAttacked.GustingGale.Evade
+Flighty Storm	FALSE	FALSE	hit.FlightyStorm.Weakness	whenAttacked.FlightyStorm.Evade
+Nothing	FALSE	FALSE	hit.Nothing.Silence	whenAttacked.Nothing.Dodge
+Forest Elemental	FALSE	FALSE	passive.ForestElemental
+Rock Elemental	FALSE	FALSE	passive.RockElemental
+Bramble Elemental	FALSE	FALSE	passive.BrambleElemental
+River Elemental	FALSE	FALSE	passive.RiverElemental
+Bog Elemental	FALSE	FALSE	passive.BogElemental
+Rain Elemental	FALSE	FALSE	passive.RainElemental
+Mist Elemental	FALSE	FALSE	passive.MistElemental
+Wind Elemental	FALSE	FALSE	passive.WindElemental
+Storm Elemental	FALSE	FALSE	passive.StormElemental
+Chaos Elemental	FALSE	FALSE	passive.ChaosElemental
+Rock Rumble	FALSE	FALSE	action.rockrumble
+Thorny Tanto	FALSE	FALSE	action.thornytanto
+River Rush	FALSE	FALSE	action.riverrush
+Marsh Murmur	FALSE	FALSE	action.marshmurmur
+Rainy Refrain	FALSE	FALSE	action.rainyrefrain
+Creeping Shroud	FALSE	FALSE	activation.creepingshroud	action.creepingshroud.move
+Winds Whistle	FALSE	FALSE	activation.windswhistle	action.windswhistle.move
+Tempest Tune	FALSE	FALSE	action.tempesttune
+Primordial Prelude	FALSE	FALSE	action.primordialprelude
+Litany of Life	FALSE	FALSE	hit.litanyoflife
+Litany of Protection	FALSE	FALSE	hit.litanyofprotection
+Litany of Power	FALSE	FALSE	hit.litanyofpower
+Litany of Currents	FALSE	FALSE	hit.litanyofcurrents
+Litany of Enticement	FALSE	FALSE	hit.litanyofenticement
+Litany of Shivers	FALSE	FALSE	hit.litanyofshivers
+Litany of Guidance	FALSE	FALSE	hit.litanyofguidance
+Litany of Dread	FALSE	FALSE	hit.litanyofdread
+Litany of Potential	FALSE	TRUE	movement.litanyofpotential
+Hymn of Life	FALSE	FALSE	hymn.hymnoflife
+Hymn of Protection	FALSE	FALSE	hymn.hymnofprotection
+Hymn of Power	FALSE	FALSE	hymn.hymnofpower
+Hymn of Currents	FALSE	FALSE	hymn.hymnofcurrents
+Hymn of Enticement	FALSE	FALSE	hymn.hymnofenticement
+Hymn of Shivers	FALSE	FALSE	hymn.hymnofshivers
+Hymn of Guidance	FALSE	FALSE	hymn.hymnofguidance
+Hymn of Dread	FALSE	FALSE	hymn.hymnofdread
+Hymn of Potential	FALSE	FALSE	hymn.hymnofpotential

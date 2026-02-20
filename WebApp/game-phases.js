@@ -189,6 +189,11 @@
     G.state.units.push(unit);
     template._deployed = true;
 
+    // Dispatch deploy rules (e.g. gainresource on deploy)
+    if (typeof Abilities !== 'undefined') {
+      Abilities.dispatch('afterDeploy', { unit });
+    }
+
     // Check for deploy trap ability (Clockwerk, Trapper: Spike, etc.)
     const trapInfo = typeof Abilities !== 'undefined'
       ? Abilities.getDeployTrapInfo(template) : null;
@@ -452,6 +457,24 @@
             const unit = G.state.units.find(u => u.q === q && u.r === r && u.health > 0);
             if (!unit) continue;
             G.onEnterHex(unit, q, r);
+          }
+        },
+      },
+      {
+        id: 'resetResources',
+        label: 'Reset per-round resources',
+        auto: true,
+        execute() {
+          if (typeof Abilities === 'undefined') return;
+          for (const u of G.state.units) {
+            if (u.health <= 0 || !u.resources) continue;
+            const resets = Abilities.getPassiveList(u, 'resetresource');
+            for (const resType of resets) {
+              if (u.resources[resType] !== undefined && u.resources[resType] > 0) {
+                u.resources[resType] = 0;
+                G.log(`${u.name}'s ${resType} resets to 0`, u.player);
+              }
+            }
           }
         },
       },

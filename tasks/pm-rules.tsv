@@ -1,0 +1,61 @@
+ruleName	Special Rule	Type	Action	Condition	Condition Value	validTargets	invalidTargets	Range	Effect 1	Value 1	Effect 2	Value 2	Effect 3	Value 3	Effect 4	Value 4
+passive.mana.from.water	mana.from.water	passive							terrainresource	water:mana:1
+passive.mana.from.air	mana.from.air	passive							terrainresource	air:mana:1
+passive.mana.from.any	mana.from.any	passive							terrainresource	any:mana:1
+hit.TangledRoots.Immob	TangledRoots.Immob	hit		resource	mana	target			consume	mana:1	immobilized	endOfRound
+hit.SharpThorn.Burning	SharpThorn.Burning	hit		resource	mana	target			consume	mana:1	burning	permanent
+hit.FlowingRiver.Push	FlowingRiver.Push	hit		resource	mana	target			consume	mana:1	push	2
+hit.GraspingBog.Pull	GraspingBog.Pull	hit		resource	mana	target			consume	mana:1	pull	2
+hit.RejuvenatingRain.Heal	RejuvenatingRain.Heal	hit		resource	mana	self			consume	mana:1	heal	1
+hit.ChillingMist.Vuln	ChillingMist.Vuln	hit		resource	mana	target			consume	mana:1	vulnerable	endOfRound
+hit.GustingGale.Push	GustingGale.Push	hit		resource	mana	target			consume	mana:1	push	1	splashdamage	1
+hit.FlightyStorm.Weakness	FlightyStorm.Weakness	hit		resource	mana	target			consume	mana:1	weakness	endOfRound
+hit.Nothing.Silence	Nothing.Silence	hit		resource	mana	target			consume	mana:1	silenced	endOfRound
+whenAttacked.Nothing.Dodge	Nothing.Dodge	whenAttacked		resource	mana	self			consume	mana:1	dodgy	endOfRound
+whenAttacked.SharpThorn.Retaliate	SharpThorn.Retaliate	whenAttacked		resource	mana	attacker			consumeall	mana	damage	permana
+whenAttacked.ChillingMist.Reduce	ChillingMist.Reduce	whenAttacked		resource	mana	self			consume	mana:1	reducedamageto	1
+whenAttacked.GustingGale.Evade	GustingGale.Evade	whenAttacked		resource	mana	self			consume	mana:1	move	2	reducedamage	1
+whenAttacked.FlightyStorm.Evade	FlightyStorm.Evade	whenAttacked		resource	mana	self			consume	mana:1	move	2	reducedamage	1
+passive.TangledRoots.Prevent	TangledRoots.Prevent	passive				self			preventcondition	mana:1
+passive.GraspingBog.Aura	GraspingBog.Aura	passive		resource	mana			1	aura	immobilized
+afterMove.FlowingRiver.Pull	FlowingRiver.Pull	afterMove		resource	mana				consume	mana:1	pullthrough	ally
+movement.RejuvenatingRain.Cleanse	RejuvenatingRain.Cleanse	movement		resource	mana	movedthrough.ally			consume	mana:1	heal	1
+passive.ForestElemental	ForestElemental	passive				self			isterrain	forest	deployterrain	forest
+passive.RockElemental	RockElemental	passive				self			isterrain	rubble	deployterrain	rubble
+passive.BrambleElemental	BrambleElemental	passive				self			isterrain	brambles	deployterrain	brambles
+passive.RiverElemental	RiverElemental	passive				self			isterrain	pool	deployterrain	pool
+passive.BogElemental	BogElemental	passive				self			isterrain	bog	deployterrain	bog
+passive.RainElemental	RainElemental	passive				self			isterrain	rain	deployterrain	rain
+passive.MistElemental	MistElemental	passive				self			isterrain	mist	deployterrain	mist
+passive.WindElemental	WindElemental	passive				self			isterrain	gale	deployterrain	gale
+passive.StormElemental	StormElemental	passive				self			isterrain	storm	deployterrain	storm
+passive.ChaosElemental	ChaosElemental	passive									deployterrain	any
+action.rockrumble	rockrumble	action	Move			Rubble			relocate		protected	movedthrough.ally
+action.thornytanto	thornytanto	action	Move			Brambles			relocate
+action.riverrush	riverrush	action	Move			Water			relocate		push	movedthrough.1
+action.marshmurmur	marshmurmur	action	Move			Bog			relocate		poisoned	movedthrough.enemy
+action.rainyrefrain	rainyrefrain	action	Move			Rain			relocate
+action.creepingshroud.move	creepingshroud.move	action	Move			Mist			relocate
+action.windswhistle.move	windswhistle.move	action	Move			Gale			relocate
+action.tempesttune	tempesttune	action	Move			Storm			relocate
+action.primordialprelude	primordialprelude	action	Move			placedterrain			relocate
+activation.creepingshroud	creepingshroud.create	activation				adjacentto.mist, empty			placeterrain	mist	damage	allenemies.inmist.1
+activation.windswhistle	windswhistle.create	activation				adjacentto.gale, empty			placeterrain	gale
+hit.litanyoflife	litany.of.life	hit		resource	mana				consume	mana:1	litany	Hymn of Life
+hit.litanyofprotection	litany.of.protection	hit		resource	mana				consume	mana:1	litany	Hymn of Protection
+hit.litanyofpower	litany.of.power	hit		resource	mana				consume	mana:1	litany	Hymn of Power
+hit.litanyofcurrents	litany.of.currents	hit		resource	mana				consume	mana:1	litany	Hymn of Currents
+hit.litanyofenticement	litany.of.enticement	hit		resource	mana				consume	mana:1	litany	Hymn of Enticement
+hit.litanyofshivers	litany.of.shivers	hit		resource	mana				consume	mana:1	litany	Hymn of Shivers
+hit.litanyofguidance	litany.of.guidance	hit		resource	mana				consume	mana:1	litany	Hymn of Guidance
+hit.litanyofdread	litany.of.dread	hit		resource	mana				consume	mana:1	litany	Hymn of Dread
+movement.litanyofpotential	litany.of.potential	movement								replaceterrain		gainresource	mana:1	litany	Hymn of Potential
+hymn.hymnoflife	hymn.of.life	hymn				allallies			heal	1
+hymn.hymnofprotection	hymn.of.protection	hymn				allallies			protected	endOfRound
+hymn.hymnofpower	hymn.of.power	hymn				allallies			strengthened	endOfRound
+hymn.hymnofcurrents	hymn.of.currents	hymn				allenemies			pushfromterrain	water
+hymn.hymnofenticement	hymn.of.enticement	hymn				allenemies			pulltoterrain	water
+hymn.hymnofshivers	hymn.of.shivers	hymn				allenemies			vulnerable	endOfRound
+hymn.hymnofguidance	hymn.of.guidance	hymn				allallies			move	1
+hymn.hymnofdread	hymn.of.dread	hymn				allenemies			weakness	endOfRound
+hymn.hymnofpotential	hymn.of.potential	hymn				self			replace

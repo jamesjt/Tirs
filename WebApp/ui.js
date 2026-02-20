@@ -108,6 +108,43 @@ const UI = (() => {
     tumbler:      '\u{1F483}',  // 💃 dancer (tumble through enemies)
   };
 
+  // ── Resource icon mapping ────────────────────────────────────
+  const RESOURCE_ICONS = {
+    mana:      '\u2B20',  // ⬠ pentagon
+    lightning: '\u26A1',  // ⚡ lightning bolt
+    energy:    '\u2600',  // ☀ sun
+    charge:    '\u2726',  // ✦ 4-point star
+  };
+
+  /** Return inline HTML for a resource icon — prefers Icon Map image, falls back to Unicode. */
+  function resourceIconHTML(type) {
+    const icons = Units.textIcons;
+    const key = type + 'Icon';                       // e.g. "mana" → "manaIcon"
+    if (icons && icons[key]) return `<img class="res-img-icon" src="${icons[key]}" alt="${type}">`;
+    return RESOURCE_ICONS[type] || '\u2B20';
+  }
+
+  /** Return inline HTML for a condition icon — prefers Icon Map image, falls back to COND_ICONS Unicode. */
+  function conditionIconHTML(id) {
+    const icons = Units.textIcons;
+    const key = id + 'Icon';                         // e.g. "burning" → "burningIcon"
+    if (icons && icons[key]) return `<img class="cond-img-icon" src="${icons[key]}" alt="${id}">`;
+    return COND_ICONS[id] || '?';
+  }
+
+  // ── Text icon substitution (data-driven from "Icon Map" sheet) ──
+  let _textIconRegex = null;
+  function replaceTextIcons(text) {
+    if (!text) return text;
+    const icons = Units.textIcons;
+    if (!icons || Object.keys(icons).length === 0) return text;
+    if (!_textIconRegex) {
+      const escaped = Object.keys(icons).map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      _textIconRegex = new RegExp('\\b(' + escaped.join('|') + ')\\b', 'g');
+    }
+    return text.replace(_textIconRegex, (m) => `<img class="rule-icon" src="${icons[m]}" alt="${m}">`);
+  }
+
   // Conditions rendered as board overlay (not as token badge)
   const OVERLAY_CONDITIONS = new Set(['glidermark']);
 
@@ -178,6 +215,7 @@ const UI = (() => {
     clockToysTargeting = null;
     woundUpTargeting = null;
     guardianTargeting = null;
+    replacementTargeting = false;
     hotSuitTargeting = false;
     delayedTargeting = false;
     hideLevelChoiceOverlay();
@@ -510,6 +548,9 @@ const UI = (() => {
 
   // ── Effect Targeting Mode (interactive push/pull/move) ────────
   let effectTargeting = null;  // { validHexes: Set<"q,r">, effect: object }
+
+  // ── Replacement Choice Mode (Hymn of Potential) ──────────────
+  let replacementTargeting = false;
 
   function enterEffectTargeting() {
     const eff = typeof Abilities !== 'undefined' ? Abilities.peekEffect() : null;
@@ -890,6 +931,12 @@ const UI = (() => {
     // After effects resolve, check for burning redirect (Hot Suit)
     if (checkBurningRedirect()) return;
 
+    // After effects resolve, check for Hymn replacement choice
+    if (Game.state.pendingReplacement) {
+      enterReplacementChoice();
+      return;
+    }
+
     const act = Game.state.activationState;
     if (!act) {
       resetUiState();
@@ -900,6 +947,33 @@ const UI = (() => {
       showActivationHighlights();
     }
     showPhase();
+    render();
+  }
+
+  // ── Replacement Choice (Hymn of Potential) ───────────────────
+
+  function enterReplacementChoice() {
+    const pr = Game.state.pendingReplacement;
+    if (!pr) return;
+    replacementTargeting = true;
+
+    const panel = document.getElementById('panel-round');
+    panel.classList.remove('hidden');
+
+    let html = `<h3 class="round-title">Hymn of Creation</h3>`;
+    html += `<p class="step-pending">${pr.unit.name} transforms! Choose a replacement:</p>`;
+    html += `<div class="replacement-grid">`;
+    for (const t of pr.available) {
+      const imgSrc = t.image ? `../nandeck/images/unitImages/${t.image}` : '';
+      html += `<div class="replacement-choice" data-action="replacement-pick" data-name="${t.name}">`;
+      if (imgSrc) html += `<img class="replacement-img" src="${imgSrc}" alt="${t.name}">`;
+      html += `<div class="replacement-info">`;
+      html += `<span class="replacement-name">${t.name}</span>`;
+      html += `<span class="replacement-stats">\u2764${t.health} \u2694${t.damage} \u27A1${t.move} R${t.range}</span>`;
+      html += `</div></div>`;
+    }
+    html += `</div>`;
+    panel.innerHTML = html;
     render();
   }
 
@@ -948,6 +1022,7 @@ const UI = (() => {
     // ── Debug: condition applicator ──
     buildDebugConditionMenu(nav);
     buildDebugTerrainMenu(nav);
+    buildDebugResourceMenu(nav);
 
     // Register network action handler + show lobby
     if (typeof Net !== 'undefined') {
@@ -1115,10 +1190,22 @@ const UI = (() => {
       if (condDiv) {
         condDiv.innerHTML = groupConditions(unit.conditions)
           .map(g => {
-            const sym = COND_ICONS[g.id] || '?';
             const badge = g.count > 1 ? `<span class="cond-stack">${g.count}</span>` : '';
-            return `<span class="cond-icon cond-${g.id}" title="${g.id}${g.count > 1 ? ' x' + g.count : ''}">${sym}${badge}</span>`;
+            return `<span class="cond-icon cond-${g.id}" title="${g.id}${g.count > 1 ? ' x' + g.count : ''}">${conditionIconHTML(g.id)}${badge}</span>`;
           }).join('');
+      }
+
+      // Resource indicators
+      const resDiv = el.querySelector('.token-resources');
+      if (resDiv && unit.resources) {
+        const entries = Object.entries(unit.resources).filter(([, v]) => v > 0);
+        if (entries.length > 0) {
+          resDiv.innerHTML = entries.map(([type, count]) => {
+            return `<span class="res-icon res-${type}" title="${type}: ${count}">${resourceIconHTML(type)}${count}</span>`;
+          }).join('');
+        } else {
+          resDiv.innerHTML = '';
+        }
       }
 
       // State classes
@@ -1147,6 +1234,7 @@ const UI = (() => {
     }
     content += `<div class="token-hp"></div>`;
     content += `<div class="token-conditions"></div>`;
+    content += `<div class="token-resources"></div>`;
 
     el.innerHTML = content;
 
@@ -1158,6 +1246,7 @@ const UI = (() => {
       if (!hex) return;
       if (debugPickingUnit && handleDebugClick(hex)) return;
       if (debugPickingTerrain && handleDebugTerrainClick(hex)) return;
+      if (debugPickingResource && handleDebugResourceClick(hex)) return;
       const phase = Game.state.phase;
       if (phase === Game.PHASE.TERRAIN_DEPLOY) handleTerrainClick(hex);
       else if (phase === Game.PHASE.UNIT_DEPLOY) handleDeployClick(hex);
@@ -2081,6 +2170,15 @@ const UI = (() => {
       html += `<span class="hud-status-icon${act.moved ? ' used' : ''}">${MOVE_ICON}</span>`;
       html += `<span class="hud-status-icon${act.attacked ? ' used' : ''}">${ATK_ICON}</span>`;
 
+      // Resource display
+      if (act.unit.resources) {
+        for (const [type, count] of Object.entries(act.unit.resources)) {
+          if (count <= 0 && !Object.keys(Abilities.getPassiveResourceDefs(act.unit)).includes(type)) continue;
+          const max = typeof Abilities !== 'undefined' ? Abilities.getMaxResource(act.unit, type) : '?';
+          html += `<span class="hud-resource" title="${type}">${resourceIconHTML(type)}${count}/${max}</span>`;
+        }
+      }
+
       // Delayed Attack targeting button
       const delayedHint = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'delayedattack');
       if (delayedHint && !act.attacked && !act.moved && !Game.hasCondition(act.unit, 'disarmed')) {
@@ -2175,6 +2273,20 @@ const UI = (() => {
     const turnEl = document.getElementById('hud-turn');
     turnEl.textContent = `Player ${s.currentPlayer}'s Turn`;
     turnEl.className = `turn-p${s.currentPlayer}`;
+
+    // Hymn repetition counter (Primordial Mists)
+    for (const p of [1, 2]) {
+      const hymnEl = document.getElementById(`hud-hymn-${p}`);
+      if (!hymnEl) continue;
+      const faction = s.players[p] && s.players[p].faction;
+      if (faction === 'Primordial Mists') {
+        const rep = s.hymnRepetition[p] || 0;
+        hymnEl.textContent = `\u266A ${rep}/3`;
+        hymnEl.classList.remove('hidden');
+      } else {
+        hymnEl.classList.add('hidden');
+      }
+    }
   }
 
   // ── Game Over UI ──────────────────────────────────────────────
@@ -2289,7 +2401,7 @@ const UI = (() => {
         ${svgDamage(unit.damage)}
       </div>
       <div class="card-conditions-bar"></div>
-      ${unit.specialRules && unit.specialRules.length > 0 ? `<div class="card-rules card-notched">${unit.specialRules.map(r => `<div class="card-rule"><div class="rule-name">${r.name}</div>${r.text ? `<div class="rule-desc">${r.text}</div>` : ''}</div>`).join('')}</div>` : ''}
+      ${unit.specialRules && unit.specialRules.length > 0 ? `<div class="card-rules card-notched">${unit.specialRules.map(r => `<div class="card-rule"><div class="rule-name">${r.name}</div>${r.text ? `<div class="rule-desc">${replaceTextIcons(r.text)}</div>` : ''}</div>`).join('')}</div>` : ''}
     `;
   }
 
@@ -2503,9 +2615,8 @@ const UI = (() => {
       if (!deployed || !deployed.conditions || deployed.conditions.length === 0) return;
       bar.innerHTML = groupConditions(deployed.conditions)
         .map(g => {
-          const sym = COND_ICONS[g.id] || '?';
           const badge = g.count > 1 ? `<span class="cond-stack">${g.count}</span>` : '';
-          return `<span class="cond-icon cond-${g.id}" title="${g.id}${g.count > 1 ? ' x' + g.count : ''}">${sym}${badge}</span>`;
+          return `<span class="cond-icon cond-${g.id}" title="${g.id}${g.count > 1 ? ' x' + g.count : ''}">${conditionIconHTML(g.id)}${badge}</span>`;
         }).join('');
     });
 
@@ -2766,11 +2877,10 @@ const UI = (() => {
     }
     let html = '';
     for (const g of groupConditions(unit.conditions)) {
-      const sym = COND_ICONS[g.id] || '?';
       const badge = g.count > 1 ? `<span class="cond-stack">${g.count}</span>` : '';
       const label = g.count > 1 ? `${g.id} ×${g.count}` : g.id;
       html += `<div class="card-cond-row">`;
-      html += `<span class="card-cond-icon cond-${g.id}">${sym}${badge}</span>`;
+      html += `<span class="card-cond-icon cond-${g.id}">${conditionIconHTML(g.id)}${badge}</span>`;
       html += `<span class="card-cond-label">${label}</span>`;
       html += `</div>`;
     }
@@ -2798,6 +2908,12 @@ const UI = (() => {
 
   function onKeyDown(e) {
     const key = e.key.toLowerCase();
+
+    // ESC: Replacement choice — blocked (mandatory choice)
+    if (key === 'escape' && replacementTargeting) {
+      e.preventDefault();
+      return;
+    }
 
     // ESC: Guardian targeting — skip this guardian
     if (key === 'escape' && guardianTargeting) {
@@ -2976,6 +3092,7 @@ const UI = (() => {
             return;
           }
           if (checkBurningRedirect()) { e.preventDefault(); return; }
+          if (Game.state.pendingReplacement) { enterReplacementChoice(); e.preventDefault(); return; }
           const tAct = Game.state.activationState;
           if (tAct && tAct.moved && tAct.attacked && !Game.state.rules.confirmEndTurn) {
             tryEndActivation(); e.preventDefault(); return;
@@ -3041,11 +3158,13 @@ const UI = (() => {
     }
 
     // ESC: cancel debug picking modes
-    if (key === 'escape' && (debugPickingUnit || debugPickingTerrain)) {
+    if (key === 'escape' && (debugPickingUnit || debugPickingTerrain || debugPickingResource)) {
       debugPickingUnit = false;
       debugSelectedCondition = null;
       debugPickingTerrain = false;
       debugSelectedTerrain = null;
+      debugPickingResource = false;
+      debugSelectedResource = null;
       updateStatusBar();
       e.preventDefault();
       return;
@@ -3748,6 +3867,17 @@ const UI = (() => {
       render();
     }
 
+    else if (action === 'replacement-pick') {
+      const name = btn.dataset.name;
+      if (!name) return;
+      Game.executeReplacement(name);
+      netSend({ type: 'executeReplacement', name });
+      replacementTargeting = false;
+      document.getElementById('panel-round').classList.add('hidden');
+      tryEndActivation();
+      return;
+    }
+
     else if (action === 'shift-ride' || action === 'shift-stay') {
       const index = parseInt(btn.dataset.index);
       const rides = action === 'shift-ride';
@@ -4427,6 +4557,7 @@ const UI = (() => {
           unitRef: rt.sourceUnit,
           healthSnapshots,
           relocateData: undoData,
+          prevResources: JSON.parse(JSON.stringify(rt.sourceUnit.resources || {})),
         });
 
         finishRelocate(rt.abilityName, rt.actionCost, rt.sourceUnit);
@@ -4496,6 +4627,7 @@ const UI = (() => {
           oncePerRound: abDef ? abDef.oncePerRound : false,
           unitRef: abilityTargeting.unit,
           healthSnapshots,
+          prevResources: JSON.parse(JSON.stringify(abilityTargeting.unit.resources || {})),
         });
 
         abilityTargeting = null;
@@ -4622,6 +4754,7 @@ const UI = (() => {
               return;
             }
             if (checkBurningRedirect()) return;
+            if (Game.state.pendingReplacement) { enterReplacementChoice(); return; }
             const tossAct = Game.state.activationState;
             if (tossAct && tossAct.moved && tossAct.attacked && !Game.state.rules.confirmEndTurn) {
               tryEndActivation(); return;
@@ -4658,6 +4791,7 @@ const UI = (() => {
             return;
           }
           if (checkBurningRedirect()) return;
+          if (Game.state.pendingReplacement) { enterReplacementChoice(); return; }
           const delayAct = s.activationState;
           if (delayAct && delayAct.moved && delayAct.attacked && !s.rules.confirmEndTurn) {
             tryEndActivation();
@@ -4780,6 +4914,7 @@ const UI = (() => {
             return;
           }
           if (checkBurningRedirect()) return;
+          if (Game.state.pendingReplacement) { enterReplacementChoice(); return; }
 
           // Auto-end activation if both actions consumed (handles Guiding Gale etc.)
           const postAtkAct = s.activationState;
@@ -5014,6 +5149,103 @@ const UI = (() => {
 
     debugPickingTerrain = false;
     debugSelectedTerrain = null;
+    render();
+    updateStatusBar();
+    return true;
+  }
+
+  // ── Debug: Resource Menu ──────────────────────────────────────
+
+  const DEBUG_RESOURCES = ['mana', 'lightning', 'energy', 'charge'];
+
+  let debugSelectedResource = null; // { type, action } where action = 'add' | 'remove' | 'recharge'
+  let debugPickingResource = false;
+
+  function buildDebugResourceMenu(nav) {
+    const wrap = document.createElement('div');
+    wrap.className = 'debug-menu';
+    let btns = DEBUG_RESOURCES.map(r =>
+      `<div class="debug-res-row">` +
+      `<span class="debug-res-label">${r}</span>` +
+      `<button class="btn-debug-cond" data-res="${r}" data-res-action="add">+1</button>` +
+      `<button class="btn-debug-cond" data-res="${r}" data-res-action="remove">-1</button>` +
+      `</div>`
+    ).join('');
+    wrap.innerHTML = '<button class="btn-debug-toggle">Resources</button>' +
+      '<div class="debug-dropdown hidden">' +
+      btns +
+      '<hr class="debug-sep">' +
+      '<button class="btn-debug-cond" data-res="__recharge__">Recharge All</button>' +
+      '</div>';
+    nav.appendChild(wrap);
+
+    const toggle = wrap.querySelector('.btn-debug-toggle');
+    const dropdown = wrap.querySelector('.debug-dropdown');
+
+    toggle.addEventListener('click', e => {
+      e.stopPropagation();
+      dropdown.classList.toggle('hidden');
+    });
+
+    document.addEventListener('click', () => dropdown.classList.add('hidden'));
+    dropdown.addEventListener('click', e => e.stopPropagation());
+
+    dropdown.querySelectorAll('.btn-debug-cond').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const res = btn.dataset.res;
+        const action = btn.dataset.resAction || 'recharge';
+        if (res === '__recharge__') {
+          debugSelectedResource = { type: null, action: 'recharge' };
+        } else {
+          debugSelectedResource = { type: res, action };
+        }
+        debugPickingResource = true;
+        dropdown.classList.add('hidden');
+        const label = res === '__recharge__' ? 'RECHARGE all resources'
+          : `${action === 'add' ? '+1' : '-1'} ${res}`;
+        document.getElementById('status-bar').textContent =
+          `Click a unit to ${label}... (ESC to cancel)`;
+      });
+    });
+  }
+
+  function handleDebugResourceClick(hex) {
+    if (!debugPickingResource) return false;
+
+    const unit = Game.state.units.find(
+      u => u.q === hex.q && u.r === hex.r && u.health > 0
+    );
+    if (!unit) return false;
+    if (!unit.resources) unit.resources = {};
+
+    if (debugSelectedResource.action === 'recharge') {
+      if (typeof Abilities !== 'undefined') {
+        const defs = Abilities.getPassiveResourceDefs(unit);
+        for (const [type, max] of Object.entries(defs)) {
+          unit.resources[type] = max;
+        }
+        // Also fill any existing resources to their max
+        for (const type of Object.keys(unit.resources)) {
+          if (!defs[type]) {
+            const max = Abilities.getMaxResource(unit, type);
+            unit.resources[type] = max;
+          }
+        }
+      }
+    } else if (debugSelectedResource.action === 'add') {
+      const type = debugSelectedResource.type;
+      if (!(type in unit.resources)) unit.resources[type] = 0;
+      const max = typeof Abilities !== 'undefined' ? Abilities.getMaxResource(unit, type) : 99;
+      unit.resources[type] = Math.min(unit.resources[type] + 1, max);
+    } else if (debugSelectedResource.action === 'remove') {
+      const type = debugSelectedResource.type;
+      if (type in unit.resources) {
+        unit.resources[type] = Math.max(0, unit.resources[type] - 1);
+      }
+    }
+
+    debugPickingResource = false;
+    debugSelectedResource = null;
     render();
     updateStatusBar();
     return true;
@@ -5418,6 +5650,12 @@ const UI = (() => {
       case 'executeDancerChoice':
         Game.executeDancerChoice(data.choice);
         showPhase(); render(); break;
+      case 'executeReplacement':
+        Game.executeReplacement(data.name);
+        replacementTargeting = false;
+        document.getElementById('panel-round').classList.add('hidden');
+        tryEndActivation();
+        break;
       case 'resolveBurningRedirect':
         Game.resolveBurningRedirect(data.q, data.r);
         if (!Game.state.activationState) { resetUiState(); }
