@@ -328,13 +328,14 @@
         if (typeof Abilities !== 'undefined' && Abilities.hasFlag(u, 'ignoreBaseArmor')) {
           defArm = defArm - enemy.armor;
         }
-        let baseDmg = Math.max(1, atkDmg - defArm);
-        if (typeof Abilities !== 'undefined') {
-          const caps = Abilities.getPassiveList(enemy, 'reducedamageto');
-          if (caps.length > 0) { const cap = parseInt(caps[0], 10); if (!isNaN(cap) && baseDmg > cap) baseDmg = cap; }
-        }
+        const baseDmg = Math.max(1, atkDmg - defArm);
         const hitBonus = typeof Abilities !== 'undefined' ? Abilities.getHitBonusDamage(u, enemy) : 0;
-        targets.set(`${enemy.q},${enemy.r}`, { damage: baseDmg + hitBonus });
+        let totalDmg = baseDmg + hitBonus;
+        if (typeof Abilities !== 'undefined') {
+          const cap = Abilities.getReduceDamageCap(enemy);
+          if (totalDmg > cap) totalDmg = cap;
+        }
+        targets.set(`${enemy.q},${enemy.r}`, { damage: totalDmg });
       }
     }
 
@@ -796,13 +797,8 @@
 
     // Reduce Damage To: cap incoming attack damage (passive or whenAttacked effect)
     {
-      let cap = Infinity;
-      // Passive check
-      if (typeof Abilities !== 'undefined') {
-        const caps = Abilities.getPassiveList(target, 'reducedamageto');
-        if (caps.length > 0) { const v = parseInt(caps[0], 10); if (!isNaN(v)) cap = v; }
-      }
-      // whenAttacked effect (temp flag set by applyEffect)
+      let cap = typeof Abilities !== 'undefined' ? Abilities.getReduceDamageCap(target) : Infinity;
+      // Also check temp flag from whenAttacked applyEffect (for effects not visible to passive scan)
       if (target._reduceDamageTo !== undefined) {
         cap = Math.min(cap, target._reduceDamageTo);
         delete target._reduceDamageTo;

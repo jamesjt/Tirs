@@ -1530,6 +1530,30 @@ const Abilities = (() => {
     return items;
   }
 
+  /** Get the effective reducedamageto cap for a unit.
+   *  Checks both passive and whenAttacked rules (with condition evaluation).
+   *  Returns the lowest cap found, or Infinity if none. */
+  function getReduceDamageCap(unit) {
+    if (!unit || !unit.abilities) return Infinity;
+    let cap = Infinity;
+    for (const ab of unit.abilities) {
+      if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule) continue;
+        if (rule.type !== 'passive' && rule.type !== 'whenAttacked') continue;
+        if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit })) continue;
+        for (const eff of rule.effects) {
+          if (eff.effect && eff.effect.toLowerCase() === 'reducedamageto') {
+            const v = parseInt(eff.value, 10);
+            if (!isNaN(v) && v < cap) cap = v;
+          }
+        }
+      }
+    }
+    return cap;
+  }
+
   // ── Resource Helpers ────────────────────────────────────────
 
   /** Get the max cap for a resource type on a unit.
@@ -2265,6 +2289,7 @@ const Abilities = (() => {
     getAfterMoveData,
     markAbilityUsed,
     applyRuleSideEffects,
+    getReduceDamageCap,
     getAfterMoveTeleports,
     getActions,
     getTargeting,

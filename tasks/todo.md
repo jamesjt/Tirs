@@ -100,6 +100,7 @@ Verified working by user in gameplay.
 - [x] Sharp Thorn (Briar Thorn / Pointy Thicket) — hit: consume mana → burning; whenAttacked: consumeall mana → damage permana
 - [x] Stone Armor (Crag Keeper) — passive `resourcemod` mana:armor:1
 - [x] Fen Shadow — hit pull 2 (interactive, allows orbiting around source)
+- [x] Veiled Stalker — whenAttacked consume mana + reducedamageto, Grasping Bog aura immobilize
 
 ### Seri
 - [x] Light's Shadow (faction rule) — `swapterrainrule: fae mist:revealing:concealing`, terrain rule swap system

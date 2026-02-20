@@ -443,9 +443,9 @@ const Units = (() => {
 
   function fixImagePath(path) {
     if (!path) return '';
-    // Spreadsheet paths are relative to nandeck/ (e.g. "images/unitImages/Syli/Puck.png")
-    // WebApp is served from a sibling folder, so prefix with ../nandeck/
-    return '../nandeck/' + path;
+    // Lowercase everything, then restore unitImages casing.
+    // Ensures code paths match git-tracked lowercase on case-sensitive GitHub Pages.
+    return '../nandeck/' + path.toLowerCase().replace('unitimages', 'unitImages');
   }
 
   function int(val) {
