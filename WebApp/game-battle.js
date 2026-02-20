@@ -235,12 +235,13 @@
     }
 
     const range = (isMobile || isImpactful) ? (effectiveMove - act.moveDistance) : effectiveMove;
+    const terrainAuraMap = typeof Abilities !== 'undefined' ? Abilities.getTerrainAuraMap(u) : new Map();
     function moveCost(fromQ, fromR, toQ, toR) {
-      if (hasTerrainRule(toQ, toR, 'flow', u)) {
-        const td = G.state.terrain.get(`${toQ},${toR}`);
-        return (td && td.player === u.player) ? 0 : 2;
+      if (hasTerrainRule(toQ, toR, 'flow', u, terrainAuraMap) && !ignoresTerrain('flow', toQ, toR)) {
+        const owner = getFlowOwner(toQ, toR, terrainAuraMap);
+        if (!isFlowFreeEntry(toQ, toR, fromQ, fromR, owner)) return 2;
       }
-      if (hasTerrainRule(toQ, toR, 'difficult', u) && !ignoresTerrain('difficult', toQ, toR)) return 2;
+      if (hasTerrainRule(toQ, toR, 'difficult', u, terrainAuraMap) && !ignoresTerrain('difficult', toQ, toR)) return 2;
       return 1;
     }
     const extraNeighborsFn = buildSpiritPortals(u);
@@ -278,12 +279,13 @@
       if (hasTerrainRule(tq, tr, 'impassable', u) && !ignoresTerrain('impassable', tq, tr)) blocked.add(key);
     }
 
+    const terrainAuraMap = typeof Abilities !== 'undefined' ? Abilities.getTerrainAuraMap(u) : new Map();
     function moveCost(fromQ, fromR, toQ, toR) {
-      if (hasTerrainRule(toQ, toR, 'flow', u)) {
-        const td = G.state.terrain.get(`${toQ},${toR}`);
-        return (td && td.player === u.player) ? 0 : 2;
+      if (hasTerrainRule(toQ, toR, 'flow', u, terrainAuraMap) && !ignoresTerrain('flow', toQ, toR)) {
+        const owner = getFlowOwner(toQ, toR, terrainAuraMap);
+        if (!isFlowFreeEntry(toQ, toR, fromQ, fromR, owner)) return 2;
       }
-      if (hasTerrainRule(toQ, toR, 'difficult', u) && !ignoresTerrain('difficult', toQ, toR)) return 2;
+      if (hasTerrainRule(toQ, toR, 'difficult', u, terrainAuraMap) && !ignoresTerrain('difficult', toQ, toR)) return 2;
       return 1;
     }
 
@@ -572,12 +574,13 @@
       if (other === unit || other.health <= 0) continue;
       if (other.player === unit.player) allyOccupied.add(`${other.q},${other.r}`);
     }
+    const terrainAuraMap = typeof Abilities !== 'undefined' ? Abilities.getTerrainAuraMap(unit) : new Map();
     function moveCost(fromQ, fromR, toQ, toR) {
-      if (hasTerrainRule(toQ, toR, 'flow')) {
-        const td = G.state.terrain.get(`${toQ},${toR}`);
-        return (td && td.player === unit.player) ? 0 : 2;
+      if (hasTerrainRule(toQ, toR, 'flow', unit, terrainAuraMap) && !ignoresTerrain('flow', toQ, toR)) {
+        const owner = getFlowOwner(toQ, toR, terrainAuraMap);
+        if (!isFlowFreeEntry(toQ, toR, fromQ, fromR, owner)) return 2;
       }
-      if (hasTerrainRule(toQ, toR, 'difficult') && !ignoresTerrain('difficult', toQ, toR)) return 2;
+      if (hasTerrainRule(toQ, toR, 'difficult', unit, terrainAuraMap) && !ignoresTerrain('difficult', toQ, toR)) return 2;
       return 1;
     }
     const parentMap = new Map();
@@ -1250,15 +1253,62 @@
     return targets;
   }
 
-  /** Check if a terrain hex has a specific rule (e.g. 'cover', 'difficult'). */
-  function hasTerrainRule(q, r, rule, unit) {
+  /** Check if a terrain hex has a specific rule (e.g. 'cover', 'difficult').
+   *  Optional terrainAuraMap adds virtual terrain from passive auras. */
+  function hasTerrainRule(q, r, rule, unit, terrainAuraMap) {
+    // Real terrain
     const td = G.state.terrain.get(`${q},${r}`);
-    if (!td || !td.surface) return false;
-    if (unit && typeof Abilities !== 'undefined') {
-      return Abilities.getEffectiveRules(unit, td.surface).includes(rule);
+    if (td && td.surface) {
+      if (unit && typeof Abilities !== 'undefined') {
+        if (Abilities.getEffectiveRules(unit, td.surface).includes(rule)) return true;
+      } else {
+        const info = Units.terrainRules[td.surface];
+        if (info && info.rules.includes(rule)) return true;
+      }
     }
-    const info = Units.terrainRules[td.surface];
-    return info && info.rules.includes(rule);
+    // Virtual terrain from auras
+    if (terrainAuraMap) {
+      const entries = terrainAuraMap.get(`${q},${r}`);
+      if (entries) {
+        for (const e of entries) {
+          if (unit && typeof Abilities !== 'undefined') {
+            if (Abilities.getEffectiveRules(unit, e.surface).includes(rule)) return true;
+          } else {
+            const info = Units.terrainRules[e.surface];
+            if (info && info.rules.includes(rule)) return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Check if entering a flow hex from (fromQ,fromR) is free.
+   *  Free from left (lower column) for P1, right (higher column) for P2.
+   *  Same-column (above/below) is never free. */
+  function isFlowFreeEntry(toQ, toR, fromQ, fromR, player) {
+    if (player === 1) return fromQ < toQ;
+    if (player === 2) return fromQ > toQ;
+    return false;
+  }
+
+  /** Get the player who owns flow terrain at a hex (real or virtual). */
+  function getFlowOwner(q, r, terrainAuraMap) {
+    const td = G.state.terrain.get(`${q},${r}`);
+    if (td && td.surface && td.player) {
+      const info = Units.terrainRules[td.surface];
+      if (info && info.rules.includes('flow')) return td.player;
+    }
+    if (terrainAuraMap) {
+      const entries = terrainAuraMap.get(`${q},${r}`);
+      if (entries) {
+        for (const e of entries) {
+          const info = Units.terrainRules[e.surface];
+          if (info && info.rules.includes('flow')) return e.player;
+        }
+      }
+    }
+    return 0;
   }
 
   /** Get the terrain element (earth/water/air/fire) at a hex, including "is terrain" units. */
@@ -1303,30 +1353,31 @@
     }
     if (unit.health <= 0) return;
 
+    const terrainAuraMap = typeof Abilities !== 'undefined' ? Abilities.getTerrainAuraMap(unit) : new Map();
     const ignores = typeof Abilities !== 'undefined'
       ? (rule) => Abilities.ignoresTerrainRule(unit, rule, q, r) : () => false;
-    if (hasTerrainRule(q, r, 'dangerous', unit) && !ignores('dangerous')) {
+    if (hasTerrainRule(q, r, 'dangerous', unit, terrainAuraMap) && !ignores('dangerous')) {
       const td = G.state.terrain.get(`${q},${r}`);
       const surface = td ? td.surface : '';
       damageUnit(unit, 1, null, surface === 'cinder' ? 'terrain-cinder' : 'terrain');
       G.log(`${unit.name} takes 1 terrain damage (${unit.health}/${unit.maxHealth} HP)`, unit.player);
     }
-    if (hasTerrainRule(q, r, 'poisonous', unit) && !ignores('poisonous')) {
+    if (hasTerrainRule(q, r, 'poisonous', unit, terrainAuraMap) && !ignores('poisonous')) {
       G.addCondition(unit, 'poisoned', 'endOfActivation');
       G.log(`${unit.name} poisoned by terrain`, unit.player);
     }
-    if (hasTerrainRule(q, r, 'revealing', unit) && !ignores('revealing')) {
+    if (hasTerrainRule(q, r, 'revealing', unit, terrainAuraMap) && !ignores('revealing')) {
       G.addCondition(unit, 'vulnerable', 'endOfRound', 'revealing');
       G.log(`${unit.name} revealed (vulnerable)`, unit.player);
     }
-    if (hasTerrainRule(q, r, 'consuming', unit)) {
+    if (hasTerrainRule(q, r, 'consuming', unit, terrainAuraMap)) {
       G.state.consumedUnits.push({ unit, fromQ: q, fromR: r });
       G.log(`${unit.name} consumed by terrain`, unit.player);
       unit.q = -99;
       unit.r = -99;
     }
     // Healing terrain: heal 1 for friendly units entering
-    if (hasTerrainRule(q, r, 'healing', unit)) {
+    if (hasTerrainRule(q, r, 'healing', unit, terrainAuraMap)) {
       const td = G.state.terrain.get(`${q},${r}`);
       if (td && (td.player === unit.player || td.player === 0)) {
         unit.health = Math.min(unit.health + 1, unit.maxHealth);
@@ -1977,12 +2028,13 @@
       if (hasTerrainRule(tq, tr, 'impassable') && !ignoresTerrain('impassable', tq, tr)) blocked.add(key);
     }
 
+    const terrainAuraMap = typeof Abilities !== 'undefined' ? Abilities.getTerrainAuraMap(u) : new Map();
     function moveCost(fromQ2, fromR2, toQ, toR) {
-      if (hasTerrainRule(toQ, toR, 'flow')) {
-        const td = G.state.terrain.get(`${toQ},${toR}`);
-        return (td && td.player === u.player) ? 0 : 2;
+      if (hasTerrainRule(toQ, toR, 'flow', u, terrainAuraMap) && !ignoresTerrain('flow', toQ, toR)) {
+        const owner = getFlowOwner(toQ, toR, terrainAuraMap);
+        if (!isFlowFreeEntry(toQ, toR, fromQ2, fromR2, owner)) return 2;
       }
-      if (hasTerrainRule(toQ, toR, 'difficult') && !ignoresTerrain('difficult', toQ, toR)) return 2;
+      if (hasTerrainRule(toQ, toR, 'difficult', u, terrainAuraMap) && !ignoresTerrain('difficult', toQ, toR)) return 2;
       return 1;
     }
 

@@ -127,6 +127,10 @@ const Game = (() => {
   // ── Conditions ───────────────────────────────────────────────
 
   function addCondition(unit, id, duration, source, value) {
+    // Passive prevention (skip for auras — they re-apply instantly)
+    if (duration !== 'aura' && typeof Abilities !== 'undefined' && Abilities.tryPreventCondition(unit, id)) {
+      return;
+    }
     const cond = { id, duration, source: source || null };
     if (value != null) cond.value = value;
     unit.conditions.push(cond);

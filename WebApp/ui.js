@@ -1912,24 +1912,47 @@ const UI = (() => {
     let html = `<p><strong>${step.label}</strong></p>`;
 
     if (step.id === 'shifting') {
-      // Move terrain immediately (idempotent)
-      Game.executeShifting();
-      // Show ride/stay buttons for each unit on shifting terrain
-      const choices = step.data.unitChoices;
-      for (let i = 0; i < choices.length; i++) {
-        const c = choices[i];
-        if (c.decided) {
-          html += `<p class="step-done">${c.unit.name}: ${c.rides ? 'Rides' : 'Stays'}</p>`;
-        } else {
-          html += `<div class="shift-choice">`;
-          html += `<span>${c.unit.name} (P${c.unit.player}) is on shifting terrain.</span>`;
-          html += `<button class="btn btn-confirm" data-action="shift-ride" data-index="${i}">Ride</button>`;
-          html += `<button class="btn btn-back" data-action="shift-stay" data-index="${i}">Stay</button>`;
-          html += `</div>`;
-          break; // Show one choice at a time
+      if (!Game.allShiftDestinationsChosen()) {
+        // Phase 1: Terrain owner picks where each piece shifts to
+        const pieces = step.data.terrainPieces;
+        for (let i = 0; i < pieces.length; i++) {
+          const p = pieces[i];
+          const tName = (Units.terrainRules[p.td.surface] || {}).displayName || p.td.surface;
+          if (p.decided) {
+            html += `<p class="step-done">${tName} (${p.fromQ},${p.fromR}) → (${p.toQ},${p.toR})</p>`;
+          } else {
+            html += `<p>P${p.td.player} chooses where <strong>${tName}</strong> at (${p.fromQ},${p.fromR}) shifts to.</p>`;
+            html += `<p class="step-pending">Click a highlighted hex.</p>`;
+            const valid = Game.getShiftValidHexes();
+            if (valid && valid.size > 0) {
+              uiState.highlights = valid;
+              uiState.highlightColor = 'rgba(255, 165, 0, 0.4)';
+            } else {
+              html += `<p>No valid destination — terrain stays in place.</p>`;
+              html += `<button class="btn btn-back" data-action="shift-skip-dest">Skip</button>`;
+            }
+            break; // One at a time
+          }
+        }
+      } else {
+        // Phase 2: Ride/stay for units on shifted terrain
+        const choices = step.data.unitChoices;
+        for (let i = 0; i < choices.length; i++) {
+          const c = choices[i];
+          if (c.decided) {
+            html += `<p class="step-done">${c.unit.name}: ${c.rides ? 'Rides' : 'Stays'}</p>`;
+          } else {
+            html += `<div class="shift-choice">`;
+            html += `<span>P${c.terrainPlayer} decides: ${c.unit.name} (P${c.unit.player}) rides or stays?</span>`;
+            html += `<button class="btn btn-confirm" data-action="shift-ride" data-index="${i}">Ride</button>`;
+            html += `<button class="btn btn-back" data-action="shift-stay" data-index="${i}">Stay</button>`;
+            html += `</div>`;
+            break; // One at a time
+          }
         }
       }
       if (Game.allShiftChoicesDecided()) {
+        uiState.highlights = null;
         html += `<button class="btn btn-confirm" data-action="advance-round-step">Continue</button>`;
       }
     } else if (step.id === 'consuming-restore') {
@@ -3644,7 +3667,7 @@ const UI = (() => {
 
     // Block battle-phase actions when it's opponent's turn online
     const battleActions = ['undo-action','remove-burning','end-activation','skip-consuming','skip-arcfire',
-      'shift-ride','shift-stay','advance-round-step','use-ability','delayed-target',
+      'shift-skip-dest','shift-ride','shift-stay','advance-round-step','use-ability','delayed-target',
       'fg-skip','gust-push','wu-skip-all','pass-turn'];
     if (typeof Net !== 'undefined' && Net.isOnline() && !Net.isMyTurn() &&
         battleActions.includes(action)) {
@@ -3914,6 +3937,14 @@ const UI = (() => {
       return;
     }
 
+    else if (action === 'shift-skip-dest') {
+      Game.skipShiftDestination();
+      netSend({ type: 'skipShiftDestination' });
+      uiState.highlights = null;
+      showPhase();
+      render();
+    }
+
     else if (action === 'shift-ride' || action === 'shift-stay') {
       const index = parseInt(btn.dataset.index);
       const rides = action === 'shift-ride';
@@ -4002,6 +4033,19 @@ const UI = (() => {
     const s = Game.state;
     const step = s.roundStepQueue[s.roundStepIndex];
     if (!step) return;
+
+    // Shifting: click highlighted hex to pick terrain destination
+    if (step.id === 'shifting' && !Game.allShiftDestinationsChosen()) {
+      const key = `${hex.q},${hex.r}`;
+      if (uiState.highlights && uiState.highlights.has(key)) {
+        Game.resolveShiftDestination(hex.q, hex.r);
+        netSend({ type: 'resolveShiftDestination', q: hex.q, r: hex.r });
+        uiState.highlights = null;
+        showPhase();
+        render();
+      }
+      return;
+    }
 
     // Consuming: click highlighted hex to place a consumed unit
     if (step.id === 'consuming-restore') {
@@ -5687,6 +5731,12 @@ const UI = (() => {
       case 'advanceRoundStep':
         Game.advanceRoundStep();
         uiState.highlights = null;
+        break;
+      case 'resolveShiftDestination':
+        Game.resolveShiftDestination(data.q, data.r);
+        break;
+      case 'skipShiftDestination':
+        Game.skipShiftDestination();
         break;
       case 'resolveShiftRide':
         Game.resolveShiftRide(data.index, data.rides);

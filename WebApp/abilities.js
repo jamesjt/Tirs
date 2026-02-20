@@ -1451,6 +1451,85 @@ const Abilities = (() => {
     return false;
   }
 
+  // ── Condition Prevention ─────────────────────────────────────
+
+  const NEGATIVE_CONDITIONS = new Set([
+    'burning', 'immobilized', 'poisoned', 'dizzy', 'disarmed',
+    'silenced', 'taunted', 'vulnerable', 'weakness', 'break',
+    'arcfire', 'suppressed',
+  ]);
+
+  /** Check if unit can prevent a condition via preventcondition passive.
+   *  If so, applies side effects (consume mana etc.) and returns true. */
+  function tryPreventCondition(unit, conditionId) {
+    if (!unit || !unit.abilities) return false;
+    if (!NEGATIVE_CONDITIONS.has(conditionId)) return false;
+    if (Game.hasCondition(unit, 'silenced')) return false;
+    for (const ab of unit.abilities) {
+      if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule || rule.type !== 'passive') continue;
+        let hasPrevent = false;
+        let preventValue = null;
+        for (const eff of rule.effects) {
+          if (eff.effect && eff.effect.toLowerCase() === 'preventcondition') {
+            hasPrevent = true;
+            preventValue = eff.value;
+          }
+        }
+        if (!hasPrevent) continue;
+        // If value specified, only prevent that specific condition
+        if (preventValue && preventValue.toLowerCase() !== conditionId) continue;
+        // Check condition gate (e.g. resource mana)
+        if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit })) continue;
+        // Apply side effects (consume mana, etc.)
+        applyRuleSideEffects(unit, ruleId, { unit, target: unit });
+        Game.log(`${unit.name} prevents ${conditionId}`, unit.player);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // ── Terrain Aura ────────────────────────────────────────────
+
+  /** Get map of hex keys → virtual terrain projected by enemy passives.
+   *  Scans passives targeting "spaces, around" where the effect name matches
+   *  a known terrain type in Units.terrainRules.
+   *  Returns Map<hexKey, [{surface, player}]>. */
+  function getTerrainAuraMap(forUnit) {
+    const auraMap = new Map();
+    if (!forUnit) return auraMap;
+    for (const u of Game.state.units) {
+      if (u.health <= 0) continue;
+      if (!u.abilities) continue;
+      if (Game.hasCondition(u, 'silenced')) continue;
+      for (const ab of u.abilities) {
+        if (ab.oncePerGame && u.usedAbilities.has(ab.name)) continue;
+        for (const ruleId of ab.ruleIds) {
+          const rule = atomicRules[ruleId];
+          if (!rule || rule.type !== 'passive') continue;
+          if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit: u })) continue;
+          const tgt = (rule.target || '').toLowerCase();
+          if (!tgt.includes('around') || !tgt.includes('space')) continue;
+          for (const eff of rule.effects) {
+            if (!eff.effect) continue;
+            const surfaceName = eff.effect.toLowerCase();
+            if (!Units.terrainRules[surfaceName]) continue;
+            const range = parseInt(rule.range, 10) || 1;
+            const nearby = Board.getReachableHexes(u.q, u.r, range, new Set());
+            for (const key of nearby.keys()) {
+              if (!auraMap.has(key)) auraMap.set(key, []);
+              auraMap.get(key).push({ surface: surfaceName, player: u.player });
+            }
+          }
+        }
+      }
+    }
+    return auraMap;
+  }
+
   // ── Aura System ─────────────────────────────────────────────
 
   /** Recalculate aura conditions from passive rules with "around" targeting.
@@ -1624,7 +1703,7 @@ const Abilities = (() => {
   }
 
   // Terrain rules considered "negative" for ignoreTerrain surface immunity
-  const NEGATIVE_TERRAIN_RULES = ['difficult', 'impassable', 'dangerous', 'poisonous', 'revealing'];
+  const NEGATIVE_TERRAIN_RULES = ['difficult', 'impassable', 'dangerous', 'poisonous', 'revealing', 'flow'];
 
   /**
    * Check if a unit ignores a specific terrain rule at a hex.
@@ -2290,6 +2369,8 @@ const Abilities = (() => {
     markAbilityUsed,
     applyRuleSideEffects,
     getReduceDamageCap,
+    tryPreventCondition,
+    getTerrainAuraMap,
     getAfterMoveTeleports,
     getActions,
     getTargeting,
