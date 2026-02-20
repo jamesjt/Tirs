@@ -7,9 +7,9 @@
 Code-complete but not verified in gameplay. Only move to Tested after user confirms.
 
 ### Syli (data-driven, all dispatched via spreadsheet)
-- [ ] Empowered Poison (Purse) — hit.Poison, once-per-game
+- [x] Empowered Poison (Purse) — hit.Poison, once-per-game
 - [ ] Empowered Dizzy (Fion) — hit.Dizzy, once-per-game
-- [ ] Touch Me Not (Jewel) — whenAttacked.dodge, once-per-game
+- [x] Touch Me Not (Jewel) — whenAttacked.dodge, once-per-game
 - [ ] Dodgy (Hazel) — whenAttacked.dodge, once-per-round
 - [ ] Trickster (Hazel) — action.move.swap.ally + action.attack.swap.ally
 - [ ] Foul Hemolymph (Lidae) — whenAttacked.foul (weaken adjacent enemies)
