@@ -106,7 +106,11 @@ const Abilities = (() => {
   const TARGET_LEGACY = { 'unitorterrain': 'ally difficult dangerous around' };
 
   function resolveTargets(targetType, ctx, rule) {
-    if (!targetType) return ctx.target ? [ctx.target] : (ctx.unit ? [ctx.unit] : []);
+    if (!targetType) {
+      if (ctx.target) return [ctx.target];
+      if (ctx.targetQ != null && ctx.targetR != null) return [{ q: ctx.targetQ, r: ctx.targetR }];
+      return ctx.unit ? [ctx.unit] : [];
+    }
 
     // Check legacy alias (joined lowercase)
     const joined = targetType.toLowerCase().replace(/[\s,]+/g, '');
@@ -1045,6 +1049,19 @@ const Abilities = (() => {
       if (!rule || rule.type !== triggerType) continue;
       if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, ctx)) continue;
 
+      // Defer aroundTarget rules when a push/pull for ctx.target is pending
+      const tgt = (rule.target || '').toLowerCase();
+      if (isQueuing && tgt.includes('aroundtarget') && ctx.target && effectQueue.length > 0) {
+        const pendingPush = effectQueue.find(e =>
+          e.unit === ctx.target && (e.type === 'push' || e.type === 'pull')
+        );
+        if (pendingPush) {
+          if (!pendingPush.chainRules) pendingPush.chainRules = [];
+          pendingPush.chainRules.push({ ruleId, ctx });
+          continue;
+        }
+      }
+
       let targets = resolveTargets(rule.target, ctx, rule);
       // Filter out invalidTargets (e.g. atkTarget to exclude primary attack target from AoE)
       if (rule.invalidTargets && targets.length > 0) {
@@ -1342,7 +1359,7 @@ const Abilities = (() => {
         const rule = atomicRules[ruleId];
         if (!rule || rule.type !== 'passive') continue;
         for (const eff of rule.effects) {
-          if (eff.effect && eff.effect.toLowerCase() === flag) return true;
+          if (eff.effect && eff.effect.toLowerCase() === flag.toLowerCase()) return true;
         }
       }
     }
@@ -1359,7 +1376,7 @@ const Abilities = (() => {
         const rule = atomicRules[ruleId];
         if (!rule || rule.type !== 'passive') continue;
         for (const eff of rule.effects) {
-          if (eff.effect && eff.effect.toLowerCase() === flag) return true;
+          if (eff.effect && eff.effect.toLowerCase() === flag.toLowerCase()) return true;
         }
       }
     }
@@ -1494,9 +1511,9 @@ const Abilities = (() => {
 
   // ── Terrain Aura ────────────────────────────────────────────
 
-  /** Get map of hex keys → virtual terrain projected by enemy passives.
+  /** Get map of hex keys → virtual terrain projected by unit passives.
    *  Scans passives targeting "spaces, around" where the effect name matches
-   *  a known terrain type in Units.terrainRules.
+   *  a known terrain type in Units.terrainRules. Includes all units (allies+enemies).
    *  Returns Map<hexKey, [{surface, player}]>. */
   function getTerrainAuraMap(forUnit) {
     const auraMap = new Map();
@@ -1709,7 +1726,7 @@ const Abilities = (() => {
    * Check if a unit ignores a specific terrain rule at a hex.
    * Checks both ignoreTerrainRule (global) and ignoreTerrain (surface-specific).
    */
-  function ignoresTerrainRule(unit, ruleName, q, r) {
+  function ignoresTerrainRule(unit, ruleName, q, r, terrainAuraMap) {
     if (!unit) return false;
     const rLower = ruleName.toLowerCase();
 
@@ -1721,9 +1738,21 @@ const Abilities = (() => {
     if (!NEGATIVE_TERRAIN_RULES.includes(rLower)) return false;
     const ignoredSurfaces = getPassiveList(unit, 'ignoreterrain');
     if (ignoredSurfaces.length === 0) return false;
+
+    // Check real terrain
     const td = Game.state.terrain.get(`${q},${r}`);
-    if (!td || !td.surface) return false;
-    return ignoredSurfaces.includes(td.surface.toLowerCase());
+    if (td && td.surface && ignoredSurfaces.includes(td.surface.toLowerCase())) return true;
+
+    // Check aura-projected terrain
+    if (terrainAuraMap) {
+      const entries = terrainAuraMap.get(`${q},${r}`);
+      if (entries) {
+        for (const e of entries) {
+          if (ignoredSurfaces.includes(e.surface.toLowerCase())) return true;
+        }
+      }
+    }
+    return false;
   }
 
   /** Get the effective terrain rules for a surface as perceived by a specific unit.
@@ -2163,6 +2192,15 @@ const Abilities = (() => {
       const matches = validTags.some(vt => hexTags.includes(vt));
       if (!matches) continue;
 
+      // When terrain surface matched but targetType is 'unit', prefer terrain
+      if (targetType === 'unit' && terrain && terrain.surface) {
+        const surface = terrain.surface.toLowerCase();
+        if (validTags.includes(surface) || validTags.includes('terrain:' + surface)) {
+          targetType = 'terrain';
+          targetRef = terrain;
+        }
+      }
+
       // Exclude: any invalidTag matches?
       if (invalidTags.length > 0 && invalidTags.some(it => hexTags.includes(it))) continue;
 
@@ -2227,6 +2265,13 @@ const Abilities = (() => {
     if (eff.type === 'create') return eff.validHexes;
     if (eff.type === 'relocateTerrain') return eff.validHexes;
 
+    // Terrain ride: highlight destination hex only (buttons handle decision)
+    if (eff.type === 'terrainRide') {
+      const s = new Set();
+      s.add(`${eff.destQ},${eff.destR}`);
+      return s;
+    }
+
     const unit = eff.unit;
     if (!unit || unit.health <= 0) return null;
 
@@ -2255,6 +2300,19 @@ const Abilities = (() => {
     return valid;
   }
 
+  /** Fire deferred rules chained to a completed push/pull effect. */
+  function fireChainRules(eff) {
+    if (!eff.chainRules) return;
+    for (const chain of eff.chainRules) {
+      const rule = atomicRules[chain.ruleId];
+      if (!rule) continue;
+      const targets = resolveTargets(rule.target, chain.ctx, rule);
+      for (const e of rule.effects) {
+        if (e.effect) applyEffect(targets, e.effect, e.value, chain.ctx);
+      }
+    }
+  }
+
   /** Resolve the front-of-queue effect by moving the unit to (q,r). */
   function resolveEffect(q, r) {
     const eff = effectQueue[0];
@@ -2273,18 +2331,53 @@ const Abilities = (() => {
 
     // Relocate terrain: remove from source, place at destination
     if (eff.type === 'relocateTerrain') {
+      const unitOnSrc = Game.state.units.find(u =>
+        u.q === eff.srcQ && u.r === eff.srcR && u.health > 0);
       Game.state.terrain.delete(`${eff.srcQ},${eff.srcR}`);
       Game.placeTerrain(q, r, eff.surface, eff.player);
       const tName = (Units.terrainRules[eff.surface] || {}).displayName || eff.surface;
       const src = eff.sourceUnit ? eff.sourceUnit.name : 'Effect';
       const player = eff.sourceUnit ? eff.sourceUnit.player : 0;
       Game.log(`${src} moves ${tName} to (${q},${r})`, player);
+      // Store undo data on the most recent action history entry
+      const history = Game.state.actionHistory;
+      if (history && history.length > 0) {
+        const last = history[history.length - 1];
+        if (!last.terrainUndos) last.terrainUndos = [];
+        last.terrainUndos.push({
+          srcQ: eff.srcQ, srcR: eff.srcR, destQ: q, destR: r,
+          surface: eff.surface, player: eff.player,
+        });
+      }
+      effectQueue.shift();
+      // If a unit was standing on the terrain, queue ride/stay choice
+      if (unitOnSrc) {
+        effectQueue.unshift({
+          type: 'terrainRide', unit: unitOnSrc, destQ: q, destR: r,
+        });
+      }
+      return true;
+    }
+
+    // Terrain ride: unit rides with relocated terrain (no onEnterHex — already on it)
+    if (eff.type === 'terrainRide') {
+      // Store ride undo data before moving
+      const history = Game.state.actionHistory;
+      if (history && history.length > 0) {
+        const last = history[history.length - 1];
+        if (!last.rideUndos) last.rideUndos = [];
+        last.rideUndos.push({ unit: eff.unit, prevQ: eff.unit.q, prevR: eff.unit.r });
+      }
+      eff.unit.q = q;
+      eff.unit.r = r;
+      Game.updateObjectiveControl(eff.unit);
       effectQueue.shift();
       return true;
     }
 
     // Staying in place — skip remaining steps for this effect
     if (q === eff.unit.q && r === eff.unit.r) {
+      fireChainRules(eff);
       effectQueue.shift();
       return true;
     }
@@ -2297,6 +2390,7 @@ const Abilities = (() => {
     Game.updateObjectiveControl(eff.unit);
 
     if (eff.remaining <= 0) {
+      fireChainRules(eff);
       effectQueue.shift();
     }
     return true;
@@ -2305,6 +2399,7 @@ const Abilities = (() => {
   /** Skip the front-of-queue effect entirely (all remaining steps). */
   function skipEffect() {
     if (effectQueue.length > 0) {
+      fireChainRules(effectQueue[0]);
       effectQueue.shift();
     }
   }

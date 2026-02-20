@@ -6,24 +6,10 @@
 
 Code-complete but not verified in gameplay. Only move to Tested after user confirms.
 
-### Syli (data-driven, all dispatched via spreadsheet)
-- [ ] Empowered Poison (Purse) — hit.Poison, once-per-game
-- [ ] Empowered Dizzy (Fion) — hit.Dizzy, once-per-game
-- [ ] Touch Me Not (Jewel) — whenAttacked.dodge, once-per-game
-- [ ] Dodgy (Hazel) — whenAttacked.dodge, once-per-round
-- [ ] Trickster (Hazel) — action.move.swap.ally + action.attack.swap.ally
-- [ ] Foul Hemolymph (Lidae) — whenAttacked.foul (weaken adjacent enemies)
-- [ ] Zephyr (Ael) — action.relocate.rng.2 (push or pull 1)
-- [ ] Harbringer (Celae) — hit.suppress + hit.vulnerable.1
-- [ ] Furious Charge (Ocype) — hit.charge.3 (bonus dmg if 5+ from start)
-- [ ] Serenity (Kinnara) — hit.heal.around.2 (allies in range heal 1)
-- [ ] PBAoE (Kinnara) — hit.pbaoe.rng2.dmg1 (attack all enemies in range)
-- [ ] Fae Fire (Light Weaver) — hit.vulnerable.1
-- [ ] Life's Thread (Lotter) — hit.heal.line (allies in line heal 2)
-- [ ] Infatuate (Laurel) — hit.taunt
-- [ ] Entrancing (Smoak) — hit.weakness.2 + hit.pull.2
-- [ ] Noroi (Kodama) — whenAttacked.curse.attacker + death.curse.attacker
-- [ ] Cross Worlds (Ash) — hit.forests.bonusDmg.within.2
+### Syli (data-driven — missing defs only)
+- [ ] Foul Hemolymph (Lidae) — NO DEF in abilityDefs, needs spreadsheet entry
+- [ ] Harbringer (Celae) — NO DEF in abilityDefs, needs spreadsheet entry
+- [ ] Honeydew (Ash) — NO DEF in abilityDefs, needs spreadsheet entry
 
 ### Dusters (data-driven, dispatched via spreadsheet)
 - [ ] Sand Stormed (faction rule) — Hidden in Sand
@@ -37,11 +23,11 @@ Code-complete but not verified in gameplay. Only move to Tested after user confi
 - [ ] Mobile (Greaves PG) — passive mobile
 - [ ] Bump (Lance PG) — hit push + move self
 
-### Stonehart
-- [ ] All Stonehart abilities — via spreadsheet. Known issue: column 12 header typo may affect Lightning Rune card text.
+### Stonehart (smoke tested — previous session)
+- [x] All Stonehart abilities — smoke tested. Earth Rune bug found & fixed (resolveTargets hex fallback).
 
-### Red Ridge
-- [ ] Fire Charged (faction rule) + 5 core abilities
+### Red Ridge (smoke tested — previous session)
+- [x] Fire Charged (faction rule) + 5 core abilities — smoke tested. hasFlag case-sensitivity bug found & fixed.
 
 ---
 
@@ -101,6 +87,92 @@ Verified working by user in gameplay.
 - [x] Stone Armor (Crag Keeper) — passive `resourcemod` mana:armor:1
 - [x] Fen Shadow — hit pull 2 (interactive, allows orbiting around source)
 - [x] Veiled Stalker — whenAttacked consume mana + reducedamageto, Grasping Bog aura immobilize
+
+### Syli (data-driven — smoke tested)
+- [x] Empowered Poison (Purse) — hit.Poison, once-per-game ✅
+- [x] Empowered Dizzy (Fion) — hit.Dizzy, once-per-game ✅
+- [x] Fae Fire (Light Weaver) — hit.vulnerable.1 ✅
+- [x] Infatuate (Laurel) — hit.taunt ✅
+- [x] Serenity (Kinnara) — hit.heal.around.2 ✅
+- [x] PBAoE (Kinnara) — hit.pbaoe.rng2.dmg1 ✅
+- [x] Entrancing (Smoak) — hit.weakness.2 + hit.pull.2 ✅
+- [x] Furious Charge (Ocype) — hit.charge.3 ✅
+- [x] Life's Thread (Lotter) — hit.heal.line ✅
+- [x] Cross Worlds (Ash) — hit.forests.bonusDmg.within.2 ✅
+- [x] Touch Me Not (Jewel) — whenAttacked.dodge, once-per-game ✅
+- [x] Dodgy (Hazel) — whenAttacked.dodge, once-per-round ✅
+- [x] Noroi (Kodama) — whenAttacked.curse + death.curse (permanent) ✅
+- [x] Mobile (Purse, Acroci) — passive flag ✅
+- [x] Hidden/Forest (Boni) — hidden on forest, not hidden off ✅
+- [x] Precise (Way Watcher) — passive flag ✅
+- [x] Guardian (Lyair) — flag + lethal intercept teleport ✅
+- [x] Dancer (Falling Leaf) — passive flag ✅
+- [x] Trickster (Hazel) — action swap positions with ally ✅
+- [x] Zephyr (Ael) — action relocate unit ✅
+- [x] Tree Song (Kodama) — action relocate forest terrain ✅
+- [x] Toter (Acroci) — afterMove teleportally, alliesPassedDuringMove tracking ✅
+- [x] Trapper: Spike (Way Watcher) — deploy spike trap (2 dmg + immobilize) ✅
+- [x] Forest Charged (faction rule) — recharge usedAbilities on entering forest ✅
+
+### Primordial Mists (smoke tested)
+**Spirit Passives:**
+- [x] Earth Spirit — teleportthrough:earth + mana from earth terrain ✅
+- [x] Air Spirit — teleportthrough:air + mana from air terrain ✅
+- [x] Water Spirit — teleportthrough:water ✅ (MISSING: mana.from.water rule in Abilities tab)
+- [x] Chaos Spirit — teleportthrough:chaos ✅ (MISSING: mana.from.any rule in Abilities tab)
+- [x] Mobile — all spirits have flag ✅
+- [x] Stone Armor (resourcemod mana:armor:1) — Crag Keeper +1 armor per mana ✅
+
+**Hit Effects (all consume mana):**
+- [x] Tangled Roots — immobilize ✅
+- [x] Hard Stone — bonus damage ✅
+- [x] Sharp Thorn — burning ✅
+- [x] Flowing River — push 2 (interactive) ✅
+- [x] Grasping Bog — pull 2 (interactive) ✅
+- [x] Rejuvenating Rain — self heal ✅
+- [x] Chilling Mist — vulnerable ✅
+- [x] Gusting Gale — push 1 + splash damage ✅
+- [x] Nothing — silenced ✅
+
+**WhenAttacked:**
+- [x] Sharp Thorn Retaliate — damage fires ✅ (BUG: `consumeall` effect not implemented, mana not spent)
+- [x] Chilling Mist Reduce — reducedamageto works, mana consumed ✅
+- [x] Nothing Dodge — grants dodgy condition for next attack, mana consumed ✅
+
+**Elemental Passives (10/10):**
+- [x] isTerrain — 9/9 non-chaos elementals correctly tagged with surface+element ✅
+- [x] deployTerrain — all 10 elementals have flag ✅
+- [ ] Breaching Void (Chaos) — isTerrain:false (known: needs interactive terrain-type picker)
+
+**Song/Move Actions:**
+- [x] Rock Rumble (rubble relocate) — full execute + interactive placement ✅
+- [x] Thorny Tanto (brambles) — targeting works ✅
+- [x] Marsh Murmur (bog) — targeting works ✅
+- [x] Rainy Refrain (rain) — targeting works ✅
+- [x] Creeping Shroud (mist) — targeting works ✅
+- [x] Winds Whistle (gale) — targeting works ✅
+- [x] Tempest Tune (storm) — targeting works ✅
+- [ ] River Rush — ❌ FAIL: validTargets="Water" but surface is "pool" (spreadsheet data fix)
+- [ ] Primordial Prelude — ❌ FAIL: `placedterrain` validTargets not implemented in code
+
+**Litany/Hymn System:**
+- [x] Litany fires: consume mana → increment hymnRepetition ✅ (tested with corrected rule ID)
+- [x] Hymn fires at rep 3: allallies get strengthened ✅ (tested with corrected rule ID)
+- [ ] ❌ BUG: ALL 9 litany+hymn ability defs have wrong rule IDs (e.g. `hit.litanyofpower` vs actual `hit.litany.of.power`)
+
+**AfterMove:**
+- [x] Flowing River — teleportAlly afterMove, gates on mana, tracks alliesPassedDuringMove ✅
+
+**Missing Effect Handlers:**
+- [ ] `consumeall` — not implemented (Sharp Thorn retaliate needs it)
+
+**Missing Spreadsheet Wiring:**
+- [ ] Water Spirit: needs `passive.mana.from.water` + `passive.use.mana.max.1` in Abilities tab
+- [ ] Chaos Spirit: needs `passive.mana.from.any` + `passive.use.mana.max.1` in Abilities tab
+- [ ] Flighty Storm: NO DEF in abilityDefs
+- [ ] All 9 litany defs: wrong rule IDs (concatenated vs dotted)
+- [ ] All 9 hymn defs: wrong rule IDs (concatenated vs dotted)
+- [ ] River Rush: validTargets should be "Pool" not "Water"
 
 ### Seri
 - [x] Light's Shadow (faction rule) — `swapterrainrule: fae mist:revealing:concealing`, terrain rule swap system
@@ -170,6 +242,7 @@ Verified working by user in gameplay.
 - Soli — Not Started
 - Tidehaven — Not Started
 - Primordial Mists — Spirit Teleportation + Is Terrain + Hymns of Creation + Litany of Potential done. Needs: mana system (resource primitives done), terrain-move variants, signature passives, spreadsheet wiring.
+  - [ ] Chaos Telemental — deploy any terrain type
 - Down Town — Not Started
 
 ---

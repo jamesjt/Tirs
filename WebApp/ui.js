@@ -576,9 +576,10 @@ const UI = (() => {
 
     effectTargeting = { validHexes, effect: eff };
 
-    // Show orange highlights on valid destination hexes
+    // Show highlights on valid destination hexes (cyan for ride/stay, orange for push/pull/move)
     uiState.highlights = new Map([...validHexes].map(k => [k, 1]));
-    uiState.highlightColor = 'rgba(255, 165, 0, 0.4)';
+    uiState.highlightColor = eff.type === 'terrainRide'
+      ? 'rgba(0, 200, 255, 0.4)' : 'rgba(255, 165, 0, 0.4)';
     uiState.attackTargets = null;
     // Gold ring on the unit being moved (or source unit for terrain effects)
     uiState.selectedUnit = eff.unit || eff.sourceUnit || null;
@@ -1430,6 +1431,16 @@ const UI = (() => {
       // Delayed targeting mode
       } else if (delayedTargeting) {
         text = 'Target a space for delayed attack (ESC to cancel)';
+      // Effect targeting mode (push/pull/move/ride)
+      } else if (effectTargeting) {
+        const eff = effectTargeting.effect;
+        if (eff && eff.type === 'terrainRide') {
+          text = `P${eff.unit.player} decides: ${eff.unit.name} rides or stays?`;
+        } else if (eff && (eff.type === 'push' || eff.type === 'pull')) {
+          text = `Choose ${eff.type} direction for ${eff.unit.name} (ESC to skip)`;
+        } else if (eff) {
+          text = `Choose destination for ${eff.unit.name} (ESC to skip)`;
+        }
       } else {
         // HUD handles scores/turn during battle — status bar just shows activation hint
         const act = s.activationState;
@@ -1912,43 +1923,56 @@ const UI = (() => {
     let html = `<p><strong>${step.label}</strong></p>`;
 
     if (step.id === 'shifting') {
-      if (!Game.allShiftDestinationsChosen()) {
-        // Phase 1: Terrain owner picks where each piece shifts to
-        const pieces = step.data.terrainPieces;
-        for (let i = 0; i < pieces.length; i++) {
-          const p = pieces[i];
-          const tName = (Units.terrainRules[p.td.surface] || {}).displayName || p.td.surface;
-          if (p.decided) {
-            html += `<p class="step-done">${tName} (${p.fromQ},${p.fromR}) → (${p.toQ},${p.toR})</p>`;
-          } else {
-            html += `<p>P${p.td.player} chooses where <strong>${tName}</strong> at (${p.fromQ},${p.fromR}) shifts to.</p>`;
-            html += `<p class="step-pending">Click a highlighted hex.</p>`;
-            const valid = Game.getShiftValidHexes();
-            if (valid && valid.size > 0) {
-              uiState.highlights = valid;
-              uiState.highlightColor = 'rgba(255, 165, 0, 0.4)';
-            } else {
-              html += `<p>No valid destination — terrain stays in place.</p>`;
-              html += `<button class="btn btn-back" data-action="shift-skip-dest">Skip</button>`;
-            }
-            break; // One at a time
-          }
+      const d = step.data;
+      const curPlayer = Game.getShiftCurrentPlayer();
+      // Show completed pieces
+      for (const p of d.terrainPieces) {
+        if (!p.decided) continue;
+        const tName = (Units.terrainRules[p.td.surface] || {}).displayName || p.td.surface;
+        if (p.toQ === p.fromQ && p.toR === p.fromR) {
+          html += `<p class="step-done">${tName} stays at (${p.fromQ},${p.fromR})</p>`;
+        } else {
+          const rideText = p.unit && p.rideDecided ? (p.rides ? ' — rides' : ' — stays') : '';
+          html += `<p class="step-done">${tName} (${p.fromQ},${p.fromR}) → (${p.toQ},${p.toR})${rideText}</p>`;
         }
-      } else {
-        // Phase 2: Ride/stay for units on shifted terrain
-        const choices = step.data.unitChoices;
-        for (let i = 0; i < choices.length; i++) {
-          const c = choices[i];
-          if (c.decided) {
-            html += `<p class="step-done">${c.unit.name}: ${c.rides ? 'Rides' : 'Stays'}</p>`;
+      }
+      if (!Game.allShiftChoicesDecided()) {
+        if (d.phase === 'selectPiece') {
+          const selectable = Game.getShiftSelectablePieces();
+          if (selectable && selectable.size > 1) {
+            html += `<p>P${curPlayer}: select a shifting terrain piece to move.</p>`;
+            uiState.highlights = selectable;
+            uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
+          } else if (selectable && selectable.size === 1) {
+            // Auto-select the only piece
+            const entry = selectable.values().next().value;
+            Game.selectShiftPiece(entry.index);
+            // Re-render to show selectDestination phase
+            showPhase(); render(); return;
           } else {
-            html += `<div class="shift-choice">`;
-            html += `<span>P${c.terrainPlayer} decides: ${c.unit.name} (P${c.unit.player}) rides or stays?</span>`;
-            html += `<button class="btn btn-confirm" data-action="shift-ride" data-index="${i}">Ride</button>`;
-            html += `<button class="btn btn-back" data-action="shift-stay" data-index="${i}">Stay</button>`;
-            html += `</div>`;
-            break; // One at a time
+            // No pieces left for this player — should not happen, but handle gracefully
+            html += `<p>No shifting terrain remaining.</p>`;
           }
+        } else if (d.phase === 'selectDestination') {
+          const piece = d.terrainPieces[d.selectedIndex];
+          const tName = (Units.terrainRules[piece.td.surface] || {}).displayName || piece.td.surface;
+          html += `<p>P${curPlayer}: choose where <strong>${tName}</strong> at (${piece.fromQ},${piece.fromR}) shifts to.</p>`;
+          html += `<p class="step-pending">Click a highlighted hex.</p>`;
+          const valid = Game.getShiftValidHexes();
+          if (valid && valid.size > 0) {
+            uiState.highlights = valid;
+            uiState.highlightColor = 'rgba(255, 165, 0, 0.4)';
+          } else {
+            html += `<p>No valid destination — terrain stays in place.</p>`;
+            html += `<button class="btn btn-back" data-action="shift-skip-dest">Skip</button>`;
+          }
+        } else if (d.phase === 'rideStay') {
+          const piece = d.terrainPieces[d.selectedIndex];
+          html += `<div class="shift-choice">`;
+          html += `<span>P${piece.td.player} decides: ${piece.unit.name} (P${piece.unit.player}) rides or stays?</span>`;
+          html += `<button class="btn btn-confirm" data-action="shift-ride">Ride</button>`;
+          html += `<button class="btn btn-back" data-action="shift-stay">Stay</button>`;
+          html += `</div>`;
         }
       }
       if (Game.allShiftChoicesDecided()) {
@@ -2197,6 +2221,17 @@ const UI = (() => {
         const wu = act.woundUp;
         html += `<span class="ability-prompt"><strong>Wound Up</strong> trap ${wu.currentIndex + 1}/${wu.traps.length}</span>`;
         html += `<button class="btn btn-action" data-action="wu-skip-all">Skip All</button>`;
+        actEl.innerHTML = html;
+        actEl.classList.remove('hidden');
+        return;
+      }
+
+      // Terrain Ride/Stay interactive prompt
+      if (effectTargeting && effectTargeting.effect && effectTargeting.effect.type === 'terrainRide') {
+        const eff = effectTargeting.effect;
+        html += `<span class="ability-prompt">P${eff.unit.player} decides: <strong>${eff.unit.name}</strong> rides or stays?</span>`;
+        html += `<button class="btn btn-confirm" data-action="terrain-ride">Ride</button>`;
+        html += `<button class="btn btn-back" data-action="terrain-stay">Stay</button>`;
         actEl.innerHTML = html;
         actEl.classList.remove('hidden');
         return;
@@ -3667,7 +3702,8 @@ const UI = (() => {
 
     // Block battle-phase actions when it's opponent's turn online
     const battleActions = ['undo-action','remove-burning','end-activation','skip-consuming','skip-arcfire',
-      'shift-skip-dest','shift-ride','shift-stay','advance-round-step','use-ability','delayed-target',
+      'shift-skip-dest','shift-ride','shift-stay','terrain-ride','terrain-stay',
+      'advance-round-step','use-ability','delayed-target',
       'fg-skip','gust-push','wu-skip-all','pass-turn'];
     if (typeof Net !== 'undefined' && Net.isOnline() && !Net.isMyTurn() &&
         battleActions.includes(action)) {
@@ -3946,12 +3982,24 @@ const UI = (() => {
     }
 
     else if (action === 'shift-ride' || action === 'shift-stay') {
-      const index = parseInt(btn.dataset.index);
       const rides = action === 'shift-ride';
-      Game.resolveShiftRide(index, rides);
-      netSend({ type: 'resolveShiftRide', index, rides });
+      Game.resolveShiftRide(rides);
+      netSend({ type: 'resolveShiftRide', rides });
       showPhase();
       render();
+    }
+
+    else if (action === 'terrain-ride' || action === 'terrain-stay') {
+      if (effectTargeting && effectTargeting.effect && effectTargeting.effect.type === 'terrainRide') {
+        const eff = effectTargeting.effect;
+        if (action === 'terrain-ride') {
+          Abilities.resolveEffect(eff.destQ, eff.destR);
+        } else {
+          Abilities.skipEffect();
+        }
+        enterEffectTargeting();
+        return;
+      }
     }
 
     else if (action === 'advance-round-step') {
@@ -4034,10 +4082,21 @@ const UI = (() => {
     const step = s.roundStepQueue[s.roundStepIndex];
     if (!step) return;
 
-    // Shifting: click highlighted hex to pick terrain destination
-    if (step.id === 'shifting' && !Game.allShiftDestinationsChosen()) {
+    // Shifting: click hex to select piece or pick destination
+    if (step.id === 'shifting' && !Game.allShiftChoicesDecided()) {
       const key = `${hex.q},${hex.r}`;
-      if (uiState.highlights && uiState.highlights.has(key)) {
+      if (!uiState.highlights || !uiState.highlights.has(key)) return;
+      const d = step.data;
+      if (d.phase === 'selectPiece') {
+        const entry = uiState.highlights.get(key);
+        if (entry && entry.index != null) {
+          Game.selectShiftPiece(entry.index);
+          netSend({ type: 'selectShiftPiece', index: entry.index });
+          uiState.highlights = null;
+          showPhase();
+          render();
+        }
+      } else if (d.phase === 'selectDestination') {
         Game.resolveShiftDestination(hex.q, hex.r);
         netSend({ type: 'resolveShiftDestination', q: hex.q, r: hex.r });
         uiState.highlights = null;
@@ -4651,8 +4710,13 @@ const UI = (() => {
     // Ability targeting mode: click valid target to execute, else cancel
     if (abilityTargeting) {
       if (abilityTargeting.validTargets.has(key)) {
-        const target = s.units.find(u => u.q === hex.q && u.r === hex.r && u.health > 0)
-                    || { q: hex.q, r: hex.r };  // hex position for empty/terrain targets
+        // Use precomputed target list to determine if this is terrain vs unit
+        const targetEntry = abilityTargeting.targetList
+          ? abilityTargeting.targetList.find(t => t.key === key) : null;
+        const target = (targetEntry && targetEntry.type === 'terrain')
+          ? { q: hex.q, r: hex.r }  // terrain target — no unit ref
+          : (s.units.find(u => u.q === hex.q && u.r === hex.r && u.health > 0)
+              || { q: hex.q, r: hex.r });
         const abName = abilityTargeting.abilityName;
         const actionCost = abilityTargeting.actionCost;
         const act = s.activationState;
@@ -5732,6 +5796,9 @@ const UI = (() => {
         Game.advanceRoundStep();
         uiState.highlights = null;
         break;
+      case 'selectShiftPiece':
+        Game.selectShiftPiece(data.index);
+        break;
       case 'resolveShiftDestination':
         Game.resolveShiftDestination(data.q, data.r);
         break;
@@ -5739,7 +5806,7 @@ const UI = (() => {
         Game.skipShiftDestination();
         break;
       case 'resolveShiftRide':
-        Game.resolveShiftRide(data.index, data.rides);
+        Game.resolveShiftRide(data.rides);
         break;
       case 'skipConsumingPlacement':
         Game.skipConsumingPlacement();

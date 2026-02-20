@@ -389,7 +389,7 @@
         },
       },
       (() => {
-        // Collect shifting terrain pieces for interactive destination selection
+        // Collect shifting terrain pieces for interactive one-at-a-time shifting
         const terrainPieces = [];
         for (const [key, td] of G.state.terrain) {
           if (!td.surface || !td.player) continue;
@@ -397,13 +397,29 @@
           if (!info || !info.rules.includes('shifting')) continue;
           const [q, r] = key.split(',').map(Number);
           const unitOn = G.state.units.find(u => u.q === q && u.r === r && u.health > 0);
-          terrainPieces.push({ fromKey: key, fromQ: q, fromR: r, td, unit: unitOn || null, toQ: null, toR: null, decided: false });
+          terrainPieces.push({ fromKey: key, fromQ: q, fromR: r, td, unit: unitOn || null, toQ: null, toR: null, decided: false, rideDecided: false, rides: false });
         }
+        // Build alternating turn order: first player starts, alternate if both sides have pieces
+        const hasP1 = terrainPieces.some(p => p.td.player === 1);
+        const hasP2 = terrainPieces.some(p => p.td.player === 2);
+        const first = G.state.firstTurnPlayer;
+        const second = first === 1 ? 2 : 1;
+        let turnOrder;
+        if (hasP1 && hasP2) turnOrder = [first, second];
+        else if (hasP1) turnOrder = [1];
+        else if (hasP2) turnOrder = [2];
+        else turnOrder = [];
         return {
           id: 'shifting',
           label: 'Shifting terrain',
           auto: terrainPieces.length === 0,
-          data: { terrainPieces, currentTerrainIndex: 0, terrainMoved: false, unitChoices: [] },
+          data: {
+            terrainPieces,
+            turnOrder,           // [player1, player2] for alternation
+            turnIndex: 0,        // index into turnOrder cycle
+            selectedIndex: null,  // which piece is currently selected
+            phase: 'selectPiece', // 'selectPiece' | 'selectDestination' | 'rideStay'
+          },
           execute() {},
         };
       })(),
@@ -659,117 +675,173 @@
 
   // ── Shifting / Consuming round-step helpers ──────────────────
 
-  /** Get valid destination hexes for the current shifting terrain piece. */
-  function getShiftValidHexes() {
+  /** Get the current shifting player (whose turn it is to pick). */
+  function getShiftCurrentPlayer() {
+    const step = G.state.roundStepQueue[G.state.roundStepIndex];
+    if (!step || step.id !== 'shifting') return 0;
+    const { turnOrder, turnIndex } = step.data;
+    if (turnOrder.length === 0) return 0;
+    return turnOrder[turnIndex % turnOrder.length];
+  }
+
+  /** Get undecided terrain pieces belonging to a player. */
+  function getShiftSelectablePieces() {
     const step = G.state.roundStepQueue[G.state.roundStepIndex];
     if (!step || step.id !== 'shifting') return null;
-    const { terrainPieces, currentTerrainIndex } = step.data;
-    if (currentTerrainIndex >= terrainPieces.length) return null;
-    const piece = terrainPieces[currentTerrainIndex];
-    if (piece.decided) return null;
-    const neighbors = Board.getNeighbors(piece.fromQ, piece.fromR);
-    // Collect already-chosen destinations to avoid collisions
-    const taken = new Set();
-    for (const p of terrainPieces) {
-      if (p.decided && p.toQ != null) taken.add(`${p.toQ},${p.toR}`);
+    const player = getShiftCurrentPlayer();
+    const pieces = step.data.terrainPieces;
+    const selectable = new Map();
+    for (let i = 0; i < pieces.length; i++) {
+      const p = pieces[i];
+      if (p.decided || p.td.player !== player) continue;
+      selectable.set(`${p.fromQ},${p.fromR}`, { q: p.fromQ, r: p.fromR, index: i });
     }
+    return selectable;
+  }
+
+  /** Select which terrain piece to shift (by piece index). */
+  function selectShiftPiece(index) {
+    const step = G.state.roundStepQueue[G.state.roundStepIndex];
+    if (!step || step.id !== 'shifting') return false;
+    const piece = step.data.terrainPieces[index];
+    if (!piece || piece.decided) return false;
+    if (piece.td.player !== getShiftCurrentPlayer()) return false;
+    step.data.selectedIndex = index;
+    step.data.phase = 'selectDestination';
+    return true;
+  }
+
+  /** Get valid destination hexes for the currently selected terrain piece. */
+  function getShiftValidHexes() {
+    const step = G.state.roundStepQueue[G.state.roundStepIndex];
+    if (!step || step.id !== 'shifting' || step.data.selectedIndex == null) return null;
+    const piece = step.data.terrainPieces[step.data.selectedIndex];
+    if (!piece || piece.decided) return null;
+    const neighbors = Board.getNeighbors(piece.fromQ, piece.fromR);
+    // Collect already-moved terrain destinations to avoid collisions
+    const taken = new Set();
+    for (const p of step.data.terrainPieces) {
+      if (p.decided && p.toQ != null && !(p.toQ === p.fromQ && p.toR === p.fromR)) {
+        taken.add(`${p.toQ},${p.toR}`);
+      }
+    }
+    // Only allow shifting toward the opposing zone:
+    // P1 terrain shifts right (higher Q), P2 shifts left (lower Q)
     const valid = new Map();
     for (const n of neighbors) {
+      if (piece.td.player === 1 && n.q <= piece.fromQ) continue;
+      if (piece.td.player === 2 && n.q >= piece.fromQ) continue;
       const key = `${n.q},${n.r}`;
       if (!Board.getHex(n.q, n.r)) continue;
       if (taken.has(key)) continue;
       const existing = G.state.terrain.get(key);
       if (existing && existing.surface) continue;
+      if (Board.OBJECTIVES.some(o => o.q === n.q && o.r === n.r)) continue;
       valid.set(key, { q: n.q, r: n.r });
     }
     return valid;
   }
 
-  /** Resolve terrain owner's destination choice for a shifting terrain piece. */
+  /** Resolve terrain destination choice, immediately move terrain. */
   function resolveShiftDestination(q, r) {
     const step = G.state.roundStepQueue[G.state.roundStepIndex];
-    if (!step || step.id !== 'shifting') return false;
-    const { terrainPieces } = step.data;
-    const piece = terrainPieces[step.data.currentTerrainIndex];
+    if (!step || step.id !== 'shifting' || step.data.selectedIndex == null) return false;
+    const piece = step.data.terrainPieces[step.data.selectedIndex];
     if (!piece || piece.decided) return false;
     piece.toQ = q;
     piece.toR = r;
     piece.decided = true;
-    step.data.currentTerrainIndex++;
-    // If all terrain destinations chosen, move terrain + build unitChoices
-    if (allShiftDestinationsChosen()) {
-      executeShifting();
+    // Move this terrain piece immediately
+    G.state.terrain.delete(piece.fromKey);
+    G.state.terrain.set(`${q},${r}`, piece.td);
+    G.state.terrainChangedThisRound.add(`${q},${r}`);
+    const tName = (Units.terrainRules[piece.td.surface] || {}).displayName || piece.td.surface;
+    G.log(`${tName} terrain shifts (${piece.fromQ},${piece.fromR}) \u2192 (${q},${r})`, 0);
+    // If unit was on it, go to ride/stay; otherwise advance turn
+    if (piece.unit && piece.unit.health > 0) {
+      step.data.phase = 'rideStay';
+    } else {
+      advanceShiftTurn();
     }
     return true;
   }
 
-  /** Skip destination selection for a terrain piece with no valid hexes. */
+  /** Skip destination for a piece with no valid hexes — stays in place. */
   function skipShiftDestination() {
     const step = G.state.roundStepQueue[G.state.roundStepIndex];
-    if (!step || step.id !== 'shifting') return false;
-    const piece = step.data.terrainPieces[step.data.currentTerrainIndex];
+    if (!step || step.id !== 'shifting' || step.data.selectedIndex == null) return false;
+    const piece = step.data.terrainPieces[step.data.selectedIndex];
     if (!piece || piece.decided) return false;
-    // Terrain stays in place
     piece.toQ = piece.fromQ;
     piece.toR = piece.fromR;
     piece.decided = true;
-    step.data.currentTerrainIndex++;
-    if (allShiftDestinationsChosen()) {
-      executeShifting();
-    }
+    // No movement, no ride/stay needed
+    const tName = (Units.terrainRules[piece.td.surface] || {}).displayName || piece.td.surface;
+    G.log(`${tName} terrain at (${piece.fromQ},${piece.fromR}) cannot shift`, 0);
+    advanceShiftTurn();
     return true;
   }
 
-  /** Check if all shifting terrain destinations have been chosen. */
-  function allShiftDestinationsChosen() {
+  /** Resolve ride/stay for the unit on the just-moved terrain piece. */
+  function resolveShiftRide(rides) {
     const step = G.state.roundStepQueue[G.state.roundStepIndex];
-    if (!step || step.id !== 'shifting') return true;
-    return step.data.currentTerrainIndex >= step.data.terrainPieces.length;
-  }
-
-  /** Move shifting terrain to user-chosen destinations (idempotent). */
-  function executeShifting() {
-    const step = G.state.roundStepQueue[G.state.roundStepIndex];
-    if (!step || step.id !== 'shifting' || step.data.terrainMoved) return;
-    step.data.terrainMoved = true;
-    for (const p of step.data.terrainPieces) {
-      if (p.toQ == null) continue;
-      if (p.toQ === p.fromQ && p.toR === p.fromR) continue; // skipped — stays in place
-      G.state.terrain.delete(p.fromKey);
-      G.state.terrain.set(`${p.toQ},${p.toR}`, p.td);
-      G.state.terrainChangedThisRound.add(`${p.toQ},${p.toR}`);
-      const tName = (Units.terrainRules[p.td.surface] || {}).displayName || p.td.surface;
-      G.log(`${tName} terrain shifts (${p.fromQ},${p.fromR}) \u2192 (${p.toQ},${p.toR})`, 0);
-    }
-    // Build unit ride/stay choices from pieces that actually moved and had units
-    step.data.unitChoices = step.data.terrainPieces
-      .filter(p => p.unit && p.unit.health > 0 && !(p.toQ === p.fromQ && p.toR === p.fromR))
-      .map(p => ({ unit: p.unit, terrainPlayer: p.td.player, toQ: p.toQ, toR: p.toR, decided: false, rides: false }));
-  }
-
-  /** Resolve a unit's ride/stay choice for the current shifting step. */
-  function resolveShiftRide(choiceIndex, rides) {
-    const step = G.state.roundStepQueue[G.state.roundStepIndex];
-    if (!step || step.id !== 'shifting') return false;
-    const choice = step.data.unitChoices[choiceIndex];
-    if (!choice || choice.decided) return false;
-    choice.decided = true;
-    choice.rides = rides;
+    if (!step || step.id !== 'shifting' || step.data.phase !== 'rideStay') return false;
+    const piece = step.data.terrainPieces[step.data.selectedIndex];
+    if (!piece) return false;
+    piece.rideDecided = true;
+    piece.rides = rides;
     if (rides) {
-      choice.unit.q = choice.toQ;
-      choice.unit.r = choice.toR;
-      G.onEnterHex(choice.unit, choice.toQ, choice.toR);
-      G.updateObjectiveControl(choice.unit);
+      piece.unit.q = piece.toQ;
+      piece.unit.r = piece.toR;
+      // No onEnterHex — unit is riding with terrain, not entering a new hex
+      G.updateObjectiveControl(piece.unit);
     }
+    advanceShiftTurn();
     return true;
   }
 
-  /** Check if all shifting choices (terrain destinations + unit ride/stay) are done. */
+  /** Advance to the next player's turn after completing one terrain piece. */
+  function advanceShiftTurn() {
+    const step = G.state.roundStepQueue[G.state.roundStepIndex];
+    if (!step || step.id !== 'shifting') return;
+    step.data.selectedIndex = null;
+    step.data.phase = 'selectPiece';
+    // Advance turn index if alternating
+    if (step.data.turnOrder.length > 1) {
+      step.data.turnIndex++;
+      // If the next player has no remaining pieces, swap back
+      const nextPlayer = getShiftCurrentPlayer();
+      const hasRemaining = step.data.terrainPieces.some(p => !p.decided && p.td.player === nextPlayer);
+      if (!hasRemaining) {
+        step.data.turnIndex++;
+      }
+    }
+    // Auto-select if current player has exactly 1 remaining piece
+    const selectable = getShiftSelectablePieces();
+    if (selectable && selectable.size === 1) {
+      const entry = selectable.values().next().value;
+      selectShiftPiece(entry.index);
+    }
+  }
+
+  /** Check if all shifting is complete (terrain destinations + ride/stay). */
   function allShiftChoicesDecided() {
     const step = G.state.roundStepQueue[G.state.roundStepIndex];
     if (!step || step.id !== 'shifting') return true;
-    if (!allShiftDestinationsChosen()) return false;
-    return step.data.unitChoices.every(c => c.decided);
+    return step.data.terrainPieces.every(p => {
+      if (!p.decided) return false;
+      // If terrain moved and had a unit, ride/stay must also be decided
+      if (p.unit && p.unit.health > 0 && !(p.toQ === p.fromQ && p.toR === p.fromR)) {
+        return p.rideDecided;
+      }
+      return true;
+    });
+  }
+
+  // Keep for backwards compat — no longer batch-moves
+  function executeShifting() {}
+  function allShiftDestinationsChosen() {
+    return allShiftChoicesDecided();
   }
 
   /** Get valid placement hexes for the current consumed unit. */
@@ -973,13 +1045,15 @@
   G.applyScore = applyScore;
 
   // Shifting/Consuming helpers
+  G.getShiftCurrentPlayer = getShiftCurrentPlayer;
+  G.getShiftSelectablePieces = getShiftSelectablePieces;
+  G.selectShiftPiece = selectShiftPiece;
   G.getShiftValidHexes = getShiftValidHexes;
   G.resolveShiftDestination = resolveShiftDestination;
   G.skipShiftDestination = skipShiftDestination;
-  G.allShiftDestinationsChosen = allShiftDestinationsChosen;
-  G.executeShifting = executeShifting;
   G.resolveShiftRide = resolveShiftRide;
   G.allShiftChoicesDecided = allShiftChoicesDecided;
+  G.executeShifting = executeShifting;
   G.getConsumingValidHexes = getConsumingValidHexes;
   G.resolveConsumingPlacement = resolveConsumingPlacement;
   G.skipConsumingPlacement = skipConsumingPlacement;

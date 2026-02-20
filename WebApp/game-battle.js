@@ -212,7 +212,7 @@
       }
     }
     const ignoresTerrain = typeof Abilities !== 'undefined'
-      ? (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r) : () => false;
+      ? (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r, terrainAuraMap) : () => false;
     for (const [key] of G.state.terrain) {
       const [tq, tr] = key.split(',').map(Number);
       if (hasTerrainRule(tq, tr, 'impassable', u) && !ignoresTerrain('impassable', tq, tr)) blocked.add(key);
@@ -240,6 +240,7 @@
       if (hasTerrainRule(toQ, toR, 'flow', u, terrainAuraMap) && !ignoresTerrain('flow', toQ, toR)) {
         const owner = getFlowOwner(toQ, toR, terrainAuraMap);
         if (!isFlowFreeEntry(toQ, toR, fromQ, fromR, owner)) return 2;
+        return 0; // free entry from deployer's side
       }
       if (hasTerrainRule(toQ, toR, 'difficult', u, terrainAuraMap) && !ignoresTerrain('difficult', toQ, toR)) return 2;
       return 1;
@@ -267,7 +268,7 @@
     const u = act.unit;
     const canMoveIntoEnemies = typeof Abilities !== 'undefined' && Abilities.hasFlag(u, 'moveintoenemies');
     const ignoresTerrain = typeof Abilities !== 'undefined'
-      ? (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r) : () => false;
+      ? (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r, terrainAuraMap) : () => false;
 
     const blocked = new Set();
     for (const other of G.state.units) {
@@ -284,6 +285,7 @@
       if (hasTerrainRule(toQ, toR, 'flow', u, terrainAuraMap) && !ignoresTerrain('flow', toQ, toR)) {
         const owner = getFlowOwner(toQ, toR, terrainAuraMap);
         if (!isFlowFreeEntry(toQ, toR, fromQ, fromR, owner)) return 2;
+        return 0; // free entry from deployer's side
       }
       if (hasTerrainRule(toQ, toR, 'difficult', u, terrainAuraMap) && !ignoresTerrain('difficult', toQ, toR)) return 2;
       return 1;
@@ -563,7 +565,7 @@
       if (other.player !== unit.player) blocked.add(`${other.q},${other.r}`);
     }
     const ignoresTerrain = typeof Abilities !== 'undefined'
-      ? (rule, q, r) => Abilities.ignoresTerrainRule(unit, rule, q, r) : () => false;
+      ? (rule, q, r) => Abilities.ignoresTerrainRule(unit, rule, q, r, terrainAuraMap) : () => false;
     for (const [key] of G.state.terrain) {
       const [tq, tr] = key.split(',').map(Number);
       if (hasTerrainRule(tq, tr, 'impassable') && !ignoresTerrain('impassable', tq, tr)) blocked.add(key);
@@ -579,6 +581,7 @@
       if (hasTerrainRule(toQ, toR, 'flow', unit, terrainAuraMap) && !ignoresTerrain('flow', toQ, toR)) {
         const owner = getFlowOwner(toQ, toR, terrainAuraMap);
         if (!isFlowFreeEntry(toQ, toR, fromQ, fromR, owner)) return 2;
+        return 0; // free entry from deployer's side
       }
       if (hasTerrainRule(toQ, toR, 'difficult', unit, terrainAuraMap) && !ignoresTerrain('difficult', toQ, toR)) return 2;
       return 1;
@@ -784,7 +787,9 @@
     const prevAttackerResources = JSON.parse(JSON.stringify(act.unit.resources || {}));
     const prevTargetResources = JSON.parse(JSON.stringify(target.resources || {}));
     const prevTargetConditions = target.conditions.map(c => ({ ...c }));
+    const prevTargetQ = target.q, prevTargetR = target.r;
     const prevAttackerConditions = act.unit.conditions.map(c => ({ ...c }));
+    const prevAttackerQ = act.unit.q, prevAttackerR = act.unit.r;
     const prevHymnRepetition = G.state.hymnRepetition[act.unit.player];
     // whenAttacked dispatch: fires BEFORE damage so defensive effects (protected, etc.) apply
     if (typeof Abilities !== 'undefined') {
@@ -924,7 +929,8 @@
 
     G.state.actionHistory.push({
       type: 'attack', target, prevHealth, prevAttackerHealth,
-      prevTargetConditions, prevAttackerConditions,
+      prevTargetConditions, prevTargetQ, prevTargetR,
+      prevAttackerConditions, prevAttackerQ, prevAttackerR,
       healthSnapshots,
       tossData: tossData || null,
       attackPath: attackPath || null,
@@ -1677,11 +1683,13 @@
       }
       last.target.health = last.prevHealth;
       if (last.prevTargetConditions) last.target.conditions = last.prevTargetConditions;
-      // Restore attacker health and conditions (Burning self-damage, hit rule conditions)
+      if (last.prevTargetQ != null) { last.target.q = last.prevTargetQ; last.target.r = last.prevTargetR; }
+      // Restore attacker health, conditions, and position (Burning self-damage, hit rule conditions, ability movement)
       if (last.prevAttackerHealth !== undefined) {
         act.unit.health = last.prevAttackerHealth;
       }
       if (last.prevAttackerConditions) act.unit.conditions = last.prevAttackerConditions;
+      if (last.prevAttackerQ != null) { act.unit.q = last.prevAttackerQ; act.unit.r = last.prevAttackerR; }
       // Restore other units (health, conditions, position, resources — Piercing, Hymn, etc.)
       if (last.healthSnapshots) {
         for (const snap of last.healthSnapshots) {
@@ -1760,6 +1768,21 @@
         rd.unit.health = rd.prevHealth;
         rd.unit.conditions = rd.prevConditions;
         updateObjectiveControl(rd.unit);
+      }
+      // Restore terrain relocations
+      if (last.terrainUndos) {
+        for (const tu of last.terrainUndos) {
+          G.state.terrain.delete(`${tu.destQ},${tu.destR}`);
+          G.placeTerrain(tu.srcQ, tu.srcR, tu.surface, tu.player);
+        }
+      }
+      // Restore unit ride positions
+      if (last.rideUndos) {
+        for (const ru of last.rideUndos) {
+          ru.unit.q = ru.prevQ;
+          ru.unit.r = ru.prevR;
+          updateObjectiveControl(ru.unit);
+        }
       }
       // Restore activation flag
       if (last.actionCost === 'move') act.moved = false;
@@ -1944,18 +1967,18 @@
       if (u.health <= 0 || u.q === -99) break;  // died or consumed
     }
 
-    // Gain permanent Strengthened: +1 per unit hit
+    // Mark attack used + once-per-game; clear pre-existing untilAttack buffs BEFORE adding Zoom stacks
+    act.attacked = true;
+    u.usedAbilities.add('Zoom');
+    if (G.hasCondition(u, 'dizzy')) act.moved = true;
+    G.clearConditions(u, 'untilAttack');
+
+    // Gain Strengthened (until next attack): +1 per unit hit
     if (u.health > 0 && damagedUnits.length > 0) {
       for (let i = 0; i < damagedUnits.length; i++) {
         G.addCondition(u, 'strengthened', 'untilAttack', 'Zoom');
       }
     }
-
-    // Mark attack used + once-per-game
-    act.attacked = true;
-    u.usedAbilities.add('Zoom');
-    if (G.hasCondition(u, 'dizzy')) act.moved = true;
-    G.clearConditions(u, 'untilAttack');
 
     // Log
     const hitNames = damagedUnits.map(d => d.name).join(', ');
@@ -2015,7 +2038,7 @@
     // BFS from unit to enemy hex, blocking other enemies (not target) + impassable terrain
     // Allies are traversable but not stoppable (same as normal movement)
     const ignoresTerrain = typeof Abilities !== 'undefined'
-      ? (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r) : () => false;
+      ? (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r, terrainAuraMap) : () => false;
     const blocked = new Set();
     for (const other of G.state.units) {
       if (other.health <= 0 || other === u) continue;
@@ -2033,6 +2056,7 @@
       if (hasTerrainRule(toQ, toR, 'flow', u, terrainAuraMap) && !ignoresTerrain('flow', toQ, toR)) {
         const owner = getFlowOwner(toQ, toR, terrainAuraMap);
         if (!isFlowFreeEntry(toQ, toR, fromQ2, fromR2, owner)) return 2;
+        return 0; // free entry from deployer's side
       }
       if (hasTerrainRule(toQ, toR, 'difficult', u, terrainAuraMap) && !ignoresTerrain('difficult', toQ, toR)) return 2;
       return 1;
