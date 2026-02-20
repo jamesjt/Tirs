@@ -33,7 +33,8 @@
       "mcp__ide__getDiagnostics",
       "Bash(xargs:*)",
       "WebFetch(domain:doc-0k-44-sheets.googleusercontent.com)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(find:*)"
     ]
   }
 }

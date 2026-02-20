@@ -702,6 +702,17 @@ const Abilities = (() => {
         break;
       }
 
+      case 'reducedamageto':
+        // Cap incoming attack damage — set temp flag read by attackUnit()
+        for (const t of targets) {
+          if (!isUnit(t)) continue;
+          const cap = int(value);
+          if (t._reduceDamageTo === undefined || cap < t._reduceDamageTo) {
+            t._reduceDamageTo = cap;
+          }
+        }
+        break;
+
       case 'gainresource': {
         // Value: "type:N" — add resources capped by max
         const tgts = targets.length > 0 ? targets.filter(isUnit) : (ctx.unit ? [ctx.unit] : []);
@@ -1002,6 +1013,27 @@ const Abilities = (() => {
 
     console.warn(`[Abilities] Unknown condition: "${condStr}"`);
     return true;
+  }
+
+  // ── Rule Side Effects ────────────────────────────────────────
+
+  /** Apply all effects from a rule EXCEPT the listed skip set.
+   *  Used by hardcoded helpers (teleport, level) that handle the primary
+   *  effect themselves but still need consume, conditions, etc. to fire. */
+  const INTERACTIVE_EFFECTS = new Set([
+    'teleportally', 'teleportterrain', 'replaceterrain',
+    'push', 'pull', 'move', 'relocate', 'create', 'relocateterrain',
+  ]);
+  function applyRuleSideEffects(unit, ruleId, ctx) {
+    const rule = atomicRules[ruleId];
+    if (!rule) return;
+    if (!ctx) ctx = { unit };
+    const targets = resolveTargets(rule.target, ctx, rule);
+    for (const eff of rule.effects) {
+      if (!eff.effect) continue;
+      if (INTERACTIVE_EFFECTS.has(eff.effect.toLowerCase())) continue;
+      applyEffect(targets, eff.effect, eff.value, ctx);
+    }
   }
 
   // ── Rule Execution ───────────────────────────────────────────
@@ -1438,12 +1470,14 @@ const Abilities = (() => {
           if (!rule || rule.type !== 'passive' || !rule.target) continue;
           const lower = rule.target.toLowerCase();
           if (!lower.includes('around') && !lower.includes('adjacent')) continue;
+          // Check rule condition (e.g. resource gate)
+          if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit: u })) continue;
           const targets = resolveTargets(rule.target, { unit: u }, rule);
           for (const eff of rule.effects) {
             if (!eff.effect) continue;
             const effId = eff.effect.toLowerCase();
             for (const t of targets) {
-              if (!isUnit(t) || t.player !== u.player) continue;
+              if (!isUnit(t)) continue;
               if (!Game.hasCondition(t, effId)) {
                 Game.addCondition(t, effId, 'aura', u.player);
               }
@@ -1807,7 +1841,7 @@ const Abilities = (() => {
   }
 
   /** Get all afterMove teleport abilities for a unit (teleportAlly, teleportTerrain).
-   *  Returns array of { abilityName, oncePerGame, effectType, allowedTypes? }. */
+   *  Returns array of { abilityName, oncePerGame, effectType, allowedTypes?, ruleId }. */
   function getAfterMoveTeleports(unit) {
     const result = [];
     if (!unit || !unit.abilities) return result;
@@ -1817,13 +1851,15 @@ const Abilities = (() => {
       for (const ruleId of ab.ruleIds) {
         const rule = atomicRules[ruleId];
         if (!rule || rule.type !== 'afterMove') continue;
+        // Check rule condition (e.g. resource gate)
+        if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit })) continue;
         for (const eff of rule.effects) {
           const lower = (eff.effect || '').toLowerCase();
           if (lower === 'teleportally') {
-            result.push({ abilityName: ab.name, oncePerGame: ab.oncePerGame, effectType: 'teleportally' });
+            result.push({ abilityName: ab.name, oncePerGame: ab.oncePerGame, effectType: 'teleportally', ruleId });
           } else if (lower === 'teleportterrain') {
             const allowed = (eff.value || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
-            result.push({ abilityName: ab.name, oncePerGame: ab.oncePerGame, effectType: 'teleportterrain', allowedTypes: allowed });
+            result.push({ abilityName: ab.name, oncePerGame: ab.oncePerGame, effectType: 'teleportterrain', allowedTypes: allowed, ruleId });
           }
         }
       }
@@ -2108,8 +2144,8 @@ const Abilities = (() => {
 
       if (eff.type === 'push') {
         if (nDist > currentDist) valid.add(`${n.q},${n.r}`);
-      } else { // pull or move
-        if (nDist < currentDist) valid.add(`${n.q},${n.r}`);
+      } else { // pull or move — allow closer or equal distance (orbit around source)
+        if (nDist <= currentDist) valid.add(`${n.q},${n.r}`);
       }
     }
 
@@ -2228,6 +2264,7 @@ const Abilities = (() => {
     hasAfterMoveRules,
     getAfterMoveData,
     markAbilityUsed,
+    applyRuleSideEffects,
     getAfterMoveTeleports,
     getActions,
     getTargeting,

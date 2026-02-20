@@ -40,6 +40,10 @@
           defArm = defArm - target.armor;
         }
         dmg = Math.max(1, de.atkDmg - defArm);
+        if (typeof Abilities !== 'undefined') {
+          const caps = Abilities.getPassiveList(target, 'reducedamageto');
+          if (caps.length > 0) { const cap = parseInt(caps[0], 10); if (!isNaN(cap) && dmg > cap) dmg = cap; }
+        }
         target.health -= dmg;
         const killText = target.health <= 0 ? ' \u2620 KILLED' : ` (${target.health}/${target.maxHealth} HP)`;
         G.log(`${unit.name}'s delayed attack hits ${target.name} for ${dmg} dmg${killText}`, de.player);
@@ -324,7 +328,11 @@
         if (typeof Abilities !== 'undefined' && Abilities.hasFlag(u, 'ignoreBaseArmor')) {
           defArm = defArm - enemy.armor;
         }
-        const baseDmg = Math.max(1, atkDmg - defArm);
+        let baseDmg = Math.max(1, atkDmg - defArm);
+        if (typeof Abilities !== 'undefined') {
+          const caps = Abilities.getPassiveList(enemy, 'reducedamageto');
+          if (caps.length > 0) { const cap = parseInt(caps[0], 10); if (!isNaN(cap) && baseDmg > cap) baseDmg = cap; }
+        }
         const hitBonus = typeof Abilities !== 'undefined' ? Abilities.getHitBonusDamage(u, enemy) : 0;
         targets.set(`${enemy.q},${enemy.r}`, { damage: baseDmg + hitBonus });
       }
@@ -785,6 +793,25 @@
       defArm = defArm - target.armor;
     }
     let dmg = Math.max(1, atkDmg - defArm);
+
+    // Reduce Damage To: cap incoming attack damage (passive or whenAttacked effect)
+    {
+      let cap = Infinity;
+      // Passive check
+      if (typeof Abilities !== 'undefined') {
+        const caps = Abilities.getPassiveList(target, 'reducedamageto');
+        if (caps.length > 0) { const v = parseInt(caps[0], 10); if (!isNaN(v)) cap = v; }
+      }
+      // whenAttacked effect (temp flag set by applyEffect)
+      if (target._reduceDamageTo !== undefined) {
+        cap = Math.min(cap, target._reduceDamageTo);
+        delete target._reduceDamageTo;
+      }
+      if (cap < dmg) {
+        G.log(`${target.name} reduces damage to ${cap}`, target.player);
+        dmg = cap;
+      }
+    }
 
     // Plagued Memories: deal 1 dmg to allies within 3, reduce incoming by amount dealt (once/round)
     if (typeof Abilities !== 'undefined' && Abilities.hasFlag(target, 'plaguedmemories')

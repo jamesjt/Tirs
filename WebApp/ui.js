@@ -4732,6 +4732,7 @@ const UI = (() => {
           netSend({ type: 'executeFlareUp', fromQ: src.q, fromR: src.r, toQ: hex.q, toR: hex.r, abilityName: data.abilityName });
         }
         if (data.oncePerGame) Abilities.markAbilityUsed(t.unit, data.abilityName);
+        if (data.ruleId) Abilities.applyRuleSideEffects(t.unit, data.ruleId);
         const remaining = t.remaining;
         const unit = t.unit;
         teleportTargeting = null;
@@ -5594,7 +5595,12 @@ const UI = (() => {
         const act = Game.state.activationState;
         if (ally && act) {
           Game.executeToter(act.unit, ally, data.toQ, data.toR, data.abilityName);
-          if (data.abilityName) Abilities.markAbilityUsed(act.unit, data.abilityName);
+          if (data.abilityName) {
+            Abilities.markAbilityUsed(act.unit, data.abilityName);
+            const teleports = Abilities.getAfterMoveTeleports(act.unit);
+            const match = teleports.find(t => t.abilityName === data.abilityName);
+            if (match && match.ruleId) Abilities.applyRuleSideEffects(act.unit, match.ruleId);
+          }
         }
         render();
         break;
@@ -5607,6 +5613,7 @@ const UI = (() => {
             const teleports = Abilities.getAfterMoveTeleports(act.unit);
             const match = teleports.find(t => t.abilityName === data.abilityName);
             if (match && match.oncePerGame) Abilities.markAbilityUsed(act.unit, data.abilityName);
+            if (match && match.ruleId) Abilities.applyRuleSideEffects(act.unit, match.ruleId);
           }
         }
         teleportTargeting = null;
