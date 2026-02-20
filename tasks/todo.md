@@ -98,6 +98,7 @@ Verified working by user in gameplay.
 - [x] Teleport Through Air — `teleportthrough: air` via spreadsheet
 - [x] Teleport Through Chaos — `teleportthrough: chaos`, cross-element teleportation (all terrain in one pool)
 - [x] Sharp Thorn (Briar Thorn / Pointy Thicket) — hit: consume mana → burning; whenAttacked: consumeall mana → damage permana
+- [x] Stone Armor (Crag Keeper) — passive `resourcemod` mana:armor:1
 
 ### Seri
 - [x] Light's Shadow (faction rule) — `swapterrainrule: fae mist:revealing:concealing`, terrain rule swap system

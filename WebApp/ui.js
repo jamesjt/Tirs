@@ -119,7 +119,7 @@ const UI = (() => {
   /** Return inline HTML for a resource icon — prefers Icon Map image, falls back to Unicode. */
   function resourceIconHTML(type) {
     const icons = Units.textIcons;
-    const key = type + 'Icon';                       // e.g. "mana" → "manaIcon"
+    const key = type + 'Icon';
     if (icons && icons[key]) return `<img class="res-img-icon" src="${icons[key]}" alt="${type}">`;
     return RESOURCE_ICONS[type] || '\u2B20';
   }
@@ -1185,14 +1185,27 @@ const UI = (() => {
         hpEl.style.fontSize = (tokenSize * 0.22) + 'px';
       }
 
-      // Condition indicators (grouped with stack count)
+      // Condition indicators (grouped with stack count) + resource icons
       const condDiv = el.querySelector('.token-conditions');
       if (condDiv) {
-        condDiv.innerHTML = groupConditions(unit.conditions)
+        let condHTML = groupConditions(unit.conditions)
           .map(g => {
             const badge = g.count > 1 ? `<span class="cond-stack">${g.count}</span>` : '';
             return `<span class="cond-icon cond-${g.id}" title="${g.id}${g.count > 1 ? ' x' + g.count : ''}">${conditionIconHTML(g.id)}${badge}</span>`;
           }).join('');
+        // Append resources as condition-style badges
+        if (unit.resources) {
+          const icons = Units.textIcons;
+          for (const [type, count] of Object.entries(unit.resources)) {
+            if (count <= 0) continue;
+            const key = type + 'Icon';
+            const sym = (icons && icons[key])
+              ? `<img class="cond-img-icon" src="${icons[key]}" alt="${type}">`
+              : (RESOURCE_ICONS[type] || '\u2B20');
+            condHTML += `<span class="cond-icon cond-${type}" title="${type}: ${count}">${sym}${count > 1 ? `<span class="cond-stack">${count}</span>` : ''}</span>`;
+          }
+        }
+        condDiv.innerHTML = condHTML;
       }
 
       // Resource indicators
@@ -1201,7 +1214,8 @@ const UI = (() => {
         const entries = Object.entries(unit.resources).filter(([, v]) => v > 0);
         if (entries.length > 0) {
           resDiv.innerHTML = entries.map(([type, count]) => {
-            return `<span class="res-icon res-${type}" title="${type}: ${count}">${resourceIconHTML(type)}${count}</span>`;
+            const icon = RESOURCE_ICONS[type] || '\u2B20';
+            return `<span class="res-icon res-${type}" title="${type}: ${count}">${icon}${count}</span>`;
           }).join('');
         } else {
           resDiv.innerHTML = '';
@@ -2871,18 +2885,40 @@ const UI = (() => {
 
   function showCardConditions(unit, cardLeft, cardTop) {
     const panel = document.getElementById('card-conditions');
-    if (!unit.conditions || unit.conditions.length === 0) {
+    const hasConditions = unit.conditions && unit.conditions.length > 0;
+    const hasResources = unit.resources && Object.values(unit.resources).some(v => v > 0);
+    if (!hasConditions && !hasResources) {
       panel.className = 'card-conditions hidden';
       return;
     }
     let html = '';
-    for (const g of groupConditions(unit.conditions)) {
-      const badge = g.count > 1 ? `<span class="cond-stack">${g.count}</span>` : '';
-      const label = g.count > 1 ? `${g.id} ×${g.count}` : g.id;
-      html += `<div class="card-cond-row">`;
-      html += `<span class="card-cond-icon cond-${g.id}">${conditionIconHTML(g.id)}${badge}</span>`;
-      html += `<span class="card-cond-label">${label}</span>`;
-      html += `</div>`;
+    if (hasConditions) {
+      for (const g of groupConditions(unit.conditions)) {
+        const badge = g.count > 1 ? `<span class="cond-stack">${g.count}</span>` : '';
+        const label = g.count > 1 ? `${g.id} ×${g.count}` : g.id;
+        html += `<div class="card-cond-row">`;
+        html += `<span class="card-cond-icon cond-${g.id}">${conditionIconHTML(g.id)}${badge}</span>`;
+        html += `<span class="card-cond-label">${label}</span>`;
+        html += `</div>`;
+      }
+    }
+    // Show resources as condition-style rows (using Icon Map images)
+    if (hasResources) {
+      const icons = Units.textIcons;
+      for (const [type, count] of Object.entries(unit.resources)) {
+        if (count <= 0) continue;
+        const key = type + 'Icon';
+        const max = typeof Abilities !== 'undefined' ? Abilities.getMaxResource(unit, type) : '?';
+        html += `<div class="card-cond-row">`;
+        if (icons && icons[key]) {
+          html += `<span class="card-cond-icon"><img class="cond-img-icon" src="${icons[key]}" alt="${type}"></span>`;
+        } else {
+          const sym = RESOURCE_ICONS[type] || '\u2B20';
+          html += `<span class="card-cond-icon">${sym}</span>`;
+        }
+        html += `<span class="card-cond-label">${type} ${count}/${max}</span>`;
+        html += `</div>`;
+      }
     }
     panel.innerHTML = html;
     panel.className = 'card-conditions';
@@ -5176,6 +5212,9 @@ const UI = (() => {
       btns +
       '<hr class="debug-sep">' +
       '<button class="btn-debug-cond" data-res="__recharge__">Recharge All</button>' +
+      '<hr class="debug-sep">' +
+      '<button class="btn-debug-cond" data-res="__heal__" data-res-action="heal">Heal 1</button>' +
+      '<button class="btn-debug-cond" data-res="__damage__" data-res-action="damage">Damage 1</button>' +
       '</div>';
     nav.appendChild(wrap);
 
@@ -5196,13 +5235,20 @@ const UI = (() => {
         const action = btn.dataset.resAction || 'recharge';
         if (res === '__recharge__') {
           debugSelectedResource = { type: null, action: 'recharge' };
+        } else if (res === '__heal__') {
+          debugSelectedResource = { type: null, action: 'heal' };
+        } else if (res === '__damage__') {
+          debugSelectedResource = { type: null, action: 'damage' };
         } else {
           debugSelectedResource = { type: res, action };
         }
         debugPickingResource = true;
         dropdown.classList.add('hidden');
-        const label = res === '__recharge__' ? 'RECHARGE all resources'
-          : `${action === 'add' ? '+1' : '-1'} ${res}`;
+        let label;
+        if (res === '__recharge__') label = 'RECHARGE all resources';
+        else if (res === '__heal__') label = 'HEAL 1 HP';
+        else if (res === '__damage__') label = 'DAMAGE 1 HP';
+        else label = `${action === 'add' ? '+1' : '-1'} ${res}`;
         document.getElementById('status-bar').textContent =
           `Click a unit to ${label}... (ESC to cancel)`;
       });
@@ -5218,7 +5264,13 @@ const UI = (() => {
     if (!unit) return false;
     if (!unit.resources) unit.resources = {};
 
-    if (debugSelectedResource.action === 'recharge') {
+    if (debugSelectedResource.action === 'heal') {
+      unit.health = Math.min(unit.health + 1, unit.maxHealth);
+      Game.log(`[DEBUG] Healed ${unit.name} (${unit.health}/${unit.maxHealth} HP)`, unit.player);
+    } else if (debugSelectedResource.action === 'damage') {
+      Game.damageUnit(unit, 1, null, 'ability');
+      Game.log(`[DEBUG] Damaged ${unit.name} for 1 (${unit.health}/${unit.maxHealth} HP)`, unit.player);
+    } else if (debugSelectedResource.action === 'recharge') {
       if (typeof Abilities !== 'undefined') {
         const defs = Abilities.getPassiveResourceDefs(unit);
         for (const [type, max] of Object.entries(defs)) {
