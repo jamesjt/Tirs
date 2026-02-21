@@ -35,7 +35,9 @@
       "WebFetch(domain:doc-0k-44-sheets.googleusercontent.com)",
       "Bash(cd:*)",
       "Bash(find:*)",
-      "Bash(git ls-files:*)"
+      "Bash(git ls-files:*)",
+      "Bash(test:*)",
+      "Bash(ping:*)"
     ]
   }
 }

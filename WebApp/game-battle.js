@@ -33,6 +33,48 @@
     if (snap.resources !== undefined) snap.unit.resources = snap.resources;
   }
 
+  /**
+   * Process empower conditions on attacker after a successful hit.
+   * Value format: "effect,severity,instances"
+   * - effect: condition name or 'bonusdamage'
+   * - severity: numeric value (condition value / damage amount), may be empty
+   * - instances: how many attacks left (0 = unlimited)
+   */
+  function processEmpowerments(unit, target) {
+    const empowers = unit.conditions.filter(c => c.id === 'empower' && c.value);
+    for (const emp of empowers) {
+      const parts = emp.value.split(',');
+      const effect = (parts[0] || '').trim();
+      const severity = (parts[1] || '').trim();
+      const instances = parts.length >= 3 ? parseInt(parts[2], 10) : 1;
+      if (!effect) continue;
+
+      // Apply effect to target (if alive)
+      if (target && target.health > 0) {
+        if (effect === 'bonusdamage') {
+          const dmgVal = parseInt(severity, 10) || 1;
+          damageUnit(target, dmgVal, unit, 'empower');
+          G.log(`${unit.name}'s empowered attack deals ${dmgVal} bonus damage to ${target.name}`, unit.player);
+        } else {
+          const dur = (typeof Abilities !== 'undefined' && Abilities.getConditionDefault(effect)) || 'permanent';
+          const condVal = severity ? (isNaN(parseFloat(severity)) ? undefined : parseFloat(severity)) : undefined;
+          G.addCondition(target, effect, dur, unit.player, condVal);
+          G.log(`${unit.name}'s empowered attack applies ${effect} to ${target.name}`, unit.player);
+        }
+      }
+
+      // Manage instance count: 0 = unlimited, 1 = remove, >1 = decrement
+      if (instances === 0) {
+        // Unlimited — keep
+      } else if (instances <= 1) {
+        const idx = unit.conditions.indexOf(emp);
+        if (idx !== -1) unit.conditions.splice(idx, 1);
+      } else {
+        emp.value = `${effect},${severity},${instances - 1}`;
+      }
+    }
+  }
+
   /** Restore an array of unit snapshots. */
   function restoreSnapshots(snapshots) {
     if (!snapshots) return;
@@ -83,6 +125,25 @@
         target.health -= dmg;
         const killText = target.health <= 0 ? ' \u2620 KILLED' : ` (${target.health}/${target.maxHealth} HP)`;
         G.log(`${unit.name}'s delayed attack hits ${target.name} for ${dmg} dmg${killText}`, de.player);
+        // Process delayed empowerments
+        if (de.empowers && target.health > 0) {
+          for (const val of de.empowers) {
+            const parts = val.split(',');
+            const effect = (parts[0] || '').trim();
+            const severity = (parts[1] || '').trim();
+            if (!effect) continue;
+            if (effect === 'bonusdamage') {
+              const dmgVal = parseInt(severity, 10) || 1;
+              damageUnit(target, dmgVal, unit, 'empower');
+              G.log(`${unit.name}'s delayed empowered attack deals ${dmgVal} bonus damage to ${target.name}`, de.player);
+            } else {
+              const dur = (typeof Abilities !== 'undefined' && Abilities.getConditionDefault(effect)) || 'permanent';
+              const condVal = severity ? (isNaN(parseFloat(severity)) ? undefined : parseFloat(severity)) : undefined;
+              G.addCondition(target, effect, dur, de.player, condVal);
+              G.log(`${unit.name}'s delayed empowered attack applies ${effect} to ${target.name}`, de.player);
+            }
+          }
+        }
       } else {
         G.log(`${unit.name}'s delayed attack at [${de.targetQ},${de.targetR}] hits nothing`, de.player);
       }
@@ -247,6 +308,7 @@
         blocked.add(`${other.q},${other.r}`);
       }
     }
+    const terrainAuraMap = typeof Abilities !== 'undefined' ? Abilities.getTerrainAuraMap(u) : new Map();
     const ignoresTerrain = typeof Abilities !== 'undefined'
       ? (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r, terrainAuraMap) : () => false;
     for (const [key] of G.state.terrain) {
@@ -271,7 +333,6 @@
     }
 
     const range = (isMobile || isImpactful) ? (effectiveMove - act.moveDistance) : effectiveMove;
-    const terrainAuraMap = typeof Abilities !== 'undefined' ? Abilities.getTerrainAuraMap(u) : new Map();
     function moveCost(fromQ, fromR, toQ, toR) {
       if (hasTerrainRule(toQ, toR, 'flow', u, terrainAuraMap) && !ignoresTerrain('flow', toQ, toR)) {
         const owner = getFlowOwner(toQ, toR, terrainAuraMap);
@@ -303,6 +364,7 @@
     if (!act) return null;
     const u = act.unit;
     const canMoveIntoEnemies = typeof Abilities !== 'undefined' && Abilities.hasFlag(u, 'moveintoenemies');
+    const terrainAuraMap = typeof Abilities !== 'undefined' ? Abilities.getTerrainAuraMap(u) : new Map();
     const ignoresTerrain = typeof Abilities !== 'undefined'
       ? (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r, terrainAuraMap) : () => false;
 
@@ -315,8 +377,6 @@
       const [tq, tr] = key.split(',').map(Number);
       if (hasTerrainRule(tq, tr, 'impassable', u) && !ignoresTerrain('impassable', tq, tr)) blocked.add(key);
     }
-
-    const terrainAuraMap = typeof Abilities !== 'undefined' ? Abilities.getTerrainAuraMap(u) : new Map();
     function moveCost(fromQ, fromR, toQ, toR) {
       if (hasTerrainRule(toQ, toR, 'flow', u, terrainAuraMap) && !ignoresTerrain('flow', toQ, toR)) {
         const owner = getFlowOwner(toQ, toR, terrainAuraMap);
@@ -596,6 +656,7 @@
       if (other.health <= 0 || other === unit) continue;
       if (other.player !== unit.player) blocked.add(`${other.q},${other.r}`);
     }
+    const terrainAuraMap = typeof Abilities !== 'undefined' ? Abilities.getTerrainAuraMap(unit) : new Map();
     const ignoresTerrain = typeof Abilities !== 'undefined'
       ? (rule, q, r) => Abilities.ignoresTerrainRule(unit, rule, q, r, terrainAuraMap) : () => false;
     for (const [key] of G.state.terrain) {
@@ -608,7 +669,6 @@
       if (other === unit || other.health <= 0) continue;
       if (other.player === unit.player) allyOccupied.add(`${other.q},${other.r}`);
     }
-    const terrainAuraMap = typeof Abilities !== 'undefined' ? Abilities.getTerrainAuraMap(unit) : new Map();
     function moveCost(fromQ, fromR, toQ, toR) {
       if (hasTerrainRule(toQ, toR, 'flow', unit, terrainAuraMap) && !ignoresTerrain('flow', toQ, toR)) {
         const owner = getFlowOwner(toQ, toR, terrainAuraMap);
@@ -657,10 +717,27 @@
       const prevAttackerHealth = act.unit.health;
       const prevResources = JSON.parse(JSON.stringify(act.unit.resources || {}));
       const atkDmg = G.getEffective(act.unit, 'damage') + (bonusDamage || 0);
+      // Snapshot empowers for delayed resolution, then consume finite ones
+      const empowerValues = act.unit.conditions
+        .filter(c => c.id === 'empower' && c.value)
+        .map(c => c.value);
+      const prevAttackerConditions = act.unit.conditions.map(c => ({ ...c }));
+      for (const emp of [...act.unit.conditions.filter(c => c.id === 'empower' && c.value)]) {
+        const parts = emp.value.split(',');
+        const instances = parts.length >= 3 ? parseInt(parts[2], 10) : 1;
+        if (instances === 0) continue; // unlimited stays
+        if (instances <= 1) {
+          const idx = act.unit.conditions.indexOf(emp);
+          if (idx !== -1) act.unit.conditions.splice(idx, 1);
+        } else {
+          emp.value = `${parts[0]},${parts[1]},${instances - 1}`;
+        }
+      }
       G.state.delayedEffects.push({
         unit: act.unit, player: act.unit.player,
         targetQ, targetR, atkDmg, round: G.state.round,
         attackPath: attackPath || null,
+        empowers: empowerValues.length > 0 ? empowerValues : null,
       });
       act.attacked = true;
       if (G.hasCondition(act.unit, 'dizzy')) act.moved = true;
@@ -679,6 +756,7 @@
       G.state.actionHistory.push({
         type: 'attack', delayed: true,
         targetQ, targetR, atkDmg, prevAttackerHealth,
+        prevAttackerConditions,
         tossData: tossData || null,
         prevResources,
       });
@@ -902,6 +980,9 @@
 
     // Move or Fire: attacking locks out moving
     if (typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'moveorfire')) act.moved = true;
+
+    // Generic empower: apply stored effects to target on hit
+    processEmpowerments(act.unit, target);
 
     // Clear "until attack" conditions on the attacker
     G.clearConditions(act.unit, 'untilAttack');
@@ -1679,6 +1760,7 @@
         );
         if (idx !== -1) G.state.delayedEffects.splice(idx, 1);
         if (last.prevAttackerHealth !== undefined) act.unit.health = last.prevAttackerHealth;
+        if (last.prevAttackerConditions) act.unit.conditions = last.prevAttackerConditions;
         act.attacked = false;
         if (G.hasCondition(act.unit, 'dizzy')) act.moved = false;
         if (last.prevResources) act.unit.resources = last.prevResources;
@@ -2015,6 +2097,7 @@
 
     // BFS from unit to enemy hex, blocking other enemies (not target) + impassable terrain
     // Allies are traversable but not stoppable (same as normal movement)
+    const terrainAuraMap = typeof Abilities !== 'undefined' ? Abilities.getTerrainAuraMap(u) : new Map();
     const ignoresTerrain = typeof Abilities !== 'undefined'
       ? (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r, terrainAuraMap) : () => false;
     const blocked = new Set();
@@ -2028,8 +2111,6 @@
       const [tq, tr] = key.split(',').map(Number);
       if (hasTerrainRule(tq, tr, 'impassable') && !ignoresTerrain('impassable', tq, tr)) blocked.add(key);
     }
-
-    const terrainAuraMap = typeof Abilities !== 'undefined' ? Abilities.getTerrainAuraMap(u) : new Map();
     function moveCost(fromQ2, fromR2, toQ, toR) {
       if (hasTerrainRule(toQ, toR, 'flow', u, terrainAuraMap) && !ignoresTerrain('flow', toQ, toR)) {
         const owner = getFlowOwner(toQ, toR, terrainAuraMap);

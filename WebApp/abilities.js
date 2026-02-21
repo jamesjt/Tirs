@@ -439,6 +439,7 @@ const Abilities = (() => {
       case 'bonusactivation':  return applyBonusActivation(targets, ctx);
       case 'laststand':        return applyLastStand(ctx);
       case 'replace':          return applyReplace(value, ctx);
+      case 'empower':          return applyEmpower(targets, value, ctx);
 
       default:
         console.warn(`[Abilities] Unknown effect: "${effect}"`);
@@ -647,20 +648,49 @@ const Abilities = (() => {
     }
   }
 
+  // ── Empower Effect ──
+
+  /**
+   * Apply an empower condition: stores "effect,severity,instances" on the unit.
+   * On the unit's next N attacks, the stored effect is applied to the target.
+   * Value format: "effect,severity,instances" — e.g. "burning,,1" or "bonusdamage,2,1"
+   */
+  function applyEmpower(targets, value, ctx) {
+    if (!value || !value.includes(',')) {
+      console.warn('[Abilities] empower missing effect,severity,instances format:', value);
+      return;
+    }
+    const parts = value.split(',');
+    const effectName = parts[0].trim().toLowerCase();
+    const instances = parts.length >= 3 ? parseInt(parts[2], 10) : 1;
+    if (!effectName) return;
+
+    for (const t of targets) {
+      if (!isUnit(t)) continue;
+      Game.addCondition(t, 'empower', 'manual', ctx.unit ? ctx.unit.player : null, value.toLowerCase());
+      const instLabel = instances > 0 ? `${instances} ` : '';
+      const plural = instances !== 1 ? 's' : '';
+      if (ctx.unit && ctx.unit === t) {
+        Game.log(`${t.name} empowers next ${instLabel}attack${plural} with ${effectName}`, ctx.unit.player);
+      } else {
+        const src = ctx.unit ? ctx.unit.name : 'Effect';
+        Game.log(`${src} empowers ${t.name}'s next ${instLabel}attack${plural} with ${effectName}`, ctx.unit ? ctx.unit.player : 0);
+      }
+    }
+  }
+
   // ── Terrain Effects ──
 
   function applyTerrainCreateEffect(targets, lower, value, ctx) {
     const owner = ctx.unit ? ctx.unit.player : 0;
-    const isDeath = ctx.unit && ctx.unit.health <= 0;
-    if (isQueuing && targets.length > 0 && !isDeath) {
-      const hexes = new Set(targets.map(t => `${t.q},${t.r}`));
-      effectQueue.push({ type: 'create', surface: lower, validHexes: hexes, unit: ctx.unit, player: owner });
-    } else {
-      for (const t of targets) {
-        Game.placeTerrain(t.q, t.r, lower, owner);
-        const tName = (Units.terrainRules[lower] || {}).displayName || lower;
-        Game.log(`${ctx.unit ? ctx.unit.name : 'Effect'} creates ${tName} terrain at (${t.q},${t.r})`, ctx.unit ? ctx.unit.player : 0);
-      }
+    // Always place terrain immediately — the target hex is already resolved
+    // (either from action targeting or from a non-interactive context).
+    // No need to queue: unlike push/pull, create effects don't require
+    // the user to pick a destination after the ability fires.
+    for (const t of targets) {
+      Game.placeTerrain(t.q, t.r, lower, owner);
+      const tName = (Units.terrainRules[lower] || {}).displayName || lower;
+      Game.log(`${ctx.unit ? ctx.unit.name : 'Effect'} creates ${tName} terrain at (${t.q},${t.r})`, ctx.unit ? ctx.unit.player : 0);
     }
   }
 
@@ -1984,7 +2014,6 @@ const Abilities = (() => {
     for (const ruleId of def.ruleIds) {
       if (actionRuleId && ruleId !== actionRuleId) continue;
       const rule = atomicRules[ruleId];
-      console.log('[getTargeting]', abilityName, 'ruleId:', ruleId, 'rule:', rule ? { type: rule.type, range: rule.range, validTargets: rule.validTargets, effects: rule.effects } : null);
       if (rule && rule.type === 'action') {
         // Tag-based targeting path: validTargets present
         if (rule.validTargets) {
@@ -2437,5 +2466,8 @@ const Abilities = (() => {
     resolveEffect,
     skipEffect,
     clearEffectQueue,
+
+    // Condition lookup
+    getConditionDefault: function(id) { return CONDITION_DEFAULTS[id] || null; },
   };
 })();

@@ -23,3 +23,33 @@ Clock Traps are NOT terrain — they share a space with surfaces and are consume
 - `state.terrain` in `reset()` initializes ALL hexes with `{ surface: null }` — this makes `terrain.has(key)` always truthy.
 - Always check `td && td.surface` (not just `terrain.has(key)` or `if (!td)`) when filtering for actual terrain.
 - `Board.getPath()` excludes the start hex — prepend it manually when iterating neighbors along the full path.
+
+## Temporal Dead Zone in Closures (2026-02-20)
+- **Pattern**: When a closure references a `const`/`let` variable that's declared LATER in the same scope, calling the closure before the declaration executes causes `ReferenceError: Cannot access 'X' before initialization`.
+- **Specific case**: `getMoveRange()` and `getMovementContext()` in game-battle.js declared `const ignoresTerrain = (rule, q, r) => Abilities.ignoresTerrainRule(u, rule, q, r, terrainAuraMap)` BEFORE `const terrainAuraMap = ...` was declared. The closure captured the binding, but calling `ignoresTerrain()` in the impassable-terrain loop (before the `terrainAuraMap` line) hit the TDZ.
+- **Symptom**: `showActivationHighlights()` → `getMoveRange()` crashes silently (no try-catch), leaving stale targeting highlights and preventing `showPhase()`/`render()` from running. Game appears "stuck" in targeting mode with cyan dots.
+- **Fix**: Move `const terrainAuraMap = ...` BEFORE any closures that reference it.
+- **Prevention**: Always declare captured variables ABOVE closures that reference them. Never rely on hoisting for `const`/`let`.
+
+## Variable Shadowing in IIFE Modules (2026-02-20)
+- **Pattern**: When a function parameter or local variable shares the same name as a module-level variable in an IIFE, JS silently resolves to the inner scope. Writes intended for the module-level variable go to the parameter/local instead.
+- **Specific case**: `enterAbilityTargeting(abilityName, unit, targeting, ...)` had a parameter `targeting` that shadowed the module-level `targeting` state object in ui.js. When the function wrote `targeting.ability = { ... }`, it wrote to the parameter (getTargeting data), not the state. The hex-click handler checked module-level `targeting.ability` → found null → all ability clicks silently ignored.
+- **Detection**: If an ability enters targeting mode (status bar shows "select target") but clicks on valid hexes do nothing, check for variable shadowing between function params and module-level state.
+- **Fix**: Rename the inner variable (parameter/local) to a distinct name (e.g. `tdata`). Leave module-level references unchanged.
+- **Prevention**: Never name function parameters the same as module-level IIFE state variables. Use descriptive, distinct names.
+
+## Ability Design Constraints
+- **Hit rule + action rule conflict**: `dispatch('afterAttack')` in abilities.js skips hit rules from abilities that also have action rules (line ~1157-1158). This prevents combining both rule types in a single ability def. Workaround: use the generic `empower` effect to buff the next attack via a condition, then process it in `attackUnit()`.
+
+## Generic Rules Over Ability-Specific Effects
+- Design spreadsheet effects to be **GENERIC**, not ability-specific.
+- **Bad**: `firerune` effect that only works for one ability, with hardcoded logic in `attackUnit()`.
+- **Good**: `empower` effect with value `effect,severity,instances` — works for any ability that needs to buff future attacks.
+- The code handles the **MECHANIC** (empowering attacks); the spreadsheet specifies **WHAT** effect and **HOW MANY**.
+- Same principle applies everywhere: prefer `push` with a value over `pushSpecificUnit`, `heal` over `healSelf`, etc.
+- When designing a new ability, ask: "Can this be expressed as a generic effect with parameters?" If yes, build the generic version.
+
+## No Runtime Patches for Spreadsheet Data
+- **NEVER inject rules or ability defs via runtime patches in code** (e.g. `Abilities.setAtomicRules(...)` in units.js). The spreadsheet is the single source of truth for ability data and is trivially editable. Runtime patches are junk code that obscures the real data source, creates maintenance burden, and confuses future debugging.
+- If an ability needs a new rule or changed ruleIds, **tell the user to update the spreadsheet**. Don't add "temporary" code patches — they always outlive their welcome.
+- Code changes should only be for new *mechanics* that the data system can't express, not for data that belongs in the spreadsheet.

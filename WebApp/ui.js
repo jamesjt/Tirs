@@ -106,6 +106,7 @@ const UI = (() => {
     suppressed:   '\u{1F6AB}',  // 🚫 no entry (cannot activate)
     dodgy:        '\u{1F938}',  // 🤸 cartwheeling (dodge)
     tumbler:      '\u{1F483}',  // 💃 dancer (tumble through enemies)
+    empower:      '\u2728',     // ✨ sparkles (empowered next attack)
   };
 
   // ── Resource icon mapping ────────────────────────────────────
@@ -154,9 +155,17 @@ const UI = (() => {
     const map = {};
     for (const c of conditions) {
       if (OVERLAY_CONDITIONS.has(c.id)) continue;
-      map[c.id] = (map[c.id] || 0) + 1;
+      // Differentiate empower types by their effect payload
+      const key = (c.id === 'empower' && c.value) ? `empower:${c.value.split(',')[0]}` : c.id;
+      map[key] = (map[key] || 0) + 1;
     }
-    return Object.entries(map).map(([id, count]) => ({ id, count }));
+    return Object.entries(map).map(([key, count]) => {
+      if (key.startsWith('empower:')) {
+        const effect = key.substring(8);
+        return { id: 'empower', count, label: `empower (${effect})` };
+      }
+      return { id: key, count };
+    });
   }
 
   /** Return HTML for a small circular unit thumbnail (matches board token style) */
@@ -233,11 +242,10 @@ const UI = (() => {
     if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
   }
 
-  function enterAbilityTargeting(abilityName, unit, targeting, actionCost, actionRuleId) {
-    if (targeting.validTargets) {
+  function enterAbilityTargeting(abilityName, unit, tdata, actionCost, actionRuleId) {
+    if (tdata.validTargets) {
       // ── Tag-based targeting path ──
-      const targets = Abilities.computeActionTargets(unit, targeting);
-      console.log('[targeting.ability] tag-based:', abilityName, 'targets found:', targets.length, targets);
+      const targets = Abilities.computeActionTargets(unit, tdata);
       if (targets.length === 0) {
         // No valid targets — don't enter targeting mode
         return;
@@ -293,7 +301,7 @@ const UI = (() => {
         valid.add(t.key);
         if (t.type === 'unit' && t.unit.player !== unit.player) {
           // Enemy → red attack reticle
-          const rawDmg = targeting.rawDamage || 0;
+          const rawDmg = tdata.rawDamage || 0;
           const arm = Game.getEffective(t.unit, 'armor');
           const dmg = rawDmg > 0 ? Math.max(1, rawDmg - arm) : null;
           atkTargets.set(t.key, { damage: dmg });
@@ -318,16 +326,16 @@ const UI = (() => {
     }
     // ── Legacy enemy-only targeting path ──
     const valid = new Set();
-    const overrides = { atkType: targeting.atkType, range: targeting.range };
+    const overrides = { atkType: tdata.atkType, range: tdata.range };
     const atkTargets = new Map();
     for (const enemy of Game.state.units) {
       if (enemy.health <= 0 || enemy.player === unit.player) continue;
-      if (Board.hexDistance(unit.q, unit.r, enemy.q, enemy.r) > targeting.range) continue;
+      if (Board.hexDistance(unit.q, unit.r, enemy.q, enemy.r) > tdata.range) continue;
       if (!Game.canAttack(unit, enemy, overrides)) continue;
       const key = `${enemy.q},${enemy.r}`;
       valid.add(key);
       // Compute damage after armor for reticle display
-      const rawDmg = targeting.rawDamage || 0;
+      const rawDmg = tdata.rawDamage || 0;
       const arm = Game.getEffective(enemy, 'armor');
       const dmg = rawDmg > 0 ? Math.max(1, rawDmg - arm) : null;
       atkTargets.set(key, { damage: dmg });
@@ -1191,7 +1199,7 @@ const UI = (() => {
         let condHTML = groupConditions(unit.conditions)
           .map(g => {
             const badge = g.count > 1 ? `<span class="cond-stack">${g.count}</span>` : '';
-            return `<span class="cond-icon cond-${g.id}" title="${g.id}${g.count > 1 ? ' x' + g.count : ''}">${conditionIconHTML(g.id)}${badge}</span>`;
+            return `<span class="cond-icon cond-${g.id}" title="${g.label || g.id}${g.count > 1 ? ' x' + g.count : ''}">${conditionIconHTML(g.id)}${badge}</span>`;
           }).join('');
         // Append resources as condition-style badges
         if (unit.resources) {
@@ -2687,7 +2695,7 @@ const UI = (() => {
       bar.innerHTML = groupConditions(deployed.conditions)
         .map(g => {
           const badge = g.count > 1 ? `<span class="cond-stack">${g.count}</span>` : '';
-          return `<span class="cond-icon cond-${g.id}" title="${g.id}${g.count > 1 ? ' x' + g.count : ''}">${conditionIconHTML(g.id)}${badge}</span>`;
+          return `<span class="cond-icon cond-${g.id}" title="${g.label || g.id}${g.count > 1 ? ' x' + g.count : ''}">${conditionIconHTML(g.id)}${badge}</span>`;
         }).join('');
     });
 
@@ -2952,7 +2960,7 @@ const UI = (() => {
     if (hasConditions) {
       for (const g of groupConditions(unit.conditions)) {
         const badge = g.count > 1 ? `<span class="cond-stack">${g.count}</span>` : '';
-        const label = g.count > 1 ? `${g.id} ×${g.count}` : g.id;
+        const label = g.count > 1 ? `${g.label || g.id} ×${g.count}` : (g.label || g.id);
         html += `<div class="card-cond-row">`;
         html += `<span class="card-cond-icon cond-${g.id}">${conditionIconHTML(g.id)}${badge}</span>`;
         html += `<span class="card-cond-label">${label}</span>`;
@@ -3914,10 +3922,9 @@ const UI = (() => {
         }
       } else {
         // Generic targeting (tag-based or legacy enemy targeting)
-        const targeting = typeof Abilities !== 'undefined' && Abilities.getTargeting(abilityName, actionRuleId);
-        console.log('[use-ability]', abilityName, 'ruleId:', actionRuleId, 'targeting:', targeting);
-        if (targeting) {
-          enterAbilityTargeting(abilityName, act.unit, targeting, actionCost, actionRuleId);
+        const tdata = typeof Abilities !== 'undefined' && Abilities.getTargeting(abilityName, actionRuleId);
+        if (tdata) {
+          enterAbilityTargeting(abilityName, act.unit, tdata, actionCost, actionRuleId);
           return;
         }
         // Non-targeted action — execute immediately

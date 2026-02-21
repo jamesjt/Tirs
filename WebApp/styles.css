@@ -888,6 +888,7 @@ canvas {
 .cond-silenced     { background: #dddddd; }
 .cond-disarmed     { background: #996633; }
 .cond-taunted      { background: #ff00ff; }
+.cond-empower      { background: #ffaa00; }
 
 .cond-list {
   display: flex;

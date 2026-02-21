@@ -1,3 +1,43 @@
+# Tirs of Traea — Master Todo
+
+---
+
+## Overarching Goals
+
+### Rework Mana & Recharge into Unified Resource System
+- [ ] Audit all current mana usage (Primordial Mists consume/gain, resource caps, resourcemod)
+- [ ] Audit all recharge usage (Fire Charged, Forest Charged — reset usedAbilities on trigger)
+- [ ] Design unified resource primitives that handle both mana-like pools and recharge triggers
+- [ ] Migrate existing mana abilities to unified system
+- [ ] Migrate existing recharge abilities to unified system
+- [ ] Update spreadsheet rules to use new unified format
+- [ ] Test all affected factions (Primordial Mists, Red Ridge, Syli)
+
+### Make Mobile Friendly
+- [ ] Responsive layout — adapt board + panels to portrait/landscape mobile viewports
+- [ ] Touch input — tap-to-select, tap-to-move, long-press for info (replace hover/Ctrl-hover)
+- [ ] Pinch-to-zoom on hex board
+- [ ] Mobile-friendly battle panel — collapsible, swipeable ability buttons
+- [ ] Mobile-friendly roster builder / faction select
+- [ ] Test on iOS Safari + Android Chrome
+
+### Finish Abilities
+- [ ] Complete all faction abilities (see tracker below)
+- [ ] Wire remaining spreadsheet defs for Dusters, Syli, Primordial Mists
+- [ ] Implement missing factions: Seri (partial), Soli, Tidehaven, Down Town
+- [ ] Implement missing effects: `consumeall`, Chaos Telemental deploy-any-terrain picker
+- [ ] Fix known bugs: litany/hymn rule ID mismatches, River Rush validTargets, Primordial Prelude
+
+### Explore Native App Options
+- [ ] **Godot**: Evaluate feasibility — hex grid rendering, GDScript vs C#, export targets (PC/Mac/iOS/Android/Web)
+- [ ] **Alternatives**: Research other frameworks for cross-platform (PC/Mac/mobile) with async multiplayer + push notifications
+  - Flutter, React Native, Tauri, Electron, Unity, or stay web-based with PWA + service workers
+- [ ] **Async multiplayer**: Design turn notification system (push notifications on mobile, email/webhook fallback)
+- [ ] **Data sync**: Evaluate backend options (Firebase, Supabase, custom) for game state persistence
+- [ ] Make a decision and document rationale
+
+---
+
 # Ability Implementation Tracker
 
 ---
