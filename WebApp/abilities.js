@@ -86,6 +86,56 @@ const Abilities = (() => {
     return obj && typeof obj.health === 'number';
   }
 
+  // ── Rule Scanning Helpers ──────────────────────────────────
+  // Centralizes the repeated `for ab → for ruleId → lookup rule → filter type` pattern.
+
+  /**
+   * Iterate over a unit's ability rules filtered by type.
+   * Calls fn(rule, ruleId, ab) for each matching rule.
+   * If fn returns a non-undefined value, iteration stops and that value is returned.
+   * Returns undefined if no callback returned a value.
+   *
+   * Options:
+   *   type (string|null)     — filter rules by type (e.g. 'passive', 'hit'). Null = all types.
+   *   skipUsed (bool)        — skip abilities gated by once-per-game that are already used. Default false.
+   *   checkCondition (object|null) — if provided, skip rules whose condition fails. Value is the ctx for evaluateCondition.
+   */
+  function forEachRule(unit, opts, fn) {
+    if (!unit || !unit.abilities) return undefined;
+    const type = opts.type || null;
+    const skipUsed = opts.skipUsed || false;
+    const condCtx = opts.checkCondition || null;
+    for (const ab of unit.abilities) {
+      if (skipUsed && ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule) continue;
+        if (type && rule.type !== type) continue;
+        if (condCtx && rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, condCtx)) continue;
+        const result = fn(rule, ruleId, ab);
+        if (result !== undefined) return result;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Iterate over a unit's ability rule effects filtered by rule type.
+   * Calls fn(eff, rule, ruleId, ab) for each effect on matching rules.
+   * If fn returns a non-undefined value, iteration stops and that value is returned.
+   * Same options as forEachRule.
+   */
+  function forEachEffect(unit, opts, fn) {
+    return forEachRule(unit, opts, (rule, ruleId, ab) => {
+      for (const eff of rule.effects) {
+        if (!eff.effect) continue;
+        const result = fn(eff, rule, ruleId, ab);
+        if (result !== undefined) return result;
+      }
+      // return undefined implicitly to continue iteration
+    });
+  }
+
   /** Parse range column: "D6" → {atkType:'D', range:6}, "L3" → {atkType:'L', range:3}, "6" → {atkType:'D', range:6} */
   function parseRangeColumn(rangeStr) {
     if (!rangeStr) return { atkType: 'D', range: 0 };
@@ -125,11 +175,11 @@ const Abilities = (() => {
       .trim();
     const tokens = new Set(input.split(' ').filter(t => t && !TARGET_NOISE.has(t)));
 
-    // ── Special non-compositional keywords ──
-    if (tokens.has('deadally')) {
+    // ── Special non-compositional keywords (use joined to avoid camelCase split) ──
+    if (joined === 'deadally') {
       return ctx.deadAlly ? [ctx.deadAlly] : [];
     }
-    if (tokens.has('closestally')) {
+    if (joined === 'closestally') {
       const src = ctx.unit;
       if (!src) return [];
       let closest = null, minDist = Infinity;
@@ -140,12 +190,12 @@ const Abilities = (() => {
       }
       return closest ? [closest] : [];
     }
-    if (tokens.has('allallies')) {
+    if (joined === 'allallies') {
       const src = ctx.unit;
       if (!src) return [];
       return Game.state.units.filter(u => u.health > 0 && u.player === src.player);
     }
-    if (tokens.has('allenemies')) {
+    if (joined === 'allenemies') {
       const src = ctx.unit;
       if (!src) return [];
       return Game.state.units.filter(u => u.health > 0 && u.player !== src.player);
@@ -332,465 +382,463 @@ const Abilities = (() => {
   }
 
   // ── Effect Executors ─────────────────────────────────────────
+  // Split into domain sub-functions for readability.
+  // applyEffect() dispatches to: applyDamageEffect, applyMovementEffect_fx,
+  // applyConditionEffect, applyTerrainEffect, applyResourceEffect, applyMetaEffect.
+
+  // No-op effects that are resolved at scan time, not runtime
+  const PASSIVE_ONLY_EFFECTS = new Set([
+    'tag', 'maxresource', 'resetresource', 'resourcemod', 'terrainresource', 'damageresource',
+  ]);
 
   function applyEffect(targets, effect, value, ctx) {
     if (!effect) return;
     const lower = effect.toLowerCase();
 
     // Tag/passive-only effects — no runtime action
-    if (lower === 'tag') return;
-    if (lower === 'maxresource') return;
-    if (lower === 'resetresource') return;
-    if (lower === 'resourcemod') return;
-    if (lower === 'terrainresource') return;
-    if (lower === 'damageresource') return;
+    if (PASSIVE_ONLY_EFFECTS.has(lower)) return;
 
-    // Grant ability — pushes named ability defs to the target unit (Parting Gift etc.)
-    if (lower === 'grantability') {
-      const names = (value || '').split(',').map(s => s.trim()).filter(Boolean);
-      for (let t of targets) {
-        if (!isUnit(t)) continue;
-        // Haboob absorber: redirect Parting Gift to absorber unit in range of dying unit
-        if (ctx.unit) {
-          const absorber = Game.state.units.find(u =>
-            u.health > 0 && u.player === ctx.unit.player && u !== ctx.unit && u !== t
-            && hasFlag(u, 'absorber')
-            && Board.hexDistance(ctx.unit.q, ctx.unit.r, u.q, u.r) <= (u.range || 3)
-          );
-          if (absorber) {
-            t = absorber;
-            if (!absorber._absorbedGifts) absorber._absorbedGifts = 0;
-            absorber._absorbedGifts++;
-            Game.log(`${absorber.name} absorbs Parting Gift (${absorber._absorbedGifts} total)`, absorber.player);
-          }
-        }
-        for (const name of names) {
-          const def = abilityDefs[name];
-          if (!def) { console.warn(`[grantability] Unknown ability: "${name}"`); continue; }
-          if (t.abilities.some(a => a.name === def.name)) continue;
-          t.abilities.push(def);
-          // Collector: permanent +1 damage when gaining abilities via Parting Gift
-          if (hasFlag(t, 'collector')) {
-            t.damage += 1;
-            Game.log(`Collector! ${t.name} gains +1 damage (now ${t.damage})`, t.player);
-          }
-        }
-        Game.log(`${t.name} inherits abilities from ${ctx.unit ? ctx.unit.name : '?'}`, t.player);
-        recalcAuras();
-      }
-      return;
-    }
-
-    // Stat modification — directly modify unit base stats (for permanent changes like Parting Gift)
-    // Value format: comma-separated "stat:N" (add) or "stat=V" (set)
-    // e.g. "range:1,atkType=D" or "maxHealth:1" or "armor=2"
-    if (lower === 'statmod') {
-      const mods = (value || '').split(',').map(s => s.trim()).filter(Boolean);
-      for (const t of targets) {
-        if (!isUnit(t)) continue;
-        for (const mod of mods) {
-          const setMatch = mod.match(/^(\w+)=(.+)$/);
-          const addMatch = mod.match(/^(\w+):(\d+)$/);
-          if (setMatch) {
-            const [, stat, val] = setMatch;
-            const s = stat.toLowerCase();
-            if (s === 'atktype') t.atkType = val;
-            else if (s === 'armor') t.armor = Math.max(t.armor, parseInt(val, 10));
-            else t[stat] = parseInt(val, 10) || t[stat];
-          } else if (addMatch) {
-            const [, stat, val] = addMatch;
-            const n = parseInt(val, 10);
-            const s = stat.toLowerCase();
-            if (s === 'range') t.range += n;
-            else if (s === 'maxhealth') { t.maxHealth += n; t.health = Math.min(t.health + n, t.maxHealth); }
-            else if (s === 'move') t.move += n;
-            else if (s === 'damage') t.damage += n;
-          }
-        }
-      }
-      return;
-    }
-
-    // Relocate effect — moves the target unit (or terrain), range based on acting unit's move
-    if (lower === 'relocate') {
-      const range = resolveValue(value, ctx) || (ctx.unit ? Game.getEffective(ctx.unit, 'move') : 3);
-      const target = targets.length > 0 ? targets[0] : ctx.target;
-      if (target && isUnit(target)) {
-        effectQueue.push({ type: 'relocate', unit: target, range, sourceUnit: ctx.unit });
-      } else if (ctx.targetQ != null && ctx.targetR != null) {
-        // Terrain relocate: move terrain piece to a new hex within range
-        const srcQ = ctx.targetQ, srcR = ctx.targetR;
-        const terrain = Game.state.terrain.get(`${srcQ},${srcR}`);
-        if (terrain && terrain.surface) {
-          const validHexes = new Set();
-          for (const hex of Board.hexes) {
-            if (hex.q === srcQ && hex.r === srcR) continue;
-            if (Board.hexDistance(srcQ, srcR, hex.q, hex.r) > range) continue;
-            const existing = Game.state.terrain.get(`${hex.q},${hex.r}`);
-            if (existing && existing.surface) continue;
-            validHexes.add(`${hex.q},${hex.r}`);
-          }
-          effectQueue.push({
-            type: 'relocateTerrain', surface: terrain.surface,
-            player: terrain.player || 0, srcQ, srcR,
-            validHexes, sourceUnit: ctx.unit,
-          });
-        }
-      }
-      return;
-    }
-
-    // Condition application
-    if (CONDITION_DEFAULTS[lower]) {
-      for (const t of targets) {
-        if (!isUnit(t)) continue;
-        // Burning stacks (multiple instances = more self-damage on attack)
-        // Duration override: value="turn" → endOfActivation, value="permanent" → permanent, else default
-        const dur = (value && value.toLowerCase() === 'turn') ? 'endOfActivation'
-                  : (value && value.toLowerCase() === 'permanent') ? 'permanent'
-                  : CONDITION_DEFAULTS[lower];
-        const numVal = parseFloat(value);
-        const condValue = (!isNaN(numVal) && value.toLowerCase() !== 'turn' && value.toLowerCase() !== 'permanent')
-                        ? numVal : undefined;
-        Game.addCondition(t, lower, dur, ctx.unit ? ctx.unit.player : null, condValue);
-        const src = ctx.unit ? ctx.unit.name : 'Effect';
-        const player = ctx.unit ? ctx.unit.player : 0;
-        if (ctx.unit && ctx.unit === t) {
-          Game.log(`${t.name} gains ${lower}`, player);
-        } else {
-          Game.log(`${src} applies ${lower} to ${t.name}`, player);
-        }
-      }
-      return;
-    }
+    // Condition application (dynamic lookup)
+    if (CONDITION_DEFAULTS[lower]) return applyConditionEffect(targets, lower, value, ctx);
 
     // Terrain creation: effect name matches a known terrain type
-    if (Units.terrainRules[lower]) {
-      const owner = ctx.unit ? ctx.unit.player : 0;
-      // Dead units can't make interactive choices, so place immediately (Volatile, etc.)
-      const isDeath = ctx.unit && ctx.unit.health <= 0;
-      if (isQueuing && targets.length > 0 && !isDeath) {
-        const hexes = new Set(targets.map(t => `${t.q},${t.r}`));
-        effectQueue.push({ type: 'create', surface: lower, validHexes: hexes, unit: ctx.unit, player: owner });
-      } else {
-        for (const t of targets) {
-          Game.placeTerrain(t.q, t.r, lower, owner);
-          const tName = (Units.terrainRules[lower] || {}).displayName || lower;
-          const src = ctx.unit ? ctx.unit.name : 'Effect';
-          const player = ctx.unit ? ctx.unit.player : 0;
-          Game.log(`${src} creates ${tName} terrain at (${t.q},${t.r})`, player);
-        }
-      }
-      return;
-    }
+    if (Units.terrainRules[lower]) return applyTerrainCreateEffect(targets, lower, value, ctx);
 
-    // Mechanical effects
+    // Dispatch by effect name
     switch (lower) {
-      case 'push':
-        for (const t of targets) {
-          if (!isUnit(t)) continue;
-          if (hasFlag(t, 'immuneforcedmove')) {
-            Game.log(`${t.name} is steadfast — cannot be pushed`, t.player);
-            continue;
-          }
-          if (isQueuing) {
-            effectQueue.push({ type: 'push', unit: t, refQ: ctx.unit.q, refR: ctx.unit.r, remaining: int(value) });
-          } else {
-            Game.pushUnit(t, ctx.unit.q, ctx.unit.r, int(value));
-          }
-        }
-        break;
-
-      case 'pull':
-        for (const t of targets) {
-          if (!isUnit(t)) continue;
-          if (hasFlag(t, 'immuneforcedmove')) {
-            Game.log(`${t.name} is steadfast — cannot be pulled`, t.player);
-            continue;
-          }
-          if (isQueuing) {
-            effectQueue.push({ type: 'pull', unit: t, refQ: ctx.unit.q, refR: ctx.unit.r, remaining: int(value) });
-          } else {
-            Game.pullUnit(t, ctx.unit.q, ctx.unit.r, int(value));
-          }
-        }
-        break;
-
-      case 'move':
-        // Move self toward target's hex
-        if (ctx.unit && ctx.target) {
-          if (isQueuing) {
-            effectQueue.push({ type: 'move', unit: ctx.unit, refQ: ctx.target.q, refR: ctx.target.r, remaining: int(value) });
-          } else {
-            Game.pullUnit(ctx.unit, ctx.target.q, ctx.target.r, int(value));
-          }
-        }
-        break;
-
+      // ── Damage & Heal ──
       case 'piercing':
-      case 'damage': {
-        const resolved = resolveValue(value, ctx);
-        const rawDmg = resolved !== null ? resolved : int(value);
-        for (const t of targets) {
-          if (!isUnit(t)) continue;
-          const arm = Game.getEffective(t, 'armor');
-          const dmg = Math.max(1, rawDmg - arm);
-          Game.damageUnit(t, dmg, ctx.unit, 'ability');
-          // Track damaged units for allDamaged target type (Gassy, etc.)
-          if (ctx.damagedUnits) ctx.damagedUnits.push(t);
-          const src = ctx.unit ? ctx.unit.name : 'Ability';
-          const player = ctx.unit ? ctx.unit.player : 0;
-          const killText = t.health <= 0 ? ' \u2620 KILLED' : '';
-          Game.log(`${src} deals ${dmg} ability dmg to ${t.name}${killText}`, player);
-        }
-        break;
-      }
+      case 'damage':       return applyDamageEffect(targets, lower, value, ctx);
+      case 'bonusdamage':  return applyBonusDamage(targets, value, ctx);
+      case 'bonusdamageperterrain': return applyBonusDamagePerTerrain(value, ctx);
+      case 'armorreduce':  return applyArmorReduce(targets, value, ctx);
+      case 'heal':         return applyHeal(targets, value, ctx);
+      case 'reducedamageto': return applyReduceDamageTo(targets, value);
 
-      case 'bonusdamage':
-        if (ctx.target && isUnit(ctx.target)) {
-          Game.damageUnit(ctx.target, int(value), ctx.unit, 'ability');
-          const src = ctx.unit ? ctx.unit.name : 'Ability';
-          const player = ctx.unit ? ctx.unit.player : 0;
-          const killText = ctx.target.health <= 0 ? ' \u2620 KILLED' : '';
-          Game.log(`${src} deals ${int(value)} bonus dmg to ${ctx.target.name}${killText}`, player);
-        }
-        break;
+      // ── Movement ──
+      case 'push':         return applyPush(targets, value, ctx);
+      case 'pull':         return applyPull(targets, value, ctx);
+      case 'move':         return applyMove(value, ctx);
+      case 'relocate':     return applyRelocate(targets, value, ctx);
+      case 'pushfromterrain': return applyPushFromTerrain(targets, value);
+      case 'pulltoterrain':  return applyPullToTerrain(targets, value);
+      case 'swap':         return applySwap(ctx);
 
-      case 'bonusdamageperterrain': {
-        // value format: "terrain,range" e.g. "forest,2"
-        if (!ctx.target || !isUnit(ctx.target)) break;
-        const parts = (value || '').split(',').map(s => s.trim().toLowerCase());
-        const terrainName = parts[0];
-        const radius = int(parts[1]) || 1;
-        let count = 0;
-        for (const h of Board.hexes) {
-          if (Board.hexDistance(ctx.target.q, ctx.target.r, h.q, h.r) > radius) continue;
-          const td = Game.state.terrain.get(`${h.q},${h.r}`);
-          if (td && td.surface && td.surface.toLowerCase() === terrainName) count++;
-        }
-        if (count > 0) {
-          Game.damageUnit(ctx.target, count, ctx.unit, 'ability');
-          const src = ctx.unit ? ctx.unit.name : 'Ability';
-          const player = ctx.unit ? ctx.unit.player : 0;
-          const killText = ctx.target.health <= 0 ? ' \u2620 KILLED' : '';
-          Game.log(`${src} deals ${count} bonus dmg (${count} ${terrainName} nearby) to ${ctx.target.name}${killText}`, player);
-        }
-        break;
-      }
+      // ── Terrain ──
+      case 'destroyterrain': return applyDestroyTerrain(targets, ctx);
+      case 'placeterrain':   return applyPlaceTerrain(targets, value, ctx);
 
-      case 'armorreduce':
-        for (const t of targets) {
-          if (!isUnit(t)) continue;
-          const prev = t.armor;
-          t.armor = Math.max(0, t.armor - int(value));
-          if (prev > t.armor) {
-            const src = ctx.unit ? ctx.unit.name : 'Ability';
-            const player = ctx.unit ? ctx.unit.player : 0;
-            Game.log(`${src} reduces ${t.name}'s armor by ${prev - t.armor}`, player);
-          }
-        }
-        break;
+      // ── Resources ──
+      case 'consume':      return applyConsume(value, ctx);
+      case 'gainresource': return applyGainResource(targets, value, ctx);
+      case 'litany':       return applyLitany(value, ctx);
 
-      case 'destroyterrain':
-        for (const t of targets) {
-          const key = `${t.q},${t.r}`;
-          const td = Game.state.terrain.get(key);
-          if (td && td.surface) {
-            const surfaceName = td.surface;
-            td.surface = null;
-            const src = ctx.unit ? ctx.unit.name : 'Effect';
-            Game.log(`${src} destroys ${surfaceName} terrain`, ctx.unit ? ctx.unit.player : 0);
-          }
-        }
-        break;
-
-      case 'placeterrain':
-        for (const t of targets) {
-          Game.placeTerrain(t.q, t.r, value, ctx.unit ? ctx.unit.player : 0);
-          const src = ctx.unit ? ctx.unit.name : 'Effect';
-          Game.log(`${src} creates ${value} terrain at (${t.q},${t.r})`, ctx.unit ? ctx.unit.player : 0);
-        }
-        break;
-
-      case 'bonusactivation':
-        for (const t of targets) {
-          if (!isUnit(t) || t.activated || t.health <= 0) continue;
-          Game.queueBonusActivation(t);
-          Game.log(`${ctx.unit ? ctx.unit.name : 'Effect'} grants bonus activation to ${t.name}`, t.player);
-        }
-        break;
-
-      case 'laststand': {
-        // Revive the dead ally for one last activation
-        const dead = ctx.deadAlly;
-        if (dead && !dead.activated && dead.health <= 0) {
-          dead.health = 1;
-          dead._lastStand = true;
-          dead._lastStandKiller = ctx.killer || null;
-          Game.queueBonusActivation(dead);
-          Game.log(`Last Stand! ${dead.name} gets one final activation!`, dead.player);
-        }
-        break;
-      }
-
-      case 'replace': {
-        // Replace the acting unit with a new unit from the faction catalog
-        // Value: faction name (defaults to unit's own faction)
-        const rSrc = ctx.unit;
-        if (!rSrc || rSrc.health <= 0) break;
-        const rFaction = value || rSrc.faction;
-        const rTemplates = (typeof Units !== 'undefined' && Units.catalog[rFaction]) || [];
-        // Exclude currently deployed units (alive or dead — they occupied a roster slot)
-        const rDeployed = new Set(
-          Game.state.units.filter(u => u.player === rSrc.player).map(u => u.name)
-        );
-        const rAvailable = rTemplates.filter(t => !rDeployed.has(t.name));
-        if (rAvailable.length === 0) {
-          Game.log(`No replacement units available for ${rSrc.name}`, rSrc.player);
-          break;
-        }
-        Game.state.pendingReplacement = {
-          unit: rSrc, player: rSrc.player, q: rSrc.q, r: rSrc.r, available: rAvailable,
-        };
-        Game.log(`Hymn of Creation! ${rSrc.name} begins transformation!`, rSrc.player);
-        break;
-      }
-
-      case 'swap':
-        if (ctx.unit && ctx.target && isUnit(ctx.target)) {
-          const uQ = ctx.unit.q, uR = ctx.unit.r;
-          ctx.unit.q = ctx.target.q; ctx.unit.r = ctx.target.r;
-          ctx.target.q = uQ; ctx.target.r = uR;
-          Game.onEnterHex(ctx.unit, ctx.unit.q, ctx.unit.r);
-          Game.onEnterHex(ctx.target, ctx.target.q, ctx.target.r);
-          Game.updateObjectiveControl(ctx.unit);
-          Game.updateObjectiveControl(ctx.target);
-          if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
-          const player = ctx.unit.player || 0;
-          Game.log(`${ctx.unit.name} swaps places with ${ctx.target.name}`, player);
-        }
-        break;
-
-      case 'heal':
-        for (const t of targets) {
-          if (!isUnit(t) || t.health <= 0) continue;
-          const amount = Math.min(int(value), t.maxHealth - t.health);
-          if (amount <= 0) continue;
-          t.health += amount;
-          const src = ctx.unit ? ctx.unit.name : 'Ability';
-          const player = ctx.unit ? ctx.unit.player : 0;
-          Game.log(`${src} heals ${t.name} for ${amount} (${t.health}/${t.maxHealth} HP)`, player);
-        }
-        break;
-
-      case 'consume': {
-        // Value: "type:N" or "type:all" — spend resources, store consumed count in ctx
-        const unit = ctx.unit;
-        if (!unit || !unit.resources) break;
-        const parts = (value || '').split(':').map(s => s.trim());
-        const resType = parts[0].toLowerCase();
-        const current = unit.resources[resType] || 0;
-        let amount;
-        if (parts.length >= 2 && parts[1].toLowerCase() === 'all') {
-          amount = current;
-        } else {
-          amount = parts.length >= 2 ? (parseInt(parts[1], 10) || 1) : 1;
-        }
-        const actual = Math.min(amount, current);
-        unit.resources[resType] = current - actual;
-        if (!ctx.consumed) ctx.consumed = {};
-        ctx.consumed[resType] = (ctx.consumed[resType] || 0) + actual;
-        if (actual > 0) {
-          Game.log(`${unit.name} consumes ${actual} ${resType} (${unit.resources[resType]} remaining)`, unit.player);
-        }
-        break;
-      }
-
-      case 'reducedamageto':
-        // Cap incoming attack damage — set temp flag read by attackUnit()
-        for (const t of targets) {
-          if (!isUnit(t)) continue;
-          const cap = int(value);
-          if (t._reduceDamageTo === undefined || cap < t._reduceDamageTo) {
-            t._reduceDamageTo = cap;
-          }
-        }
-        break;
-
-      case 'gainresource': {
-        // Value: "type:N" — add resources capped by max
-        const tgts = targets.length > 0 ? targets.filter(isUnit) : (ctx.unit ? [ctx.unit] : []);
-        for (const t of tgts) {
-          if (!t.resources) t.resources = {};
-          const parts = (value || '').split(':').map(s => s.trim());
-          const resType = parts[0].toLowerCase();
-          const amount = parts.length >= 2 ? (parseInt(parts[1], 10) || 1) : 1;
-          if (!(resType in t.resources)) t.resources[resType] = 0;
-          const max = getMaxResource(t, resType);
-          const prev = t.resources[resType];
-          t.resources[resType] = Math.min(prev + amount, max);
-          const gained = t.resources[resType] - prev;
-          if (gained > 0) {
-            Game.log(`${t.name} gains ${gained} ${resType} (${t.resources[resType]}/${max})`, t.player);
-          }
-        }
-        break;
-      }
-
-      case 'litany': {
-        // Value = hymn ability def name. Increments repetition counter, triggers hymn at 3.
-        const player = ctx.unit ? ctx.unit.player : 0;
-        if (!player) break;
-        Game.state.hymnRepetition[player] = (Game.state.hymnRepetition[player] || 0) + 1;
-        const repCount = Game.state.hymnRepetition[player];
-        Game.log(`Litany! Repetition ${repCount}/3`, player);
-        if (repCount >= 3) {
-          Game.state.hymnRepetition[player] = 0;
-          Game.log(`HYMN OF CREATION triggers!`, player);
-          const hymnDef = abilityDefs[value];
-          if (hymnDef) {
-            executeRules(hymnDef.ruleIds, 'hymn', ctx);
-          } else {
-            console.warn(`[Abilities] No hymn ability def: "${value}"`);
-          }
-        }
-        break;
-      }
-
-      case 'pushfromterrain': {
-        // Value: "element:distance". Push each target away from nearest terrain of element.
-        const parts = (value || '').split(':').map(s => s.trim());
-        const terrainType = parts[0].toLowerCase();
-        const dist = parseInt(parts[1], 10) || 1;
-        for (const t of targets) {
-          if (!isUnit(t)) continue;
-          const nearest = findNearestTerrainByElement(t, terrainType);
-          if (nearest) {
-            Game.pushUnit(t, nearest.q, nearest.r, dist);
-          }
-        }
-        break;
-      }
-
-      case 'pulltoterrain': {
-        // Value: "element:distance". Pull each target toward nearest terrain of element.
-        const parts = (value || '').split(':').map(s => s.trim());
-        const terrainType = parts[0].toLowerCase();
-        const dist = parseInt(parts[1], 10) || 1;
-        for (const t of targets) {
-          if (!isUnit(t)) continue;
-          const nearest = findNearestTerrainByElement(t, terrainType);
-          if (nearest) {
-            Game.pullUnit(t, nearest.q, nearest.r, dist);
-          }
-        }
-        break;
-      }
+      // ── Meta ──
+      case 'grantability':     return applyGrantAbility(targets, value, ctx);
+      case 'statmod':          return applyStatMod(targets, value);
+      case 'bonusactivation':  return applyBonusActivation(targets, ctx);
+      case 'laststand':        return applyLastStand(ctx);
+      case 'replace':          return applyReplace(value, ctx);
 
       default:
         console.warn(`[Abilities] Unknown effect: "${effect}"`);
-        break;
     }
+  }
+
+  // ── Damage & Heal Effects ──
+
+  function applyDamageEffect(targets, lower, value, ctx) {
+    const resolved = resolveValue(value, ctx);
+    const rawDmg = resolved !== null ? resolved : int(value);
+    for (const t of targets) {
+      if (!isUnit(t)) continue;
+      const arm = Game.getEffective(t, 'armor');
+      const dmg = Math.max(1, rawDmg - arm);
+      Game.damageUnit(t, dmg, ctx.unit, 'ability');
+      if (ctx.damagedUnits) ctx.damagedUnits.push(t);
+      const src = ctx.unit ? ctx.unit.name : 'Ability';
+      const killText = t.health <= 0 ? ' \u2620 KILLED' : '';
+      Game.log(`${src} deals ${dmg} ability dmg to ${t.name}${killText}`, ctx.unit ? ctx.unit.player : 0);
+    }
+  }
+
+  function applyBonusDamage(targets, value, ctx) {
+    if (ctx.target && isUnit(ctx.target)) {
+      Game.damageUnit(ctx.target, int(value), ctx.unit, 'ability');
+      const src = ctx.unit ? ctx.unit.name : 'Ability';
+      const killText = ctx.target.health <= 0 ? ' \u2620 KILLED' : '';
+      Game.log(`${src} deals ${int(value)} bonus dmg to ${ctx.target.name}${killText}`, ctx.unit ? ctx.unit.player : 0);
+    }
+  }
+
+  function applyBonusDamagePerTerrain(value, ctx) {
+    if (!ctx.target || !isUnit(ctx.target)) return;
+    const parts = (value || '').split(',').map(s => s.trim().toLowerCase());
+    const terrainName = parts[0];
+    const radius = int(parts[1]) || 1;
+    let count = 0;
+    for (const h of Board.hexes) {
+      if (Board.hexDistance(ctx.target.q, ctx.target.r, h.q, h.r) > radius) continue;
+      const td = Game.state.terrain.get(`${h.q},${h.r}`);
+      if (td && td.surface && td.surface.toLowerCase() === terrainName) count++;
+    }
+    if (count > 0) {
+      Game.damageUnit(ctx.target, count, ctx.unit, 'ability');
+      const src = ctx.unit ? ctx.unit.name : 'Ability';
+      const killText = ctx.target.health <= 0 ? ' \u2620 KILLED' : '';
+      Game.log(`${src} deals ${count} bonus dmg (${count} ${terrainName} nearby) to ${ctx.target.name}${killText}`, ctx.unit ? ctx.unit.player : 0);
+    }
+  }
+
+  function applyArmorReduce(targets, value, ctx) {
+    for (const t of targets) {
+      if (!isUnit(t)) continue;
+      const prev = t.armor;
+      t.armor = Math.max(0, t.armor - int(value));
+      if (prev > t.armor) {
+        Game.log(`${ctx.unit ? ctx.unit.name : 'Ability'} reduces ${t.name}'s armor by ${prev - t.armor}`, ctx.unit ? ctx.unit.player : 0);
+      }
+    }
+  }
+
+  function applyHeal(targets, value, ctx) {
+    for (const t of targets) {
+      if (!isUnit(t) || t.health <= 0) continue;
+      const amount = Math.min(int(value), t.maxHealth - t.health);
+      if (amount <= 0) continue;
+      t.health += amount;
+      Game.log(`${ctx.unit ? ctx.unit.name : 'Ability'} heals ${t.name} for ${amount} (${t.health}/${t.maxHealth} HP)`, ctx.unit ? ctx.unit.player : 0);
+    }
+  }
+
+  function applyReduceDamageTo(targets, value) {
+    for (const t of targets) {
+      if (!isUnit(t)) continue;
+      const cap = int(value);
+      if (t._reduceDamageTo === undefined || cap < t._reduceDamageTo) {
+        t._reduceDamageTo = cap;
+      }
+    }
+  }
+
+  // ── Movement Effects ──
+
+  function applyPush(targets, value, ctx) {
+    for (const t of targets) {
+      if (!isUnit(t)) continue;
+      if (hasFlag(t, 'immuneforcedmove')) {
+        Game.log(`${t.name} is steadfast — cannot be pushed`, t.player);
+        continue;
+      }
+      if (isQueuing) {
+        effectQueue.push({ type: 'push', unit: t, refQ: ctx.unit.q, refR: ctx.unit.r, remaining: int(value) });
+      } else {
+        Game.pushUnit(t, ctx.unit.q, ctx.unit.r, int(value));
+      }
+    }
+  }
+
+  function applyPull(targets, value, ctx) {
+    for (const t of targets) {
+      if (!isUnit(t)) continue;
+      if (hasFlag(t, 'immuneforcedmove')) {
+        Game.log(`${t.name} is steadfast — cannot be pulled`, t.player);
+        continue;
+      }
+      if (isQueuing) {
+        effectQueue.push({ type: 'pull', unit: t, refQ: ctx.unit.q, refR: ctx.unit.r, remaining: int(value) });
+      } else {
+        Game.pullUnit(t, ctx.unit.q, ctx.unit.r, int(value));
+      }
+    }
+  }
+
+  function applyMove(value, ctx) {
+    if (ctx.unit && ctx.target) {
+      if (isQueuing) {
+        effectQueue.push({ type: 'move', unit: ctx.unit, refQ: ctx.target.q, refR: ctx.target.r, remaining: int(value) });
+      } else {
+        Game.pullUnit(ctx.unit, ctx.target.q, ctx.target.r, int(value));
+      }
+    }
+  }
+
+  function applyRelocate(targets, value, ctx) {
+    const range = resolveValue(value, ctx) || (ctx.unit ? Game.getEffective(ctx.unit, 'move') : 3);
+    const target = targets.length > 0 ? targets[0] : ctx.target;
+    if (target && isUnit(target)) {
+      effectQueue.push({ type: 'relocate', unit: target, range, sourceUnit: ctx.unit });
+    } else if (ctx.targetQ != null && ctx.targetR != null) {
+      const srcQ = ctx.targetQ, srcR = ctx.targetR;
+      const terrain = Game.state.terrain.get(`${srcQ},${srcR}`);
+      if (terrain && terrain.surface) {
+        const validHexes = new Set();
+        for (const hex of Board.hexes) {
+          if (hex.q === srcQ && hex.r === srcR) continue;
+          if (Board.hexDistance(srcQ, srcR, hex.q, hex.r) > range) continue;
+          const existing = Game.state.terrain.get(`${hex.q},${hex.r}`);
+          if (existing && existing.surface) continue;
+          validHexes.add(`${hex.q},${hex.r}`);
+        }
+        effectQueue.push({
+          type: 'relocateTerrain', surface: terrain.surface,
+          player: terrain.player || 0, srcQ, srcR,
+          validHexes, sourceUnit: ctx.unit,
+        });
+      }
+    }
+  }
+
+  function applySwap(ctx) {
+    if (ctx.unit && ctx.target && isUnit(ctx.target)) {
+      const uQ = ctx.unit.q, uR = ctx.unit.r;
+      ctx.unit.q = ctx.target.q; ctx.unit.r = ctx.target.r;
+      ctx.target.q = uQ; ctx.target.r = uR;
+      Game.onEnterHex(ctx.unit, ctx.unit.q, ctx.unit.r);
+      Game.onEnterHex(ctx.target, ctx.target.q, ctx.target.r);
+      Game.updateObjectiveControl(ctx.unit);
+      Game.updateObjectiveControl(ctx.target);
+      if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
+      Game.log(`${ctx.unit.name} swaps places with ${ctx.target.name}`, ctx.unit.player || 0);
+    }
+  }
+
+  function applyPushFromTerrain(targets, value) {
+    const parts = (value || '').split(':').map(s => s.trim());
+    const terrainType = parts[0].toLowerCase();
+    const dist = parseInt(parts[1], 10) || 1;
+    for (const t of targets) {
+      if (!isUnit(t)) continue;
+      const nearest = findNearestTerrainByElement(t, terrainType);
+      if (nearest) Game.pushUnit(t, nearest.q, nearest.r, dist);
+    }
+  }
+
+  function applyPullToTerrain(targets, value) {
+    const parts = (value || '').split(':').map(s => s.trim());
+    const terrainType = parts[0].toLowerCase();
+    const dist = parseInt(parts[1], 10) || 1;
+    for (const t of targets) {
+      if (!isUnit(t)) continue;
+      const nearest = findNearestTerrainByElement(t, terrainType);
+      if (nearest) Game.pullUnit(t, nearest.q, nearest.r, dist);
+    }
+  }
+
+  // ── Condition Effects ──
+
+  function applyConditionEffect(targets, lower, value, ctx) {
+    for (const t of targets) {
+      if (!isUnit(t)) continue;
+      const dur = (value && value.toLowerCase() === 'turn') ? 'endOfActivation'
+                : (value && value.toLowerCase() === 'permanent') ? 'permanent'
+                : CONDITION_DEFAULTS[lower];
+      const numVal = parseFloat(value);
+      const condValue = (!isNaN(numVal) && value.toLowerCase() !== 'turn' && value.toLowerCase() !== 'permanent')
+                      ? numVal : undefined;
+      Game.addCondition(t, lower, dur, ctx.unit ? ctx.unit.player : null, condValue);
+      const src = ctx.unit ? ctx.unit.name : 'Effect';
+      const player = ctx.unit ? ctx.unit.player : 0;
+      if (ctx.unit && ctx.unit === t) {
+        Game.log(`${t.name} gains ${lower}`, player);
+      } else {
+        Game.log(`${src} applies ${lower} to ${t.name}`, player);
+      }
+    }
+  }
+
+  // ── Terrain Effects ──
+
+  function applyTerrainCreateEffect(targets, lower, value, ctx) {
+    const owner = ctx.unit ? ctx.unit.player : 0;
+    const isDeath = ctx.unit && ctx.unit.health <= 0;
+    if (isQueuing && targets.length > 0 && !isDeath) {
+      const hexes = new Set(targets.map(t => `${t.q},${t.r}`));
+      effectQueue.push({ type: 'create', surface: lower, validHexes: hexes, unit: ctx.unit, player: owner });
+    } else {
+      for (const t of targets) {
+        Game.placeTerrain(t.q, t.r, lower, owner);
+        const tName = (Units.terrainRules[lower] || {}).displayName || lower;
+        Game.log(`${ctx.unit ? ctx.unit.name : 'Effect'} creates ${tName} terrain at (${t.q},${t.r})`, ctx.unit ? ctx.unit.player : 0);
+      }
+    }
+  }
+
+  function applyDestroyTerrain(targets, ctx) {
+    for (const t of targets) {
+      const key = `${t.q},${t.r}`;
+      const td = Game.state.terrain.get(key);
+      if (td && td.surface) {
+        const surfaceName = td.surface;
+        td.surface = null;
+        Game.log(`${ctx.unit ? ctx.unit.name : 'Effect'} destroys ${surfaceName} terrain`, ctx.unit ? ctx.unit.player : 0);
+      }
+    }
+  }
+
+  function applyPlaceTerrain(targets, value, ctx) {
+    for (const t of targets) {
+      Game.placeTerrain(t.q, t.r, value, ctx.unit ? ctx.unit.player : 0);
+      Game.log(`${ctx.unit ? ctx.unit.name : 'Effect'} creates ${value} terrain at (${t.q},${t.r})`, ctx.unit ? ctx.unit.player : 0);
+    }
+  }
+
+  // ── Resource Effects ──
+
+  function applyConsume(value, ctx) {
+    const unit = ctx.unit;
+    if (!unit || !unit.resources) return;
+    const parts = (value || '').split(':').map(s => s.trim());
+    const resType = parts[0].toLowerCase();
+    const current = unit.resources[resType] || 0;
+    let amount;
+    if (parts.length >= 2 && parts[1].toLowerCase() === 'all') {
+      amount = current;
+    } else {
+      amount = parts.length >= 2 ? (parseInt(parts[1], 10) || 1) : 1;
+    }
+    const actual = Math.min(amount, current);
+    unit.resources[resType] = current - actual;
+    if (!ctx.consumed) ctx.consumed = {};
+    ctx.consumed[resType] = (ctx.consumed[resType] || 0) + actual;
+    if (actual > 0) {
+      Game.log(`${unit.name} consumes ${actual} ${resType} (${unit.resources[resType]} remaining)`, unit.player);
+    }
+  }
+
+  function applyGainResource(targets, value, ctx) {
+    const tgts = targets.length > 0 ? targets.filter(isUnit) : (ctx.unit ? [ctx.unit] : []);
+    for (const t of tgts) {
+      if (!t.resources) t.resources = {};
+      const parts = (value || '').split(':').map(s => s.trim());
+      const resType = parts[0].toLowerCase();
+      const amount = parts.length >= 2 ? (parseInt(parts[1], 10) || 1) : 1;
+      if (!(resType in t.resources)) t.resources[resType] = 0;
+      const max = getMaxResource(t, resType);
+      const prev = t.resources[resType];
+      t.resources[resType] = Math.min(prev + amount, max);
+      const gained = t.resources[resType] - prev;
+      if (gained > 0) {
+        Game.log(`${t.name} gains ${gained} ${resType} (${t.resources[resType]}/${max})`, t.player);
+      }
+    }
+  }
+
+  function applyLitany(value, ctx) {
+    const player = ctx.unit ? ctx.unit.player : 0;
+    if (!player) return;
+    Game.state.hymnRepetition[player] = (Game.state.hymnRepetition[player] || 0) + 1;
+    const repCount = Game.state.hymnRepetition[player];
+    Game.log(`Litany! Repetition ${repCount}/3`, player);
+    if (repCount >= 3) {
+      Game.state.hymnRepetition[player] = 0;
+      Game.log(`HYMN OF CREATION triggers!`, player);
+      const hymnDef = abilityDefs[value];
+      if (hymnDef) {
+        executeRules(hymnDef.ruleIds, 'hymn', ctx);
+      } else {
+        console.warn(`[Abilities] No hymn ability def: "${value}"`);
+      }
+    }
+  }
+
+  // ── Meta Effects ──
+
+  function applyGrantAbility(targets, value, ctx) {
+    const names = (value || '').split(',').map(s => s.trim()).filter(Boolean);
+    for (let t of targets) {
+      if (!isUnit(t)) continue;
+      // Haboob absorber: redirect Parting Gift to absorber unit in range of dying unit
+      if (ctx.unit) {
+        const absorber = Game.state.units.find(u =>
+          u.health > 0 && u.player === ctx.unit.player && u !== ctx.unit && u !== t
+          && hasFlag(u, 'absorber')
+          && Board.hexDistance(ctx.unit.q, ctx.unit.r, u.q, u.r) <= (u.range || 3)
+        );
+        if (absorber) {
+          t = absorber;
+          if (!absorber._absorbedGifts) absorber._absorbedGifts = 0;
+          absorber._absorbedGifts++;
+          Game.log(`${absorber.name} absorbs Parting Gift (${absorber._absorbedGifts} total)`, absorber.player);
+        }
+      }
+      for (const name of names) {
+        const def = abilityDefs[name];
+        if (!def) { console.warn(`[grantability] Unknown ability: "${name}"`); continue; }
+        if (t.abilities.some(a => a.name === def.name)) continue;
+        t.abilities.push(def);
+        if (hasFlag(t, 'collector')) {
+          t.damage += 1;
+          Game.log(`Collector! ${t.name} gains +1 damage (now ${t.damage})`, t.player);
+        }
+      }
+      Game.log(`${t.name} inherits abilities from ${ctx.unit ? ctx.unit.name : '?'}`, t.player);
+      recalcAuras();
+    }
+  }
+
+  function applyStatMod(targets, value) {
+    const mods = (value || '').split(',').map(s => s.trim()).filter(Boolean);
+    for (const t of targets) {
+      if (!isUnit(t)) continue;
+      for (const mod of mods) {
+        const setMatch = mod.match(/^(\w+)=(.+)$/);
+        const addMatch = mod.match(/^(\w+):(\d+)$/);
+        if (setMatch) {
+          const [, stat, val] = setMatch;
+          const s = stat.toLowerCase();
+          if (s === 'atktype') t.atkType = val;
+          else if (s === 'armor') t.armor = Math.max(t.armor, parseInt(val, 10));
+          else t[stat] = parseInt(val, 10) || t[stat];
+        } else if (addMatch) {
+          const [, stat, val] = addMatch;
+          const n = parseInt(val, 10);
+          const s = stat.toLowerCase();
+          if (s === 'range') t.range += n;
+          else if (s === 'maxhealth') { t.maxHealth += n; t.health = Math.min(t.health + n, t.maxHealth); }
+          else if (s === 'move') t.move += n;
+          else if (s === 'damage') t.damage += n;
+        }
+      }
+    }
+  }
+
+  function applyBonusActivation(targets, ctx) {
+    for (const t of targets) {
+      if (!isUnit(t) || t.activated || t.health <= 0) continue;
+      Game.queueBonusActivation(t);
+      Game.log(`${ctx.unit ? ctx.unit.name : 'Effect'} grants bonus activation to ${t.name}`, t.player);
+    }
+  }
+
+  function applyLastStand(ctx) {
+    const dead = ctx.deadAlly;
+    if (dead && !dead.activated && dead.health <= 0) {
+      dead.health = 1;
+      dead._lastStand = true;
+      dead._lastStandKiller = ctx.killer || null;
+      Game.queueBonusActivation(dead);
+      Game.log(`Last Stand! ${dead.name} gets one final activation!`, dead.player);
+    }
+  }
+
+  function applyReplace(value, ctx) {
+    const rSrc = ctx.unit;
+    if (!rSrc || rSrc.health <= 0) return;
+    const rFaction = value || rSrc.faction;
+    const rTemplates = (typeof Units !== 'undefined' && Units.catalog[rFaction]) || [];
+    const rDeployed = new Set(
+      Game.state.units.filter(u => u.player === rSrc.player).map(u => u.name)
+    );
+    const rAvailable = rTemplates.filter(t => !rDeployed.has(t.name));
+    if (rAvailable.length === 0) {
+      Game.log(`No replacement units available for ${rSrc.name}`, rSrc.player);
+      return;
+    }
+    Game.state.pendingReplacement = {
+      unit: rSrc, player: rSrc.player, q: rSrc.q, r: rSrc.r, available: rAvailable,
+    };
+    Game.log(`Hymn of Creation! ${rSrc.name} begins transformation!`, rSrc.player);
   }
 
   // ── Helper: find nearest terrain hex by element ──
@@ -1319,30 +1367,22 @@ const Abilities = (() => {
   /** Get the total passive stat modifier for a unit. */
   function getPassiveMod(unit, stat) {
     let mod = 0;
-    if (!unit || !unit.abilities) return mod;
-    for (const ab of unit.abilities) {
-      for (const ruleId of ab.ruleIds) {
-        const rule = atomicRules[ruleId];
-        if (!rule || rule.type !== 'passive') continue;
-        if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit })) continue;
-        for (const eff of rule.effects) {
-          if (!eff.effect) continue;
-          const effLower = eff.effect.toLowerCase();
-          if (effLower === stat) {
-            mod += int(eff.value);
-          } else if (effLower === 'resourcemod' && eff.value) {
-            // Value: "type:stat:perUnit" e.g. "mana:armor:1"
-            const parts = eff.value.split(':').map(s => s.trim());
-            if (parts.length >= 3 && parts[1].toLowerCase() === stat) {
-              const resType = parts[0].toLowerCase();
-              const perUnit = parseInt(parts[2], 10) || 1;
-              const count = (unit.resources && unit.resources[resType]) || 0;
-              mod += count * perUnit;
-            }
-          }
+    forEachEffect(unit, { type: 'passive', checkCondition: { unit } }, (eff) => {
+      const effLower = eff.effect.toLowerCase();
+      if (effLower === stat) {
+        mod += int(eff.value);
+      } else if (effLower === 'resourcemod' && eff.value) {
+        // Value: "type:stat:perUnit" e.g. "mana:armor:1"
+        const parts = eff.value.split(':').map(s => s.trim());
+        if (parts.length >= 3 && parts[1].toLowerCase() === stat) {
+          const resType = parts[0].toLowerCase();
+          const perUnit = parseInt(parts[2], 10) || 1;
+          const count = (unit.resources && unit.resources[resType]) || 0;
+          mod += count * perUnit;
         }
       }
-    }
+      // return undefined to continue accumulating
+    });
     return mod;
   }
 
@@ -1353,34 +1393,20 @@ const Abilities = (() => {
     // Check conditions (temporary flags like Glider's MoveIntoEnemies)
     if (unit.conditions && Game.hasCondition(unit, flag)) return true;
     // Check passive rules (permanent flags like Impactful's MoveIntoEnemies)
-    if (!unit.abilities) return false;
-    for (const ab of unit.abilities) {
-      for (const ruleId of ab.ruleIds) {
-        const rule = atomicRules[ruleId];
-        if (!rule || rule.type !== 'passive') continue;
-        for (const eff of rule.effects) {
-          if (eff.effect && eff.effect.toLowerCase() === flag.toLowerCase()) return true;
-        }
-      }
-    }
-    return false;
+    const fl = flag.toLowerCase();
+    return forEachEffect(unit, { type: 'passive' }, (eff) => {
+      if (eff.effect.toLowerCase() === fl) return true;
+    }) || false;
   }
 
   /** Check if a unit has a passive flag from abilities only (NOT conditions).
    *  Use this to distinguish innate flags (Impactful's moveintoenemies)
    *  from condition-granted flags (Glider's moveintoenemies). */
   function hasFlagPassive(unit, flag) {
-    if (!unit || !unit.abilities) return false;
-    for (const ab of unit.abilities) {
-      for (const ruleId of ab.ruleIds) {
-        const rule = atomicRules[ruleId];
-        if (!rule || rule.type !== 'passive') continue;
-        for (const eff of rule.effects) {
-          if (eff.effect && eff.effect.toLowerCase() === flag.toLowerCase()) return true;
-        }
-      }
-    }
-    return false;
+    const fl = flag.toLowerCase();
+    return forEachEffect(unit, { type: 'passive' }, (eff) => {
+      if (eff.effect.toLowerCase() === fl) return true;
+    }) || false;
   }
 
   // ── Miss Check ─────────────────────────────────────────────
@@ -1588,19 +1614,12 @@ const Abilities = (() => {
 
   /** Get all tags on a unit from passive 'tag' effects. */
   function getUnitTags(unit) {
-    if (!unit || !unit.abilities) return [];
     const tags = [];
-    for (const ab of unit.abilities) {
-      for (const ruleId of ab.ruleIds) {
-        const rule = atomicRules[ruleId];
-        if (!rule || rule.type !== 'passive') continue;
-        for (const eff of rule.effects) {
-          if (eff.effect && eff.effect.toLowerCase() === 'tag' && eff.value) {
-            tags.push(...eff.value.toLowerCase().split(',').map(t => t.trim()).filter(Boolean));
-          }
-        }
+    forEachEffect(unit, { type: 'passive' }, (eff) => {
+      if (eff.effect.toLowerCase() === 'tag' && eff.value) {
+        tags.push(...eff.value.toLowerCase().split(',').map(t => t.trim()).filter(Boolean));
       }
-    }
+    });
     return tags;
   }
 
@@ -1608,21 +1627,13 @@ const Abilities = (() => {
 
   /** Collect all comma-separated values from a passive effect by name. */
   function getPassiveList(unit, effectName) {
-    if (!unit || !unit.abilities) return [];
     const lower = effectName.toLowerCase();
     const items = [];
-    for (const ab of unit.abilities) {
-      for (const ruleId of ab.ruleIds) {
-        const rule = atomicRules[ruleId];
-        if (!rule || rule.type !== 'passive') continue;
-        if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit })) continue;
-        for (const eff of rule.effects) {
-          if (eff.effect && eff.effect.toLowerCase() === lower && eff.value) {
-            items.push(...eff.value.toLowerCase().split(',').map(s => s.trim()));
-          }
-        }
+    forEachEffect(unit, { type: 'passive', checkCondition: { unit } }, (eff) => {
+      if (eff.effect.toLowerCase() === lower && eff.value) {
+        items.push(...eff.value.toLowerCase().split(',').map(s => s.trim()));
       }
-    }
+    });
     return items;
   }
 
@@ -1632,21 +1643,14 @@ const Abilities = (() => {
   function getReduceDamageCap(unit) {
     if (!unit || !unit.abilities) return Infinity;
     let cap = Infinity;
-    for (const ab of unit.abilities) {
-      if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
-      for (const ruleId of ab.ruleIds) {
-        const rule = atomicRules[ruleId];
-        if (!rule) continue;
-        if (rule.type !== 'passive' && rule.type !== 'whenAttacked') continue;
-        if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit })) continue;
-        for (const eff of rule.effects) {
-          if (eff.effect && eff.effect.toLowerCase() === 'reducedamageto') {
-            const v = parseInt(eff.value, 10);
-            if (!isNaN(v) && v < cap) cap = v;
-          }
-        }
+    // Check both passive and whenAttacked rules — need null type filter with manual type check
+    forEachEffect(unit, { skipUsed: true, checkCondition: { unit } }, (eff, rule) => {
+      if (rule.type !== 'passive' && rule.type !== 'whenAttacked') return;
+      if (eff.effect.toLowerCase() === 'reducedamageto') {
+        const v = parseInt(eff.value, 10);
+        if (!isNaN(v) && v < cap) cap = v;
       }
-    }
+    });
     return cap;
   }
 
@@ -1659,20 +1663,14 @@ const Abilities = (() => {
     if (!unit || !unit.abilities) return 1;
     const rtLower = resourceType.toLowerCase();
     let max = 1;
-    for (const ab of unit.abilities) {
-      for (const ruleId of ab.ruleIds) {
-        const rule = atomicRules[ruleId];
-        if (!rule || rule.type !== 'passive') continue;
-        for (const eff of rule.effects) {
-          if (eff.effect && eff.effect.toLowerCase() === 'maxresource' && eff.value) {
-            const parts = eff.value.split(':').map(s => s.trim());
-            if (parts[0].toLowerCase() === rtLower && parts.length >= 2) {
-              max = Math.max(max, parseInt(parts[1], 10) || 1);
-            }
-          }
+    forEachEffect(unit, { type: 'passive' }, (eff) => {
+      if (eff.effect.toLowerCase() === 'maxresource' && eff.value) {
+        const parts = eff.value.split(':').map(s => s.trim());
+        if (parts[0].toLowerCase() === rtLower && parts.length >= 2) {
+          max = Math.max(max, parseInt(parts[1], 10) || 1);
         }
       }
-    }
+    });
     return max;
   }
 
@@ -1686,23 +1684,16 @@ const Abilities = (() => {
    *  Returns { type: maxValue } map. */
   function getPassiveResourceDefs(unit) {
     const result = {};
-    if (!unit || !unit.abilities) return result;
-    for (const ab of unit.abilities) {
-      for (const ruleId of ab.ruleIds) {
-        const rule = atomicRules[ruleId];
-        if (!rule || rule.type !== 'passive') continue;
-        for (const eff of rule.effects) {
-          if (eff.effect && eff.effect.toLowerCase() === 'maxresource' && eff.value) {
-            const parts = eff.value.split(':').map(s => s.trim());
-            if (parts.length >= 2) {
-              const type = parts[0].toLowerCase();
-              const m = parseInt(parts[1], 10) || 1;
-              result[type] = Math.max(result[type] || 0, m);
-            }
-          }
+    forEachEffect(unit, { type: 'passive' }, (eff) => {
+      if (eff.effect.toLowerCase() === 'maxresource' && eff.value) {
+        const parts = eff.value.split(':').map(s => s.trim());
+        if (parts.length >= 2) {
+          const type = parts[0].toLowerCase();
+          const m = parseInt(parts[1], 10) || 1;
+          result[type] = Math.max(result[type] || 0, m);
         }
       }
-    }
+    });
     return result;
   }
 
@@ -1860,27 +1851,18 @@ const Abilities = (() => {
   function hasOnAttackRules(unit) {
     if (!unit || !unit.abilities) return false;
     if (Game.hasCondition(unit, 'silenced')) return false;
-    for (const ab of unit.abilities) {
-      if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
-      if (ab.ruleIds.some(id => atomicRules[id]?.type === 'onAttack')) return true;
-    }
-    return false;
+    return forEachRule(unit, { type: 'onAttack', skipUsed: true }, () => true) || false;
   }
 
   /** Get valid toss sources (adjacent allies + qualifying terrain). */
   function getTossSourceHexes(unit) {
     const sources = new Map();
-    if (!unit || !unit.abilities) return sources;
-    for (const ab of unit.abilities) {
-      for (const ruleId of ab.ruleIds) {
-        const rule = atomicRules[ruleId];
-        if (!rule || rule.type !== 'onAttack') continue;
-        const targets = resolveTargets(rule.target, { unit }, rule);
-        for (const t of targets) {
-          sources.set(`${t.q},${t.r}`, t);
-        }
+    forEachRule(unit, { type: 'onAttack' }, (rule) => {
+      const targets = resolveTargets(rule.target, { unit }, rule);
+      for (const t of targets) {
+        sources.set(`${t.q},${t.r}`, t);
       }
-    }
+    });
     return sources;
   }
 
@@ -1899,38 +1881,21 @@ const Abilities = (() => {
 
   /** Read bonus damage value from onAttack rule effects. */
   function getOnAttackBonusDamage(unit) {
-    if (!unit || !unit.abilities) return 0;
-    for (const ab of unit.abilities) {
-      for (const ruleId of ab.ruleIds) {
-        const rule = atomicRules[ruleId];
-        if (!rule || rule.type !== 'onAttack') continue;
-        for (const eff of rule.effects) {
-          if (eff.effect && eff.effect.toLowerCase() === 'bonusdamage') return int(eff.value);
-        }
-      }
-    }
-    return 0;
+    return forEachEffect(unit, { type: 'onAttack' }, (eff) => {
+      if (eff.effect.toLowerCase() === 'bonusdamage') return int(eff.value);
+    }) || 0;
   }
 
   /** Predict total bonus damage from hit rules whose conditions currently pass.
    *  Used by getAttackTargets() for damage preview on reticles. */
   function getHitBonusDamage(unit, target) {
-    if (!unit || !unit.abilities) return 0;
     let total = 0;
     const ctx = { unit, target };
-    for (const ab of unit.abilities) {
-      for (const ruleId of ab.ruleIds) {
-        const rule = atomicRules[ruleId];
-        if (!rule || rule.type !== 'hit') continue;
-        if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, ctx)) continue;
-        for (const eff of rule.effects) {
-          const effLower = (eff.effect || '').toLowerCase();
-          if (effLower === 'bonusdamage') {
-            total += resolveValue(eff.value, ctx);
-          }
-        }
+    forEachEffect(unit, { type: 'hit', checkCondition: ctx }, (eff) => {
+      if (eff.effect.toLowerCase() === 'bonusdamage') {
+        total += resolveValue(eff.value, ctx);
       }
-    }
+    });
     return total;
   }
 
@@ -1940,31 +1905,20 @@ const Abilities = (() => {
   function hasAfterMoveRules(unit) {
     if (!unit || !unit.abilities) return false;
     if (Game.hasCondition(unit, 'silenced')) return false;
-    for (const ab of unit.abilities) {
-      if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
-      if (ab.ruleIds.some(id => atomicRules[id]?.type === 'afterMove')) return true;
-    }
-    return false;
+    return forEachRule(unit, { type: 'afterMove', skipUsed: true }, () => true) || false;
   }
 
   /** Get afterMove ability data: replacement terrain options + ability name. */
   function getAfterMoveData(unit) {
-    if (!unit || !unit.abilities) return null;
-    for (const ab of unit.abilities) {
-      if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
-      for (const ruleId of ab.ruleIds) {
-        const rule = atomicRules[ruleId];
-        if (!rule || rule.type !== 'afterMove') continue;
-        const terrainOptions = [];
-        for (const eff of rule.effects) {
-          if (eff.effect && eff.effect.toLowerCase() === 'replaceterrain' && eff.value) {
-            terrainOptions.push(...eff.value.toLowerCase().split(',').map(s => s.trim()));
-          }
+    return forEachRule(unit, { type: 'afterMove', skipUsed: true }, (rule, ruleId, ab) => {
+      const terrainOptions = [];
+      for (const eff of rule.effects) {
+        if (eff.effect && eff.effect.toLowerCase() === 'replaceterrain' && eff.value) {
+          terrainOptions.push(...eff.value.toLowerCase().split(',').map(s => s.trim()));
         }
-        return { abilityName: ab.name, terrainOptions, oncePerGame: ab.oncePerGame };
       }
-    }
-    return null;
+      return { abilityName: ab.name, terrainOptions, oncePerGame: ab.oncePerGame };
+    }) || null;
   }
 
   /** Mark an ability as used (for once-per-game tracking outside dispatch). */
@@ -1978,24 +1932,15 @@ const Abilities = (() => {
     const result = [];
     if (!unit || !unit.abilities) return result;
     if (Game.hasCondition(unit, 'silenced')) return result;
-    for (const ab of unit.abilities) {
-      if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
-      for (const ruleId of ab.ruleIds) {
-        const rule = atomicRules[ruleId];
-        if (!rule || rule.type !== 'afterMove') continue;
-        // Check rule condition (e.g. resource gate)
-        if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit })) continue;
-        for (const eff of rule.effects) {
-          const lower = (eff.effect || '').toLowerCase();
-          if (lower === 'teleportally') {
-            result.push({ abilityName: ab.name, oncePerGame: ab.oncePerGame, effectType: 'teleportally', ruleId });
-          } else if (lower === 'teleportterrain') {
-            const allowed = (eff.value || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
-            result.push({ abilityName: ab.name, oncePerGame: ab.oncePerGame, effectType: 'teleportterrain', allowedTypes: allowed, ruleId });
-          }
-        }
+    forEachEffect(unit, { type: 'afterMove', skipUsed: true, checkCondition: { unit } }, (eff, rule, ruleId, ab) => {
+      const lower = eff.effect.toLowerCase();
+      if (lower === 'teleportally') {
+        result.push({ abilityName: ab.name, oncePerGame: ab.oncePerGame, effectType: 'teleportally', ruleId });
+      } else if (lower === 'teleportterrain') {
+        const allowed = (eff.value || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
+        result.push({ abilityName: ab.name, oncePerGame: ab.oncePerGame, effectType: 'teleportterrain', allowedTypes: allowed, ruleId });
       }
-    }
+    });
     return result;
   }
 
@@ -2005,20 +1950,23 @@ const Abilities = (() => {
   function getActions(unit) {
     if (!unit || !unit.abilities) return [];
     const actions = [];
+    // Needs per-ability grouping (action rule count determines labels), so direct iteration
     for (const ab of unit.abilities) {
-      const actionRules = ab.ruleIds.map(id => atomicRules[id]).filter(r => r && r.type === 'action');
-      if (actionRules.length === 0) continue;
-      for (const actionRule of actionRules) {
+      const abRules = [];
+      for (const ruleId of ab.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (rule && rule.type === 'action') abRules.push(rule);
+      }
+      if (abRules.length === 0) continue;
+      for (const actionRule of abRules) {
         const cost = (actionRule.action || '').toLowerCase();
         if (cost.includes(',')) {
-          // Dual-cost action: emit two entries with different actionCost
           const costs = cost.split(',').map(c => c.trim());
           for (const c of costs) {
             actions.push({ ...ab, actionCost: c, displayName: `${ab.name} (${c})`, actionRuleId: actionRule.ruleName });
           }
         } else {
-          // Multiple action rules on one ability → show cost in label
-          const needsLabel = actionRules.length > 1 && cost;
+          const needsLabel = abRules.length > 1 && cost;
           actions.push({
             ...ab, actionCost: cost || null, actionRuleId: actionRule.ruleName,
             displayName: needsLabel ? `${ab.name} (${cost})` : undefined,

@@ -199,42 +199,91 @@ const UI = (() => {
     };
   }
 
+  // ── Unified Targeting State ──────────────────────────────────
+  // All targeting modes consolidated into one object.
+  // Each property is null (inactive) or an object/true (active).
+  const targeting = {
+    ability: null,       // { abilityName, unit, validTargets, actionCost, targetList? }
+    relocate: null,      // { unit, range, reachable, parentMap, abilityName, actionCost, sourceUnit }
+    endAct: null,        // { targets: [{ type, key, q, r, unit }] }
+    toss: null,          // { phase: 1|2, unit, targetQ, targetR, sources, destinations, tossSource, bonusDamage }
+    level: null,         // { phase: 1|2, unit, terrainHexes, data, selectedHex }
+    zoom: null,          // { unit, validTargets: Set }
+    pushMove: null,      // { targetQ, targetR, enemy, path, pathCost, pushDestinations: Set }
+    falconGust: null,    // { phase, validHexes: Map, selectedAlly }
+    gustPush: null,      // { phase, enemies, selectedEnemy, pushDests }
+    deployTrap: null,    // { validHexes: Map }
+    deployTerrain: null, // { validHexes: Map }
+    clockToys: null,     // { validHexes: Map, costType: 'move'|'attack' }
+    woundUp: null,       // { trapIndex, validHexes: Map, currentTrap }
+    guardian: null,       // { validHexes: Map }
+    delayed: false,      // boolean
+    hotSuit: false,      // boolean
+    teleport: null,      // { phase: 1|2, unit, sources, data, selectedSource, remaining }
+    effect: null,        // { validHexes: Set, effect: object }
+    replacement: false,  // boolean
+  };
+
   function resetUiState() {
     uiState = freshUiState();
-    abilityTargeting = null;
-    relocateTargeting = null;
-    effectTargeting = null;
-    endActTargeting = null;
-    tossTargeting = null;
-    teleportTargeting = null;
-    pushMoveTargeting = null;
-    zoomTargeting = null;
-    falconGustTargeting = null;
-    gustPushTargeting = null;
-    deployTrapTargeting = null;
-    clockToysTargeting = null;
-    woundUpTargeting = null;
-    guardianTargeting = null;
-    replacementTargeting = false;
-    hotSuitTargeting = false;
-    delayedTargeting = false;
+    for (const key of Object.keys(targeting)) {
+      targeting[key] = typeof targeting[key] === 'boolean' ? false : null;
+    }
     hideLevelChoiceOverlay();
-    levelTargeting = null;
     if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
   }
-
-  // ── Ability Targeting Mode ──────────────────────────────────
-  let abilityTargeting = null;  // { abilityName, unit, validTargets, actionCost, targetList? }
-  let relocateTargeting = null; // { unit, range, reachable, parentMap, abilityName, actionCost, sourceUnit }
-  let endActTargeting = null;   // { targets: [{ type, key, q, r, unit }] }
 
   function enterAbilityTargeting(abilityName, unit, targeting, actionCost, actionRuleId) {
     if (targeting.validTargets) {
       // ── Tag-based targeting path ──
       const targets = Abilities.computeActionTargets(unit, targeting);
-      console.log('[abilityTargeting] tag-based:', abilityName, 'targets found:', targets.length, targets);
+      console.log('[targeting.ability] tag-based:', abilityName, 'targets found:', targets.length, targets);
       if (targets.length === 0) {
         // No valid targets — don't enter targeting mode
+        return;
+      }
+      // Auto-execute if the only valid target is self (no click needed)
+      if (targets.length === 1 && targets[0].type === 'unit' && targets[0].unit === unit) {
+        const act = Game.state.activationState;
+        const s = Game.state;
+        // Snapshot all living units for undo (uses snapshotUnit-compatible format)
+        const healthBefore = s.units
+          .filter(u => u.health > 0)
+          .map(u => ({ unit: u, q: u.q, r: u.r, health: u.health,
+            conditions: u.conditions.map(c => ({ ...c })),
+            resources: u.resources ? JSON.parse(JSON.stringify(u.resources)) : undefined }));
+        // Execute
+        if (typeof Abilities !== 'undefined') {
+          Abilities.executeAction(abilityName, { unit, target: unit, targetQ: unit.q, targetR: unit.r }, actionRuleId);
+        }
+        // Action cost
+        if (act && actionCost) {
+          if (actionCost === 'move') act.moved = true;
+          else if (actionCost === 'attack') act.attacked = true;
+        }
+        Game.log(`${unit.name} uses ${abilityName}${actionCost ? ' (uses ' + actionCost + ')' : ''}`, unit.player);
+        // Undo history (include condition changes for self-buff abilities)
+        const healthSnapshots = healthBefore.filter(snap =>
+          snap.unit.health !== snap.health || snap.unit.q !== snap.q || snap.unit.r !== snap.r
+          || snap.unit.conditions.length !== snap.conditions.length);
+        const abDef = typeof Abilities !== 'undefined' ? Abilities.getActions(unit).find(a => a.name === abilityName) : null;
+        s.actionHistory.push({
+          type: 'ability', abilityName, actionCost,
+          oncePerGame: abDef ? abDef.oncePerGame : false,
+          oncePerRound: abDef ? abDef.oncePerRound : false,
+          unitRef: unit, healthSnapshots,
+          prevResources: JSON.parse(JSON.stringify(unit.resources || {})),
+        });
+        // Pending effects / auto-end
+        if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+          enterEffectTargeting();
+        } else if (act && act.moved && act.attacked && !s.rules.confirmEndTurn) {
+          tryEndActivation();
+        } else {
+          showActivationHighlights();
+          showPhase();
+          render();
+        }
         return;
       }
       const valid = new Set();
@@ -253,7 +302,7 @@ const UI = (() => {
           highlights.set(t.key, 1);
         }
       }
-      abilityTargeting = {
+      targeting.ability = {
         abilityName, unit, validTargets: valid,
         actionCost: actionCost || null, actionRuleId: actionRuleId || null,
         targetList: targets,  // full target data for click resolution
@@ -283,7 +332,7 @@ const UI = (() => {
       const dmg = rawDmg > 0 ? Math.max(1, rawDmg - arm) : null;
       atkTargets.set(key, { damage: dmg });
     }
-    abilityTargeting = { abilityName, unit, validTargets: valid, actionCost: actionCost || null, actionRuleId: actionRuleId || null };
+    targeting.ability = { abilityName, unit, validTargets: valid, actionCost: actionCost || null, actionRuleId: actionRuleId || null };
     // Show red attack reticles (same as normal attacks)
     uiState.highlights = null;
     uiState.highlightColor = null;
@@ -300,11 +349,11 @@ const UI = (() => {
       finishRelocate(abilityName, actionCost, sourceUnit);
       return;
     }
-    relocateTargeting = {
+    targeting.relocate = {
       unit: targetUnit, range, reachable, parentMap,
       abilityName, actionCost, sourceUnit, oncePerRound: false,
     };
-    abilityTargeting = null; // clear primary targeting
+    targeting.ability = null; // clear primary targeting
     uiState.highlights = reachable;
     uiState.highlightColor = 'rgba(255, 255, 0, 0.35)';
     uiState.highlightStyle = 'dots';
@@ -398,7 +447,7 @@ const UI = (() => {
     uiState.highlights = highlights;
     uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
     uiState.selectedUnit = act.unit;
-    endActTargeting = { targets };
+    targeting.endAct = { targets };
     showPhase();
     render();
   }
@@ -435,7 +484,7 @@ const UI = (() => {
       if (actionCost === 'move') act.moved = true;
       else if (actionCost === 'attack') act.attacked = true;
     }
-    relocateTargeting = null;
+    targeting.relocate = null;
     if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
 
     // Deferred end-of-activation relocate (no actionCost): finish the turn
@@ -460,10 +509,10 @@ const UI = (() => {
   }
 
   function cancelAbilityTargeting() {
-    const wasEndOfAct = relocateTargeting && !relocateTargeting.actionCost;
-    abilityTargeting = null;
-    relocateTargeting = null;
-    endActTargeting = null;
+    const wasEndOfAct = targeting.relocate && !targeting.relocate.actionCost;
+    targeting.ability = null;
+    targeting.relocate = null;
+    targeting.endAct = null;
     if (typeof Abilities !== 'undefined') { Abilities.clearEffectQueue(); Abilities.clearPendingEndAct(); }
     // If cancelling a deferred end-of-activation effect, finish the turn
     const act = Game.state.activationState;
@@ -479,47 +528,12 @@ const UI = (() => {
     render();
   }
 
-  // ── Toss Targeting Mode (pre-attack: pick source, then destination) ──
-  let tossTargeting = null;
-  // { phase: 1|2, unit, targetQ, targetR, sources: Map, destinations: Set,
-  //   tossSource: object|null, bonusDamage: number }
-
-  // ── Level Targeting Mode (post-move: pick terrain hex, then replacement) ──
-  let levelTargeting = null;
-  // { phase: 1|2, unit, terrainHexes: [{q,r,surface}], data: object,
-  //   selectedHex: {q,r,surface}|null }
-
-  // ── Zoom Targeting Mode (RoCo: pick hex on straight line to zoom to) ──
-  let zoomTargeting = null;
-  // { unit, validTargets: Set of hex keys }
-
-  // ── Push-Move Targeting Mode (Impactful: right-click enemy → pick push direction) ──
-  let pushMoveTargeting = null;
-  let falconGustTargeting = null; // { phase, validHexes: Map, selectedAlly }
-  // { targetQ, targetR, enemy, path, pathCost, pushDestinations: Set }
-
-  // ── Deploy Trap Targeting Mode (place traps after Clockwerk deploys) ──
-  let deployTrapTargeting = null; // { validHexes: Map }
-
-  // ── Deploy Terrain Targeting Mode (place terrain after Sand Elemental deploys) ──
-  let deployTerrainTargeting = null; // { validHexes: Map }
-
-  // ── Clock Toys Targeting Mode (place trap via action ability) ──
-  let clockToysTargeting = null; // { validHexes: Map, costType: 'move'|'attack' }
-
-  // ── Wound Up Targeting Mode (move traps on activation) ──
-  let woundUpTargeting = null; // { trapIndex, validHexes: Map, currentTrap: {q,r} }
-
-  // ── Guardian Targeting Mode (pick ally to guard) ──
-  let guardianTargeting = null; // { validHexes: Map }
-
-  // ── Delayed Targeting Mode (space-targeting attack for delayed effect) ──
-  let delayedTargeting = false;
+  // ── Targeting Mode Enter Functions ──────────────────────────
 
   function enterDelayedTargeting() {
     const act = Game.state.activationState;
     if (!act || act.attacked) return;
-    delayedTargeting = true;
+    targeting.delayed = true;
     const targets = Game.getDelayedTargetHexes();
     uiState.highlights = null;
     uiState.highlightColor = null;
@@ -531,26 +545,13 @@ const UI = (() => {
   }
 
   function cancelDelayedTargeting() {
-    delayedTargeting = false;
+    targeting.delayed = false;
     showActivationHighlights();
     showPhase();
     render();
   }
 
-  // ── Hot Suit Targeting Mode (post-attack: redirect burning damage) ──
-  let hotSuitTargeting = false;
-
-  // ── AfterMove Teleport Targeting (unified Toter/FlareUp: pick source, then destination) ──
-  let teleportTargeting = null;
-  // { phase: 1|2, unit, sources: [{q,r,type:'ally'|'terrain',ref:unit|{surface}}],
-  //   data: {abilityName, oncePerGame, effectType, allowedTypes?},
-  //   selectedSource: object|null, remaining: [data...] }
-
-  // ── Effect Targeting Mode (interactive push/pull/move) ────────
-  let effectTargeting = null;  // { validHexes: Set<"q,r">, effect: object }
-
-  // ── Replacement Choice Mode (Hymn of Potential) ──────────────
-  let replacementTargeting = false;
+  // ── Effect/Post-Attack/Teleport Targeting Enter Functions ──
 
   function enterEffectTargeting() {
     const eff = typeof Abilities !== 'undefined' ? Abilities.peekEffect() : null;
@@ -574,7 +575,7 @@ const UI = (() => {
       return;
     }
 
-    effectTargeting = { validHexes, effect: eff };
+    targeting.effect = { validHexes, effect: eff };
 
     // Show highlights on valid destination hexes (cyan for ride/stay, orange for push/pull/move)
     uiState.highlights = new Map([...validHexes].map(k => [k, 1]));
@@ -596,7 +597,7 @@ const UI = (() => {
     const data = Abilities.getAfterMoveData(act.unit);
     if (!data || data.terrainOptions.length === 0) return false;
 
-    levelTargeting = {
+    targeting.level = {
       phase: 1, unit: act.unit,
       terrainHexes: act.terrainHexesLeft,
       data, selectedHex: null,
@@ -655,7 +656,7 @@ const UI = (() => {
       const data = remaining.shift();
       const sources = getTeleportSources(unit, data);
       if (sources.length > 0) {
-        teleportTargeting = { phase: 1, unit, sources, data, selectedSource: null, remaining };
+        targeting.teleport = { phase: 1, unit, sources, data, selectedSource: null, remaining };
         uiState.highlights = new Map(sources.map(s => [`${s.q},${s.r}`, 1]));
         uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
         uiState.attackTargets = null;
@@ -687,7 +688,7 @@ const UI = (() => {
       Game.skipBurningRedirect();
       return false;
     }
-    hotSuitTargeting = true;
+    targeting.hotSuit = true;
     uiState.highlights = new Map([...targets.keys()].map(k => [k, 1]));
     uiState.highlightColor = 'rgba(255, 100, 0, 0.4)';
     uiState.attackTargets = null;
@@ -698,7 +699,7 @@ const UI = (() => {
 
   /** Finish post-attack flow after burning redirect resolved. */
   function finishPostAttack() {
-    hotSuitTargeting = false;
+    targeting.hotSuit = false;
     const act = Game.state.activationState;
     if (!act) {
       resetUiState();
@@ -794,7 +795,7 @@ const UI = (() => {
     if (allies.size === 0 && cinderHexes.size === 0) {
       Game.skipFalconGust();
       netSend({ type: 'falconGust', action: 'skip' });
-      falconGustTargeting = null;
+      targeting.falconGust = null;
       showActivationHighlights();
       showPhase();
       render();
@@ -805,7 +806,7 @@ const UI = (() => {
     for (const k of allies.keys()) allValid.set(k, 1);
     for (const k of cinderHexes.keys()) allValid.set(k, 1);
 
-    falconGustTargeting = {
+    targeting.falconGust = {
       phase: 'combined',
       validHexes: allValid,
       allyMap: allies,
@@ -823,8 +824,6 @@ const UI = (() => {
   }
 
   // ── Gust Push targeting (action ability, costs move) ──────
-  let gustPushTargeting = null;
-  // { phase: 'select'|'pushDest'|'cinderPlace', enemies, cinderHexes, selectedEnemy, pushDests }
 
   function enterGustPushTargeting() {
     const act = Game.state.activationState;
@@ -839,7 +838,7 @@ const UI = (() => {
     for (const k of enemies.keys()) allValid.set(k, 1);
     for (const k of cinderHexes.keys()) allValid.set(k, 1);
 
-    gustPushTargeting = {
+    targeting.gustPush = {
       phase: 'select',
       enemies,
       cinderHexes,
@@ -860,8 +859,8 @@ const UI = (() => {
   /** Show clickable terrain choice icons at the selected Level hex. */
   function showLevelChoiceOverlay() {
     hideLevelChoiceOverlay();
-    if (!levelTargeting || !levelTargeting.selectedHex) return;
-    const hex = Board.getHex(levelTargeting.selectedHex.q, levelTargeting.selectedHex.r);
+    if (!targeting.level || !targeting.level.selectedHex) return;
+    const hex = Board.getHex(targeting.level.selectedHex.q, targeting.level.selectedHex.r);
     if (!hex) return;
 
     const container = document.getElementById('unit-tokens');
@@ -873,7 +872,7 @@ const UI = (() => {
     overlay.style.left = (hex.x * zoom + Board.panX) + 'px';
     overlay.style.top = (hex.y * zoom + Board.panY) + 'px';
 
-    for (const surface of levelTargeting.data.terrainOptions) {
+    for (const surface of targeting.level.data.terrainOptions) {
       const color = Board.SURFACE_COLORS[surface] || '#999';
       const btn = document.createElement('div');
       btn.textContent = surface.charAt(0).toUpperCase() + surface.slice(1);
@@ -888,45 +887,45 @@ const UI = (() => {
     }
 
     container.appendChild(overlay);
-    levelTargeting.overlayEl = overlay;
+    targeting.level.overlayEl = overlay;
   }
 
   function hideLevelChoiceOverlay() {
-    if (levelTargeting && levelTargeting.overlayEl) {
-      levelTargeting.overlayEl.remove();
-      levelTargeting.overlayEl = null;
+    if (targeting.level && targeting.level.overlayEl) {
+      targeting.level.overlayEl.remove();
+      targeting.level.overlayEl = null;
     }
     document.querySelectorAll('.level-choice-overlay').forEach(el => el.remove());
   }
 
   /** Re-position Level choice overlay on zoom/pan. */
   function updateLevelOverlayPosition() {
-    if (!levelTargeting || !levelTargeting.overlayEl || !levelTargeting.selectedHex) return;
-    const hex = Board.getHex(levelTargeting.selectedHex.q, levelTargeting.selectedHex.r);
+    if (!targeting.level || !targeting.level.overlayEl || !targeting.level.selectedHex) return;
+    const hex = Board.getHex(targeting.level.selectedHex.q, targeting.level.selectedHex.r);
     if (!hex) return;
     const zoom = Board.zoomLevel;
-    levelTargeting.overlayEl.style.left = (hex.x * zoom + Board.panX) + 'px';
-    levelTargeting.overlayEl.style.top = (hex.y * zoom + Board.panY) + 'px';
+    targeting.level.overlayEl.style.left = (hex.x * zoom + Board.panX) + 'px';
+    targeting.level.overlayEl.style.top = (hex.y * zoom + Board.panY) + 'px';
   }
 
   /** Execute the Level terrain replacement from overlay click or keyboard. */
   function executeLevelChoice(newSurface) {
-    if (!levelTargeting) return;
-    const sh = levelTargeting.selectedHex;
-    const abilityName = levelTargeting.data.abilityName;
-    Game.executeLevel(levelTargeting.unit, sh.q, sh.r, newSurface, abilityName);
-    if (levelTargeting.data.oncePerGame) {
-      Abilities.markAbilityUsed(levelTargeting.unit, abilityName);
+    if (!targeting.level) return;
+    const sh = targeting.level.selectedHex;
+    const abilityName = targeting.level.data.abilityName;
+    Game.executeLevel(targeting.level.unit, sh.q, sh.r, newSurface, abilityName);
+    if (targeting.level.data.oncePerGame) {
+      Abilities.markAbilityUsed(targeting.level.unit, abilityName);
     }
     netSend({ type: 'executeLevel', hexQ: sh.q, hexR: sh.r, newSurface, abilityName });
     hideLevelChoiceOverlay();
-    levelTargeting = null;
+    targeting.level = null;
     if (checkAfterMoveTeleport()) return;
     finishPostMove();
   }
 
   function finishEffectQueue() {
-    effectTargeting = null;
+    targeting.effect = null;
     if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
 
     // After effects resolve, check for burning redirect (Hot Suit)
@@ -956,7 +955,7 @@ const UI = (() => {
   function enterReplacementChoice() {
     const pr = Game.state.pendingReplacement;
     if (!pr) return;
-    replacementTargeting = true;
+    targeting.replacement = true;
 
     const panel = document.getElementById('panel-round');
     panel.classList.remove('hidden');
@@ -1363,77 +1362,77 @@ const UI = (() => {
     let text = '';
 
     // Auto-enter guardian targeting mode when pendingGuardian is set
-    if (s.pendingGuardian && !guardianTargeting) {
+    if (s.pendingGuardian && !targeting.guardian) {
       enterGuardianTargeting();
     }
 
     if (s.phase === Game.PHASE.BATTLE) {
       // Relocate targeting messages
-      if (endActTargeting) {
+      if (targeting.endAct) {
         text = 'Select a unit to move (ESC to skip)';
-      } else if (relocateTargeting) {
-        text = `Move ${relocateTargeting.unit.name} to a highlighted hex (ESC to cancel)`;
+      } else if (targeting.relocate) {
+        text = `Move ${targeting.relocate.unit.name} to a highlighted hex (ESC to cancel)`;
       // Tag-based ability targeting messages
-      } else if (abilityTargeting && abilityTargeting.targetList) {
-        text = `${abilityTargeting.abilityName}: select target (ESC to cancel)`;
+      } else if (targeting.ability && targeting.ability.targetList) {
+        text = `${targeting.ability.abilityName}: select target (ESC to cancel)`;
       // Falcon Gust targeting messages
-      } else if (falconGustTargeting) {
-        if (falconGustTargeting.phase === 'combined') {
+      } else if (targeting.falconGust) {
+        if (targeting.falconGust.phase === 'combined') {
           text = 'Falcon Gust: click ally to move or cinder hex to place (ESC to skip)';
-        } else if (falconGustTargeting.phase === 'allyDest') {
-          const name = falconGustTargeting.selectedAlly ? falconGustTargeting.selectedAlly.name : 'ally';
+        } else if (targeting.falconGust.phase === 'allyDest') {
+          const name = targeting.falconGust.selectedAlly ? targeting.falconGust.selectedAlly.name : 'ally';
           text = `Falcon Gust: choose destination for ${name} (ESC to go back)`;
         }
       // Gust Push targeting messages
-      } else if (gustPushTargeting) {
-        if (gustPushTargeting.phase === 'select') {
+      } else if (targeting.gustPush) {
+        if (targeting.gustPush.phase === 'select') {
           text = 'Gust Push: click enemy to push or cinder hex to place (ESC to cancel)';
-        } else if (gustPushTargeting.phase === 'pushDest') {
-          const name = gustPushTargeting.selectedEnemy ? gustPushTargeting.selectedEnemy.name : 'enemy';
+        } else if (targeting.gustPush.phase === 'pushDest') {
+          const name = targeting.gustPush.selectedEnemy ? targeting.gustPush.selectedEnemy.name : 'enemy';
           text = `Gust Push: choose where to push ${name} (ESC to go back)`;
         }
       // Zoom targeting messages
-      } else if (zoomTargeting) {
+      } else if (targeting.zoom) {
         text = 'Zoom: pick destination along a straight line (ESC to cancel)';
       // Push-move targeting messages (Impactful)
-      } else if (pushMoveTargeting) {
-        text = `Push ${pushMoveTargeting.enemy.name} where? (ESC to cancel)`;
+      } else if (targeting.pushMove) {
+        text = `Push ${targeting.pushMove.enemy.name} where? (ESC to cancel)`;
       // Level targeting messages
-      } else if (levelTargeting) {
-        if (levelTargeting.phase === 1) {
+      } else if (targeting.level) {
+        if (targeting.level.phase === 1) {
           text = 'Level: choose terrain to replace (ESC to skip)';
         } else {
           text = 'Click a replacement terrain (ESC to go back)';
         }
       // AfterMove teleport targeting messages
-      } else if (teleportTargeting) {
-        if (teleportTargeting.phase === 1) {
-          const what = teleportTargeting.data.effectType === 'teleportally' ? 'ally' : 'terrain';
-          text = `${teleportTargeting.data.abilityName}: select ${what} to move (ESC to skip)`;
+      } else if (targeting.teleport) {
+        if (targeting.teleport.phase === 1) {
+          const what = targeting.teleport.data.effectType === 'teleportally' ? 'ally' : 'terrain';
+          text = `${targeting.teleport.data.abilityName}: select ${what} to move (ESC to skip)`;
         } else {
-          const name = teleportTargeting.selectedSource.type === 'ally'
-            ? teleportTargeting.selectedSource.ref.name
-            : teleportTargeting.selectedSource.ref.surface;
-          text = `Place ${name} adjacent to ${teleportTargeting.unit.name} (ESC to go back)`;
+          const name = targeting.teleport.selectedSource.type === 'ally'
+            ? targeting.teleport.selectedSource.ref.name
+            : targeting.teleport.selectedSource.ref.surface;
+          text = `Place ${name} adjacent to ${targeting.teleport.unit.name} (ESC to go back)`;
         }
       // Hot Suit targeting messages
-      } else if (hotSuitTargeting) {
+      } else if (targeting.hotSuit) {
         text = 'Redirect burning damage to self or adjacent unit (ESC to skip)';
       // Toss targeting messages
-      } else if (tossTargeting) {
-        if (tossTargeting.phase === 1) {
+      } else if (targeting.toss) {
+        if (targeting.toss.phase === 1) {
           text = 'Toss an adjacent ally or terrain? (ESC to skip)';
         } else {
-          const name = tossTargeting.tossSource.type === 'unit'
-            ? tossTargeting.tossSource.unit.name : tossTargeting.tossSource.surface;
+          const name = targeting.toss.tossSource.type === 'unit'
+            ? targeting.toss.tossSource.unit.name : targeting.toss.tossSource.surface;
           text = `Choose where to toss ${name} (ESC to go back)`;
         }
       // Delayed targeting mode
-      } else if (delayedTargeting) {
+      } else if (targeting.delayed) {
         text = 'Target a space for delayed attack (ESC to cancel)';
       // Effect targeting mode (push/pull/move/ride)
-      } else if (effectTargeting) {
-        const eff = effectTargeting.effect;
+      } else if (targeting.effect) {
+        const eff = targeting.effect.effect;
         if (eff && eff.type === 'terrainRide') {
           text = `P${eff.unit.player} decides: ${eff.unit.name} rides or stays?`;
         } else if (eff && (eff.type === 'push' || eff.type === 'pull')) {
@@ -1446,24 +1445,24 @@ const UI = (() => {
         const act = s.activationState;
         text = act ? `${act.unit.name} activated` : 'Select a unit to activate';
       }
-    } else if (guardianTargeting) {
+    } else if (targeting.guardian) {
       const pg = s.pendingGuardian;
       const entry = pg ? pg.units[pg.currentIndex] : null;
       const name = entry ? entry.unit.name : 'Guardian';
       text = `Guardian: choose ally for ${name} to guard (ESC to skip)`;
-    } else if (deployTerrainTargeting) {
+    } else if (targeting.deployTerrain) {
       const pdt = s.pendingDeployTerrain;
       const terrainName = pdt ? pdt.terrainType : 'terrain';
       text = `Place ${terrainName} terrain (ESC to skip)`;
-    } else if (deployTrapTargeting) {
+    } else if (targeting.deployTrap) {
       const pdt = s.pendingDeployTraps;
       const n = pdt ? `${pdt.placed + 1}/${pdt.count}` : '';
       const trapLabel = (pdt && Game.getTrapInfo)
         ? Game.getTrapInfo(pdt.trapType).label : 'Trap';
       text = `Place ${trapLabel} ${n} (ESC to skip)`;
-    } else if (clockToysTargeting) {
+    } else if (targeting.clockToys) {
       text = `Clock Toys: place trap adjacent to Clockwerk (ESC to cancel)`;
-    } else if (woundUpTargeting) {
+    } else if (targeting.woundUp) {
       const act = s.activationState;
       const wu = act ? act.woundUp : null;
       const n = wu ? `${wu.currentIndex + 1}/${wu.traps.length}` : '';
@@ -2205,7 +2204,7 @@ const UI = (() => {
       // Falcon Gust interactive prompt
       if (act.falconGust && act.falconGust.phase !== 'done') {
         html += `<span class="ability-prompt"><strong>Falcon Gust</strong></span>`;
-        if (falconGustTargeting && falconGustTargeting.phase === 'allyDest') {
+        if (targeting.falconGust && targeting.falconGust.phase === 'allyDest') {
           html += `<span class="ability-prompt">Choose destination</span>`;
         } else {
           html += `<span class="ability-prompt">Click ally or cinder</span>`;
@@ -2227,8 +2226,8 @@ const UI = (() => {
       }
 
       // Terrain Ride/Stay interactive prompt
-      if (effectTargeting && effectTargeting.effect && effectTargeting.effect.type === 'terrainRide') {
-        const eff = effectTargeting.effect;
+      if (targeting.effect && targeting.effect.effect && targeting.effect.effect.type === 'terrainRide') {
+        const eff = targeting.effect.effect;
         html += `<span class="ability-prompt">P${eff.unit.player} decides: <strong>${eff.unit.name}</strong> rides or stays?</span>`;
         html += `<button class="btn btn-confirm" data-action="terrain-ride">Ride</button>`;
         html += `<button class="btn btn-back" data-action="terrain-stay">Stay</button>`;
@@ -3004,16 +3003,16 @@ const UI = (() => {
     const key = e.key.toLowerCase();
 
     // ESC: Replacement choice — blocked (mandatory choice)
-    if (key === 'escape' && replacementTargeting) {
+    if (key === 'escape' && targeting.replacement) {
       e.preventDefault();
       return;
     }
 
     // ESC: Guardian targeting — skip this guardian
-    if (key === 'escape' && guardianTargeting) {
+    if (key === 'escape' && targeting.guardian) {
       Game.skipGuardian();
       netSend({ type: 'guardianSkip' });
-      guardianTargeting = null;
+      targeting.guardian = null;
       uiState.highlights = null;
       const s = Game.state;
       if (s.pendingGuardian && s.pendingGuardian.currentIndex < s.pendingGuardian.units.length) {
@@ -3026,7 +3025,7 @@ const UI = (() => {
     }
 
     // ESC: Deploy Terrain targeting — skip
-    if (key === 'escape' && deployTerrainTargeting) {
+    if (key === 'escape' && targeting.deployTerrain) {
       netSend({ type: 'deployTerrainSkip' });
       finishDeployTerrainPlacement();
       e.preventDefault();
@@ -3034,7 +3033,7 @@ const UI = (() => {
     }
 
     // ESC: Deploy Trap targeting — skip remaining traps
-    if (key === 'escape' && deployTrapTargeting) {
+    if (key === 'escape' && targeting.deployTrap) {
       netSend({ type: 'deployTrapSkip' });
       finishDeployTrapPlacement();
       e.preventDefault();
@@ -3042,8 +3041,8 @@ const UI = (() => {
     }
 
     // ESC: Clock Toys targeting — cancel
-    if (key === 'escape' && clockToysTargeting) {
-      clockToysTargeting = null;
+    if (key === 'escape' && targeting.clockToys) {
+      targeting.clockToys = null;
       showActivationHighlights();
       showPhase();
       updateStatusBar();
@@ -3053,7 +3052,7 @@ const UI = (() => {
     }
 
     // ESC: Wound Up targeting — skip current trap
-    if (key === 'escape' && woundUpTargeting) {
+    if (key === 'escape' && targeting.woundUp) {
       Game.skipWoundUpTrap();
       netSend({ type: 'woundUp', action: 'skip' });
       advanceWoundUpUI();
@@ -3062,22 +3061,22 @@ const UI = (() => {
     }
 
     // Level targeting — click overlay or number keys for terrain choice, ESC to skip/go back
-    if (levelTargeting) {
-      if (levelTargeting.phase === 2) {
+    if (targeting.level) {
+      if (targeting.level.phase === 2) {
         // Number keys as keyboard shortcut for terrain choice
         const num = parseInt(key, 10);
-        if (num >= 1 && num <= levelTargeting.data.terrainOptions.length) {
-          executeLevelChoice(levelTargeting.data.terrainOptions[num - 1]);
+        if (num >= 1 && num <= targeting.level.data.terrainOptions.length) {
+          executeLevelChoice(targeting.level.data.terrainOptions[num - 1]);
           e.preventDefault();
           return;
         }
         if (key === 'escape') {
           // Go back to phase 1
           hideLevelChoiceOverlay();
-          levelTargeting.phase = 1;
-          levelTargeting.selectedHex = null;
+          targeting.level.phase = 1;
+          targeting.level.selectedHex = null;
           uiState.highlights = new Map(
-            levelTargeting.terrainHexes.map(h => [`${h.q},${h.r}`, 1])
+            targeting.level.terrainHexes.map(h => [`${h.q},${h.r}`, 1])
           );
           uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
           showPhase();
@@ -3088,7 +3087,7 @@ const UI = (() => {
       } else if (key === 'escape') {
         // Skip Level — check for Toter, then Flare Up, then normal post-move flow
         hideLevelChoiceOverlay();
-        levelTargeting = null;
+        targeting.level = null;
         if (!checkAfterMoveTeleport()) finishPostMove();
         e.preventDefault();
         return;
@@ -3096,13 +3095,13 @@ const UI = (() => {
     }
 
     // ESC: Falcon Gust targeting — cancel/go back
-    if (key === 'escape' && falconGustTargeting) {
-      if (falconGustTargeting.phase === 'allyDest') {
+    if (key === 'escape' && targeting.falconGust) {
+      if (targeting.falconGust.phase === 'allyDest') {
         enterFalconGustTargeting(); // go back to combined
       } else {
         Game.skipFalconGust();
         netSend({ type: 'falconGust', action: 'skip' });
-        falconGustTargeting = null;
+        targeting.falconGust = null;
         showActivationHighlights();
         showPhase();
         updateStatusBar();
@@ -3113,11 +3112,11 @@ const UI = (() => {
     }
 
     // ESC: Gust Push targeting — cancel/go back
-    if (key === 'escape' && gustPushTargeting) {
-      if (gustPushTargeting.phase === 'pushDest') {
+    if (key === 'escape' && targeting.gustPush) {
+      if (targeting.gustPush.phase === 'pushDest') {
         enterGustPushTargeting(); // go back to select
       } else {
-        gustPushTargeting = null;
+        targeting.gustPush = null;
         showActivationHighlights();
         showPhase();
         updateStatusBar();
@@ -3128,8 +3127,8 @@ const UI = (() => {
     }
 
     // ESC: zoom targeting — cancel and return to normal highlights
-    if (key === 'escape' && zoomTargeting) {
-      zoomTargeting = null;
+    if (key === 'escape' && targeting.zoom) {
+      targeting.zoom = null;
       showActivationHighlights();
       updateStatusBar();
       render();
@@ -3138,8 +3137,8 @@ const UI = (() => {
     }
 
     // ESC: push-move targeting — cancel and return to normal highlights
-    if (key === 'escape' && pushMoveTargeting) {
-      pushMoveTargeting = null;
+    if (key === 'escape' && targeting.pushMove) {
+      targeting.pushMove = null;
       showActivationHighlights();
       updateStatusBar();
       render();
@@ -3148,18 +3147,18 @@ const UI = (() => {
     }
 
     // ESC: afterMove teleport targeting — phase 2 goes back to phase 1, phase 1 tries next or skips
-    if (key === 'escape' && teleportTargeting) {
-      if (teleportTargeting.phase === 2) {
-        teleportTargeting.phase = 1;
-        teleportTargeting.selectedSource = null;
-        uiState.highlights = new Map(teleportTargeting.sources.map(s => [`${s.q},${s.r}`, 1]));
+    if (key === 'escape' && targeting.teleport) {
+      if (targeting.teleport.phase === 2) {
+        targeting.teleport.phase = 1;
+        targeting.teleport.selectedSource = null;
+        uiState.highlights = new Map(targeting.teleport.sources.map(s => [`${s.q},${s.r}`, 1]));
         uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
         showPhase();
         render();
       } else {
-        const remaining = teleportTargeting.remaining;
-        const unit = teleportTargeting.unit;
-        teleportTargeting = null;
+        const remaining = targeting.teleport.remaining;
+        const unit = targeting.teleport.unit;
+        targeting.teleport = null;
         if (!tryNextTeleport(unit, remaining)) finishPostMove();
       }
       e.preventDefault();
@@ -3167,16 +3166,16 @@ const UI = (() => {
     }
 
     // ESC: toss targeting — phase 2 goes back to phase 1, phase 1 skips toss
-    if (key === 'escape' && tossTargeting) {
-      if (tossTargeting.phase === 2) {
-        tossTargeting.phase = 1;
-        tossTargeting.tossSource = null;
-        uiState.highlights = new Map([...tossTargeting.sources.keys()].map(k => [k, 1]));
+    if (key === 'escape' && targeting.toss) {
+      if (targeting.toss.phase === 2) {
+        targeting.toss.phase = 1;
+        targeting.toss.tossSource = null;
+        uiState.highlights = new Map([...targeting.toss.sources.keys()].map(k => [k, 1]));
         uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
       } else {
         // Skip toss — attack with no bonus
-        const tQ = tossTargeting.targetQ, tR = tossTargeting.targetR;
-        tossTargeting = null;
+        const tQ = targeting.toss.targetQ, tR = targeting.toss.targetR;
+        targeting.toss = null;
         const ok = Game.attackUnit(tQ, tR);
         if (ok) {
           netSend({ type: 'attackUnit', q: tQ, r: tR });
@@ -3202,14 +3201,14 @@ const UI = (() => {
     }
 
     // ESC: cancel delayed targeting mode — return to normal activation
-    if (key === 'escape' && delayedTargeting) {
+    if (key === 'escape' && targeting.delayed) {
       cancelDelayedTargeting();
       e.preventDefault();
       return;
     }
 
     // ESC: hot suit — take burning damage yourself instead of redirecting
-    if (key === 'escape' && hotSuitTargeting) {
+    if (key === 'escape' && targeting.hotSuit) {
       Game.skipBurningRedirect();
       netSend({ type: 'skipBurningRedirect' });
       finishPostAttack();
@@ -3218,7 +3217,7 @@ const UI = (() => {
     }
 
     // ESC: skip current effect targeting step (push/pull/move)
-    if (key === 'escape' && effectTargeting) {
+    if (key === 'escape' && targeting.effect) {
       Abilities.skipEffect();
       enterEffectTargeting();
       e.preventDefault();
@@ -3226,8 +3225,8 @@ const UI = (() => {
     }
 
     // ESC: cancel endActivation targeting — skip ability, finish turn
-    if (key === 'escape' && endActTargeting) {
-      endActTargeting = null;
+    if (key === 'escape' && targeting.endAct) {
+      targeting.endAct = null;
       if (typeof Abilities !== 'undefined') Abilities.clearPendingEndAct();
       Game.completeEndActivation();
       resetUiState();
@@ -3238,14 +3237,14 @@ const UI = (() => {
     }
 
     // ESC: cancel relocate targeting (goes back to ability targeting / activation)
-    if (key === 'escape' && relocateTargeting) {
+    if (key === 'escape' && targeting.relocate) {
       cancelAbilityTargeting();
       e.preventDefault();
       return;
     }
 
     // ESC: cancel ability targeting
-    if (key === 'escape' && abilityTargeting) {
+    if (key === 'escape' && targeting.ability) {
       cancelAbilityTargeting();
       e.preventDefault();
       return;
@@ -3419,7 +3418,7 @@ const UI = (() => {
       if (hexKey !== prevKey) {
         uiState.hoveredHex = hex;
         const act = Game.state.activationState;
-        if (hex && uiState.highlights && uiState.highlights.has(hexKey) && !endActTargeting && !abilityTargeting && !effectTargeting) {
+        if (hex && uiState.highlights && uiState.highlights.has(hexKey) && !targeting.endAct && !targeting.ability && !targeting.effect) {
           uiState.pathPreviewColor = null;
           recomputePathPreview(hex.q, hex.r);
         } else if (hex && uiState.attackTargets && uiState.attackTargets.has(hexKey)
@@ -3443,8 +3442,8 @@ const UI = (() => {
   /** Rebuild pathPreview from the unit's position to (destQ, destR). */
   function recomputePathPreview(destQ, destR) {
     // Relocate targeting: path starts from the relocate target unit
-    if (relocateTargeting) {
-      const rt = relocateTargeting;
+    if (targeting.relocate) {
+      const rt = targeting.relocate;
       const path = Board.getPath(rt.unit.q, rt.unit.r, destQ, destR, rt.parentMap);
       uiState.pathPreview = path;
       uiState.pathCost = uiState.highlights.get(`${destQ},${destR}`) || 0;
@@ -3610,7 +3609,7 @@ const UI = (() => {
       const data = Game.getPushMoveData(hex.q, hex.r);
       if (data && data.pushDestinations.size > 0) {
         // Enter push-move targeting: show green push destinations
-        pushMoveTargeting = {
+        targeting.pushMove = {
           targetQ: hex.q, targetR: hex.r,
           enemy: data.enemy,
           path: data.path,
@@ -3820,7 +3819,7 @@ const UI = (() => {
     else if (action === 'fg-skip') {
       Game.skipFalconGust();
       netSend({ type: 'falconGust', action: 'skip' });
-      falconGustTargeting = null;
+      targeting.falconGust = null;
       showActivationHighlights();
       showPhase();
       render();
@@ -3829,7 +3828,7 @@ const UI = (() => {
     else if (action === 'wu-skip-all') {
       Game.skipWoundUp();
       netSend({ type: 'woundUp', action: 'skipAll' });
-      woundUpTargeting = null;
+      targeting.woundUp = null;
       showActivationHighlights();
       showPhase();
       updateStatusBar();
@@ -3891,7 +3890,7 @@ const UI = (() => {
         // Zoom: enter custom targeting mode (pick hex on straight line)
         const targets = Game.getZoomTargets(act.unit);
         if (targets.size > 0) {
-          zoomTargeting = { unit: act.unit, validTargets: targets };
+          targeting.zoom = { unit: act.unit, validTargets: targets };
           uiState.highlights = new Map([...targets].map(k => [k, 1]));
           uiState.highlightColor = 'rgba(180, 255, 100, 0.4)';
           uiState.highlightStyle = 'dots';
@@ -3905,7 +3904,7 @@ const UI = (() => {
         // Clock Toys: enter trap placement mode
         const validHexes = Game.getValidTrapHexes(act.unit);
         if (validHexes.size > 0) {
-          clockToysTargeting = { validHexes, costType: actionCost };
+          targeting.clockToys = { validHexes, costType: actionCost };
           uiState.highlights = validHexes;
           uiState.highlightColor = 'rgba(0, 200, 200, 0.35)';
           uiState.highlightStyle = 'dots';
@@ -3967,7 +3966,7 @@ const UI = (() => {
       if (!name) return;
       Game.executeReplacement(name);
       netSend({ type: 'executeReplacement', name });
-      replacementTargeting = false;
+      targeting.replacement = false;
       document.getElementById('panel-round').classList.add('hidden');
       tryEndActivation();
       return;
@@ -3990,8 +3989,8 @@ const UI = (() => {
     }
 
     else if (action === 'terrain-ride' || action === 'terrain-stay') {
-      if (effectTargeting && effectTargeting.effect && effectTargeting.effect.type === 'terrainRide') {
-        const eff = effectTargeting.effect;
+      if (targeting.effect && targeting.effect.effect && targeting.effect.effect.type === 'terrainRide') {
+        const eff = targeting.effect.effect;
         if (action === 'terrain-ride') {
           Abilities.resolveEffect(eff.destQ, eff.destR);
         } else {
@@ -4138,9 +4137,9 @@ const UI = (() => {
 
   function handleDeployClick(hex) {
     // Deploy terrain placement mode (Sand Elemental etc.)
-    if (deployTerrainTargeting) {
+    if (targeting.deployTerrain) {
       const key = `${hex.q},${hex.r}`;
-      if (!deployTerrainTargeting.validHexes.has(key)) return;
+      if (!targeting.deployTerrain.validHexes.has(key)) return;
       Game.placeDeployTerrain(hex.q, hex.r);
       netSend({ type: 'placeDeployTerrain', q: hex.q, r: hex.r });
       finishDeployTerrainPlacement();
@@ -4148,9 +4147,9 @@ const UI = (() => {
     }
 
     // Deploy trap placement mode
-    if (deployTrapTargeting) {
+    if (targeting.deployTrap) {
       const key = `${hex.q},${hex.r}`;
-      if (!deployTrapTargeting.validHexes.has(key)) return;
+      if (!targeting.deployTrap.validHexes.has(key)) return;
       const pdt = Game.state.pendingDeployTraps;
       Game.placeTrap(hex.q, hex.r, pdt.unit.player, pdt.trapType);
       pdt.placed++;
@@ -4159,9 +4158,9 @@ const UI = (() => {
         finishDeployTrapPlacement();
       } else {
         // Refresh valid hexes for next trap
-        deployTrapTargeting.validHexes = Game.getValidDeployHexes('trap', pdt.unit.player,
+        targeting.deployTrap.validHexes = Game.getValidDeployHexes('trap', pdt.unit.player,
           { unitQ: pdt.unit.q, unitR: pdt.unit.r, range: pdt.deployRange });
-        uiState.highlights = deployTrapTargeting.validHexes;
+        uiState.highlights = targeting.deployTrap.validHexes;
         showPhase();
         render();
       }
@@ -4204,7 +4203,7 @@ const UI = (() => {
       finishDeployTrapPlacement();
       return;
     }
-    deployTrapTargeting = { validHexes };
+    targeting.deployTrap = { validHexes };
     uiState.highlights = validHexes;
     uiState.highlightColor = 'rgba(0,200,200,0.35)';
     uiState.highlightStyle = 'dots';
@@ -4213,7 +4212,7 @@ const UI = (() => {
   }
 
   function finishDeployTrapPlacement() {
-    deployTrapTargeting = null;
+    targeting.deployTrap = null;
     Game.finishDeployTraps();
     uiState.highlights = null;
     showPhase();
@@ -4228,7 +4227,7 @@ const UI = (() => {
       finishDeployTerrainPlacement();
       return;
     }
-    deployTerrainTargeting = { validHexes };
+    targeting.deployTerrain = { validHexes };
     uiState.highlights = validHexes;
     uiState.highlightColor = 'rgba(200,200,0,0.35)';
     uiState.highlightStyle = 'dots';
@@ -4237,7 +4236,7 @@ const UI = (() => {
   }
 
   function finishDeployTerrainPlacement() {
-    deployTerrainTargeting = null;
+    targeting.deployTerrain = null;
     Game.finishDeployTerrain();
     uiState.highlights = null;
     showPhase();
@@ -4262,7 +4261,7 @@ const UI = (() => {
       enterGuardianTargeting(); // advance to next
       return;
     }
-    guardianTargeting = { validHexes, guardianUnit: entry.unit };
+    targeting.guardian = { validHexes, guardianUnit: entry.unit };
     uiState.highlights = validHexes;
     uiState.highlightColor = 'rgba(0,200,200,0.35)';
     uiState.highlightStyle = 'dots';
@@ -4271,7 +4270,7 @@ const UI = (() => {
   }
 
   function finishGuardianTargeting() {
-    guardianTargeting = null;
+    targeting.guardian = null;
     uiState.highlights = null;
     Game.finishGuardianTargeting();
     showPhase();
@@ -4285,7 +4284,7 @@ const UI = (() => {
     const wu = act.woundUp;
     if (wu.currentIndex >= wu.traps.length) {
       wu.phase = 'done';
-      woundUpTargeting = null;
+      targeting.woundUp = null;
       showActivationHighlights();
       showPhase();
       updateStatusBar();
@@ -4315,7 +4314,7 @@ const UI = (() => {
         moveHexes.set(k, k === trapKey ? 2 : 1);
       }
     }
-    woundUpTargeting = { trapIndex: wu.currentIndex, validHexes: dests, currentTrap: trap };
+    targeting.woundUp = { trapIndex: wu.currentIndex, validHexes: dests, currentTrap: trap };
     uiState.highlights = moveHexes;
     uiState.highlightColor = 'rgba(255, 255, 0, 0.35)';
     uiState.highlightColor2 = 'rgba(0, 200, 200, 0.35)';
@@ -4331,7 +4330,7 @@ const UI = (() => {
     const act = Game.state.activationState;
     if (!act || !act.woundUp) return;
     if (act.woundUp.phase === 'done') {
-      woundUpTargeting = null;
+      targeting.woundUp = null;
       showActivationHighlights();
       showPhase();
       updateStatusBar();
@@ -4357,7 +4356,7 @@ const UI = (() => {
     if (act.woundUp && act.woundUp.phase !== 'done') {
       uiState.highlights = null;
       uiState.attackTargets = null;
-      if (!woundUpTargeting) enterWoundUpTargeting();
+      if (!targeting.woundUp) enterWoundUpTargeting();
       return;
     }
     const reachable = Game.getMoveRange();    // null if already moved
@@ -4430,13 +4429,13 @@ const UI = (() => {
     const key = `${hex.q},${hex.r}`;
 
     // Guardian targeting mode (pick ally to guard)
-    if (guardianTargeting) {
-      if (!guardianTargeting.validHexes.has(key)) return;
+    if (targeting.guardian) {
+      if (!targeting.guardian.validHexes.has(key)) return;
       const ally = s.units.find(u => u.q === hex.q && u.r === hex.r && u.health > 0);
       if (!ally) return;
-      Game.setGuardTarget(guardianTargeting.guardianUnit, ally);
-      netSend({ type: 'guardianTarget', guardianIdx: s.units.indexOf(guardianTargeting.guardianUnit), allyIdx: s.units.indexOf(ally) });
-      guardianTargeting = null;
+      Game.setGuardTarget(targeting.guardian.guardianUnit, ally);
+      netSend({ type: 'guardianTarget', guardianIdx: s.units.indexOf(targeting.guardian.guardianUnit), allyIdx: s.units.indexOf(ally) });
+      targeting.guardian = null;
       uiState.highlights = null;
       // Check if more guardians need targeting
       if (s.pendingGuardian && s.pendingGuardian.currentIndex < s.pendingGuardian.units.length) {
@@ -4448,17 +4447,17 @@ const UI = (() => {
     }
 
     // Falcon Gust targeting mode (on activation: move ally or place cinder)
-    if (falconGustTargeting) {
-      const fgPhase = falconGustTargeting.phase;
+    if (targeting.falconGust) {
+      const fgPhase = targeting.falconGust.phase;
 
       if (fgPhase === 'combined') {
         // Click an ally → enter ally destination sub-phase
-        if (falconGustTargeting.allyMap && falconGustTargeting.allyMap.has(key)) {
-          const ally = falconGustTargeting.allyMap.get(key);
-          falconGustTargeting.selectedAlly = ally;
-          falconGustTargeting.phase = 'allyDest';
+        if (targeting.falconGust.allyMap && targeting.falconGust.allyMap.has(key)) {
+          const ally = targeting.falconGust.allyMap.get(key);
+          targeting.falconGust.selectedAlly = ally;
+          targeting.falconGust.phase = 'allyDest';
           const dests = Game.getFalconGustAllyDests(ally.q, ally.r);
-          falconGustTargeting.validHexes = dests;
+          targeting.falconGust.validHexes = dests;
           uiState.highlights = dests;
           uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
           uiState.attackTargets = null;
@@ -4468,10 +4467,10 @@ const UI = (() => {
           return;
         }
         // Click a cinder hex → place cinder
-        if (falconGustTargeting.cinderHexes && falconGustTargeting.cinderHexes.has(key)) {
+        if (targeting.falconGust.cinderHexes && targeting.falconGust.cinderHexes.has(key)) {
           Game.executeFalconGustCinder(hex.q, hex.r);
           netSend({ type: 'falconGust', action: 'createCinder', q: hex.q, r: hex.r });
-          falconGustTargeting = null;
+          targeting.falconGust = null;
           showActivationHighlights();
           showPhase();
           render();
@@ -4481,12 +4480,12 @@ const UI = (() => {
       }
 
       if (fgPhase === 'allyDest') {
-        if (falconGustTargeting.validHexes.has(key)) {
-          const ally = falconGustTargeting.selectedAlly;
+        if (targeting.falconGust.validHexes.has(key)) {
+          const ally = targeting.falconGust.selectedAlly;
           const allyIdx = Game.state.units.indexOf(ally);
           Game.executeFalconGustMoveAlly(allyIdx, hex.q, hex.r);
           netSend({ type: 'falconGust', action: 'moveAlly', allyIdx, destQ: hex.q, destR: hex.r });
-          falconGustTargeting = null;
+          targeting.falconGust = null;
           showActivationHighlights();
           showPhase();
           render();
@@ -4497,16 +4496,16 @@ const UI = (() => {
     }
 
     // Gust Push targeting mode (action: push enemy or place cinder)
-    if (gustPushTargeting) {
-      if (gustPushTargeting.phase === 'select') {
+    if (targeting.gustPush) {
+      if (targeting.gustPush.phase === 'select') {
         // Click an enemy → show push destinations
-        if (gustPushTargeting.enemies && gustPushTargeting.enemies.has(key)) {
-          const enemy = gustPushTargeting.enemies.get(key);
+        if (targeting.gustPush.enemies && targeting.gustPush.enemies.has(key)) {
+          const enemy = targeting.gustPush.enemies.get(key);
           const pushDests = Game.getGustPushDests(enemy.q, enemy.r);
           if (pushDests.size === 0) return; // no valid push destinations
-          gustPushTargeting.selectedEnemy = enemy;
-          gustPushTargeting.pushDests = pushDests;
-          gustPushTargeting.phase = 'pushDest';
+          targeting.gustPush.selectedEnemy = enemy;
+          targeting.gustPush.pushDests = pushDests;
+          targeting.gustPush.phase = 'pushDest';
           uiState.highlights = pushDests;
           uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
           uiState.highlightStyle = 'dots';
@@ -4517,10 +4516,10 @@ const UI = (() => {
           return;
         }
         // Click a cinder hex → place cinder
-        if (gustPushTargeting.cinderHexes && gustPushTargeting.cinderHexes.has(key)) {
+        if (targeting.gustPush.cinderHexes && targeting.gustPush.cinderHexes.has(key)) {
           Game.executeGustPushCinder(hex.q, hex.r);
           netSend({ type: 'gustPush', action: 'createCinder', q: hex.q, r: hex.r });
-          gustPushTargeting = null;
+          targeting.gustPush = null;
           showActivationHighlights();
           showPhase();
           render();
@@ -4529,13 +4528,13 @@ const UI = (() => {
         return;
       }
 
-      if (gustPushTargeting.phase === 'pushDest') {
-        if (gustPushTargeting.pushDests && gustPushTargeting.pushDests.has(key)) {
-          const enemy = gustPushTargeting.selectedEnemy;
+      if (targeting.gustPush.phase === 'pushDest') {
+        if (targeting.gustPush.pushDests && targeting.gustPush.pushDests.has(key)) {
+          const enemy = targeting.gustPush.selectedEnemy;
           const enemyIdx = Game.state.units.indexOf(enemy);
           Game.executeGustPush(enemyIdx, hex.q, hex.r);
           netSend({ type: 'gustPush', action: 'push', enemyIdx, destQ: hex.q, destR: hex.r });
-          gustPushTargeting = null;
+          targeting.gustPush = null;
           showActivationHighlights();
           showPhase();
           render();
@@ -4547,9 +4546,9 @@ const UI = (() => {
     }
 
     // Wound Up targeting mode: click valid hex to move trap
-    if (woundUpTargeting) {
-      if (woundUpTargeting.validHexes.has(key)) {
-        const trap = woundUpTargeting.currentTrap;
+    if (targeting.woundUp) {
+      if (targeting.woundUp.validHexes.has(key)) {
+        const trap = targeting.woundUp.currentTrap;
         const ok = Game.executeWoundUpMove(trap.q, trap.r, hex.q, hex.r);
         if (ok) {
           netSend({ type: 'woundUp', action: 'move', fromQ: trap.q, fromR: trap.r, toQ: hex.q, toR: hex.r });
@@ -4561,12 +4560,12 @@ const UI = (() => {
     }
 
     // Clock Toys targeting mode: click valid hex to place trap
-    if (clockToysTargeting) {
-      if (clockToysTargeting.validHexes.has(key)) {
-        const ok = Game.executeClockToys(hex.q, hex.r, clockToysTargeting.costType);
+    if (targeting.clockToys) {
+      if (targeting.clockToys.validHexes.has(key)) {
+        const ok = Game.executeClockToys(hex.q, hex.r, targeting.clockToys.costType);
         if (ok) {
-          netSend({ type: 'clockToys', q: hex.q, r: hex.r, costType: clockToysTargeting.costType });
-          clockToysTargeting = null;
+          netSend({ type: 'clockToys', q: hex.q, r: hex.r, costType: targeting.clockToys.costType });
+          targeting.clockToys = null;
           const act = s.activationState;
           // Auto-end if both actions used
           if (act && act.moved && act.attacked && !s.rules.confirmEndTurn) {
@@ -4579,7 +4578,7 @@ const UI = (() => {
         }
       } else {
         // Click non-target: cancel
-        clockToysTargeting = null;
+        targeting.clockToys = null;
         showActivationHighlights();
         updateStatusBar();
         render();
@@ -4588,10 +4587,10 @@ const UI = (() => {
     }
 
     // Zoom targeting mode: click valid hex to zoom there, else cancel
-    if (zoomTargeting) {
-      if (zoomTargeting.validTargets.has(key)) {
+    if (targeting.zoom) {
+      if (targeting.zoom.validTargets.has(key)) {
         // Capture path data before execution (unit will move in game state)
-        const zUnit = zoomTargeting.unit;
+        const zUnit = targeting.zoom.unit;
         const intermediates = [];
         Board.straightLineDir(zUnit.q, zUnit.r, hex.q, hex.r, intermediates);
         const fullPath = [...intermediates, { q: hex.q, r: hex.r }];
@@ -4600,7 +4599,7 @@ const UI = (() => {
         if (ok) {
           netSend({ type: 'executeZoom', q: hex.q, r: hex.r });
           const speed = s.rules.animSpeed || 0;
-          zoomTargeting = null;
+          targeting.zoom = null;
           if (speed > 0 && fullPath.length > 0) {
             moveAnimating = true;
             animateTokenAlongPath(zUnit, fullPath, speed, () => {
@@ -4613,7 +4612,7 @@ const UI = (() => {
         }
       } else {
         // Click non-target: cancel
-        zoomTargeting = null;
+        targeting.zoom = null;
         showActivationHighlights();
         updateStatusBar();
         render();
@@ -4622,14 +4621,14 @@ const UI = (() => {
     }
 
     // Push-move targeting mode: click green hex to execute push, else cancel
-    if (pushMoveTargeting) {
-      if (pushMoveTargeting.pushDestinations.has(key)) {
-        const tgt = pushMoveTargeting;
+    if (targeting.pushMove) {
+      if (targeting.pushMove.pushDestinations.has(key)) {
+        const tgt = targeting.pushMove;
         const ok = Game.executePushMove(tgt.targetQ, tgt.targetR, hex.q, hex.r);
         if (ok) {
           netSend({ type: 'pushMove', targetQ: tgt.targetQ, targetR: tgt.targetR, pushQ: hex.q, pushR: hex.r });
           const animSpeed = s.rules.animSpeed || 0;
-          pushMoveTargeting = null;
+          targeting.pushMove = null;
           if (animSpeed > 0 && tgt.path.length > 0) {
             // Animate Dozer along the path to the enemy's old hex
             // The unit is already at the destination in game state; animate visually
@@ -4640,7 +4639,7 @@ const UI = (() => {
         }
       } else {
         // Click on non-destination hex: cancel push-move targeting
-        pushMoveTargeting = null;
+        targeting.pushMove = null;
         showActivationHighlights();
         updateStatusBar();
         render();
@@ -4649,16 +4648,16 @@ const UI = (() => {
     }
 
     // EndActivation targeting: player picks a unit to apply the effect to
-    if (endActTargeting) {
-      const match = endActTargeting.targets.find(t => t.key === key);
+    if (targeting.endAct) {
+      const match = targeting.endAct.targets.find(t => t.key === key);
       if (match && match.unit) {
-        endActTargeting = null;
+        targeting.endAct = null;
         Abilities.executeEndActWithTarget(match.unit);
         // Now process any queued effects (relocate, etc.)
         processEndActEffects();
       } else {
         // Click off-target: cancel, finish turn without the ability
-        endActTargeting = null;
+        targeting.endAct = null;
         Abilities.clearPendingEndAct();
         Game.completeEndActivation();
         resetUiState();
@@ -4669,9 +4668,9 @@ const UI = (() => {
     }
 
     // Relocate targeting mode: click destination to move target unit
-    if (relocateTargeting) {
-      if (relocateTargeting.reachable.has(key)) {
-        const rt = relocateTargeting;
+    if (targeting.relocate) {
+      if (targeting.relocate.reachable.has(key)) {
+        const rt = targeting.relocate;
         const act = s.activationState;
 
         // Snapshot all living units for undo
@@ -4708,29 +4707,30 @@ const UI = (() => {
     }
 
     // Ability targeting mode: click valid target to execute, else cancel
-    if (abilityTargeting) {
-      if (abilityTargeting.validTargets.has(key)) {
+    if (targeting.ability) {
+      if (targeting.ability.validTargets.has(key)) {
         // Use precomputed target list to determine if this is terrain vs unit
-        const targetEntry = abilityTargeting.targetList
-          ? abilityTargeting.targetList.find(t => t.key === key) : null;
+        const targetEntry = targeting.ability.targetList
+          ? targeting.ability.targetList.find(t => t.key === key) : null;
         const target = (targetEntry && targetEntry.type === 'terrain')
           ? { q: hex.q, r: hex.r }  // terrain target — no unit ref
           : (s.units.find(u => u.q === hex.q && u.r === hex.r && u.health > 0)
               || { q: hex.q, r: hex.r });
-        const abName = abilityTargeting.abilityName;
-        const actionCost = abilityTargeting.actionCost;
+        const abName = targeting.ability.abilityName;
+        const actionCost = targeting.ability.actionCost;
         const act = s.activationState;
 
-        // Snapshot health of all living units for undo
+        // Snapshot all living units for undo (snapshotUnit-compatible format)
         const healthBefore = s.units
           .filter(u => u.health > 0)
-          .map(u => ({ unit: u, prevHealth: u.health, prevQ: u.q, prevR: u.r,
-            prevConditions: u.conditions.map(c => ({ ...c })) }));
+          .map(u => ({ unit: u, q: u.q, r: u.r, health: u.health,
+            conditions: u.conditions.map(c => ({ ...c })),
+            resources: u.resources ? JSON.parse(JSON.stringify(u.resources)) : undefined }));
 
         if (typeof Abilities !== 'undefined') {
           Abilities.executeAction(abName, {
-            unit: abilityTargeting.unit, target, targetQ: hex.q, targetR: hex.r,
-          }, abilityTargeting.actionRuleId);
+            unit: targeting.ability.unit, target, targetQ: hex.q, targetR: hex.r,
+          }, targeting.ability.actionRuleId);
         }
 
         // Check if a relocate effect was queued by the action
@@ -4740,12 +4740,12 @@ const UI = (() => {
             Abilities.skipEffect(); // consume from queue (we handle it via UI)
             const relocTarget = pending.unit;
             const relocRange = pending.range;
-            Game.log(`${abilityTargeting.unit.name} uses ${abName}${actionCost ? ' (uses ' + actionCost + ')' : ''}`, abilityTargeting.unit.player);
-            enterRelocateTargeting(relocTarget, relocRange, abName, actionCost, abilityTargeting.unit);
-            // Set oncePerRound on relocateTargeting for undo
-            if (relocateTargeting) {
-              const rd = Abilities.getActions(relocateTargeting.sourceUnit).find(a => a.name === abName);
-              if (rd && rd.oncePerRound) relocateTargeting.oncePerRound = true;
+            Game.log(`${targeting.ability.unit.name} uses ${abName}${actionCost ? ' (uses ' + actionCost + ')' : ''}`, targeting.ability.unit.player);
+            enterRelocateTargeting(relocTarget, relocRange, abName, actionCost, targeting.ability.unit);
+            // Set oncePerRound on targeting.relocate for undo
+            if (targeting.relocate) {
+              const rd = Abilities.getActions(targeting.relocate.sourceUnit).find(a => a.name === abName);
+              if (rd && rd.oncePerRound) targeting.relocate.oncePerRound = true;
             }
             return;
           }
@@ -4757,24 +4757,25 @@ const UI = (() => {
           if (actionCost === 'move') act.moved = true;
           else if (actionCost === 'attack') act.attacked = true;
         }
-        Game.log(`${abilityTargeting.unit.name} uses ${abName}${actionCost ? ' (uses ' + actionCost + ')' : ''}`, abilityTargeting.unit.player);
+        Game.log(`${targeting.ability.unit.name} uses ${abName}${actionCost ? ' (uses ' + actionCost + ')' : ''}`, targeting.ability.unit.player);
 
-        // Build undo history entry with health changes
+        // Build undo history entry with health/position/condition changes
         const healthSnapshots = healthBefore.filter(snap =>
-          snap.unit.health !== snap.prevHealth || snap.unit.q !== snap.prevQ || snap.unit.r !== snap.prevR);
-        const abDef = typeof Abilities !== 'undefined' ? Abilities.getActions(abilityTargeting.unit).find(a => a.name === abName) : null;
+          snap.unit.health !== snap.health || snap.unit.q !== snap.q || snap.unit.r !== snap.r
+          || snap.unit.conditions.length !== snap.conditions.length);
+        const abDef = typeof Abilities !== 'undefined' ? Abilities.getActions(targeting.ability.unit).find(a => a.name === abName) : null;
         s.actionHistory.push({
           type: 'ability',
           abilityName: abName,
           actionCost,
           oncePerGame: abDef ? abDef.oncePerGame : false,
           oncePerRound: abDef ? abDef.oncePerRound : false,
-          unitRef: abilityTargeting.unit,
+          unitRef: targeting.ability.unit,
           healthSnapshots,
-          prevResources: JSON.parse(JSON.stringify(abilityTargeting.unit.resources || {})),
+          prevResources: JSON.parse(JSON.stringify(targeting.ability.unit.resources || {})),
         });
 
-        abilityTargeting = null;
+        targeting.ability = null;
 
         // Check for queued interactive effects from the action
         if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
@@ -4804,7 +4805,7 @@ const UI = (() => {
     }
 
     // Hot Suit targeting mode (redirect burning damage to adjacent unit)
-    if (hotSuitTargeting) {
+    if (targeting.hotSuit) {
       const key = `${hex.q},${hex.r}`;
       if (uiState.highlights && uiState.highlights.has(key)) {
         Game.resolveBurningRedirect(hex.q, hex.r);
@@ -4815,21 +4816,21 @@ const UI = (() => {
     }
 
     // AfterMove teleport targeting (unified Toter/FlareUp)
-    if (teleportTargeting && teleportTargeting.phase === 1) {
-      const match = teleportTargeting.sources.find(s => s.q === hex.q && s.r === hex.r);
+    if (targeting.teleport && targeting.teleport.phase === 1) {
+      const match = targeting.teleport.sources.find(s => s.q === hex.q && s.r === hex.r);
       if (match) {
-        teleportTargeting.selectedSource = match;
-        teleportTargeting.phase = 2;
-        uiState.highlights = getTeleportDestinations(teleportTargeting.unit, match.type);
+        targeting.teleport.selectedSource = match;
+        targeting.teleport.phase = 2;
+        uiState.highlights = getTeleportDestinations(targeting.teleport.unit, match.type);
         uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
         showPhase();
         render();
       }
       return;
     }
-    if (teleportTargeting && teleportTargeting.phase === 2) {
+    if (targeting.teleport && targeting.teleport.phase === 2) {
       if (uiState.highlights.has(key)) {
-        const t = teleportTargeting;
+        const t = targeting.teleport;
         const data = t.data;
         const src = t.selectedSource;
         if (src.type === 'ally') {
@@ -4843,20 +4844,20 @@ const UI = (() => {
         if (data.ruleId) Abilities.applyRuleSideEffects(t.unit, data.ruleId);
         const remaining = t.remaining;
         const unit = t.unit;
-        teleportTargeting = null;
+        targeting.teleport = null;
         if (!tryNextTeleport(unit, remaining)) finishPostMove();
       }
       return;
     }
 
     // Level targeting mode (phase 1: pick terrain hex to replace)
-    if (levelTargeting && levelTargeting.phase === 1) {
-      const match = levelTargeting.terrainHexes.find(
+    if (targeting.level && targeting.level.phase === 1) {
+      const match = targeting.level.terrainHexes.find(
         h => h.q === hex.q && h.r === hex.r
       );
       if (match) {
-        levelTargeting.selectedHex = match;
-        levelTargeting.phase = 2;
+        targeting.level.selectedHex = match;
+        targeting.level.phase = 2;
         uiState.highlights = new Map([[key, 1]]);
         uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
         showLevelChoiceOverlay();
@@ -4867,13 +4868,13 @@ const UI = (() => {
     }
 
     // Toss targeting mode (phase 1: pick source, phase 2: pick destination)
-    if (tossTargeting) {
-      if (tossTargeting.phase === 1) {
-        if (tossTargeting.sources.has(key)) {
-          tossTargeting.tossSource = tossTargeting.sources.get(key);
-          tossTargeting.phase = 2;
-          const dests = Abilities.getTossDestHexes(tossTargeting.targetQ, tossTargeting.targetR);
-          tossTargeting.destinations = dests;
+    if (targeting.toss) {
+      if (targeting.toss.phase === 1) {
+        if (targeting.toss.sources.has(key)) {
+          targeting.toss.tossSource = targeting.toss.sources.get(key);
+          targeting.toss.phase = 2;
+          const dests = Abilities.getTossDestHexes(targeting.toss.targetQ, targeting.toss.targetR);
+          targeting.toss.destinations = dests;
           uiState.highlights = new Map([...dests].map(k => [k, 1]));
           uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
           showPhase();
@@ -4881,16 +4882,16 @@ const UI = (() => {
         }
         return;
       }
-      if (tossTargeting.phase === 2) {
-        if (tossTargeting.destinations.has(key)) {
-          const tossData = Game.executeToss(tossTargeting.tossSource, hex.q, hex.r);
+      if (targeting.toss.phase === 2) {
+        if (targeting.toss.destinations.has(key)) {
+          const tossData = Game.executeToss(targeting.toss.tossSource, hex.q, hex.r);
           netSend({ type: 'toss', source: {
-            type: tossTargeting.tossSource.type,
-            fromQ: tossTargeting.tossSource.q, fromR: tossTargeting.tossSource.r
+            type: targeting.toss.tossSource.type,
+            fromQ: targeting.toss.tossSource.q, fromR: targeting.toss.tossSource.r
           }, toQ: hex.q, toR: hex.r });
-          const tQ = tossTargeting.targetQ, tR = tossTargeting.targetR;
-          const bonus = tossTargeting.bonusDamage;
-          tossTargeting = null;
+          const tQ = targeting.toss.targetQ, tR = targeting.toss.targetR;
+          const bonus = targeting.toss.bonusDamage;
+          targeting.toss = null;
           const ok = Game.attackUnit(tQ, tR, bonus, tossData);
           if (ok) {
             netSend({ type: 'attackUnit', q: tQ, r: tR, bonusDamage: bonus });
@@ -4915,8 +4916,8 @@ const UI = (() => {
     }
 
     // Effect targeting mode (push/pull/move): click valid hex to resolve
-    if (effectTargeting) {
-      if (effectTargeting.validHexes.has(key)) {
+    if (targeting.effect) {
+      if (targeting.effect.validHexes.has(key)) {
         Abilities.resolveEffect(hex.q, hex.r);
         enterEffectTargeting(); // next step or finish
       }
@@ -4925,9 +4926,9 @@ const UI = (() => {
     }
 
     // Delayed targeting mode: click attack target to place, else cancel
-    if (delayedTargeting) {
+    if (targeting.delayed) {
       if (uiState.attackTargets && uiState.attackTargets.has(key)) {
-        delayedTargeting = false;
+        targeting.delayed = false;
         const ok = Game.attackUnit(hex.q, hex.r);
         if (ok) {
           netSend({ type: 'attackUnit', q: hex.q, r: hex.r });
@@ -5020,7 +5021,7 @@ const UI = (() => {
           const sources = Abilities.getTossSourceHexes(act.unit);
           if (sources.size > 0) {
             const bonusDamage = Abilities.getOnAttackBonusDamage(act.unit);
-            tossTargeting = {
+            targeting.toss = {
               phase: 1, unit: act.unit,
               targetQ: hex.q, targetR: hex.r,
               sources, destinations: null,
@@ -5643,7 +5644,7 @@ const UI = (() => {
         } else if (data.action === 'skip') {
           Game.skipFalconGust();
         }
-        falconGustTargeting = null;
+        targeting.falconGust = null;
         showActivationHighlights();
         showPhase();
         render();
@@ -5655,7 +5656,7 @@ const UI = (() => {
         } else if (data.action === 'createCinder') {
           Game.executeGustPushCinder(data.q, data.r);
         }
-        gustPushTargeting = null;
+        targeting.gustPush = null;
         showActivationHighlights();
         showPhase();
         render();
@@ -5663,7 +5664,7 @@ const UI = (() => {
       }
       case 'clockToys': {
         Game.executeClockToys(data.q, data.r, data.costType);
-        clockToysTargeting = null;
+        targeting.clockToys = null;
         const ctAct = Game.state.activationState;
         if (ctAct && ctAct.moved && ctAct.attacked && !Game.state.rules.confirmEndTurn) {
           tryEndActivation();
@@ -5680,7 +5681,7 @@ const UI = (() => {
         } else if (data.action === 'skipAll') {
           Game.skipWoundUp();
         }
-        woundUpTargeting = null;
+        targeting.woundUp = null;
         const wuAct = Game.state.activationState;
         if (wuAct && wuAct.woundUp && wuAct.woundUp.phase === 'done') {
           showActivationHighlights();
@@ -5724,7 +5725,7 @@ const UI = (() => {
             if (match && match.ruleId) Abilities.applyRuleSideEffects(act.unit, match.ruleId);
           }
         }
-        teleportTargeting = null;
+        targeting.teleport = null;
         render();
         break;
       }
@@ -5828,7 +5829,7 @@ const UI = (() => {
         showPhase(); render(); break;
       case 'executeReplacement':
         Game.executeReplacement(data.name);
-        replacementTargeting = false;
+        targeting.replacement = false;
         document.getElementById('panel-round').classList.add('hidden');
         tryEndActivation();
         break;

@@ -3,6 +3,42 @@
 
 ((G) => {
 
+  // ── Snapshot Helpers (Undo System) ─────────────────────────────
+  // Standardizes the "save unit state before action / restore on undo" pattern.
+
+  /** Snapshot a single unit's core state for later undo restoration. */
+  function snapshotUnit(unit) {
+    return {
+      unit,
+      q: unit.q, r: unit.r,
+      health: unit.health,
+      conditions: unit.conditions.map(c => ({ ...c })),
+      resources: unit.resources ? JSON.parse(JSON.stringify(unit.resources)) : undefined,
+    };
+  }
+
+  /** Snapshot ALL units except the given ones (for broad undo — move, attack, zoom, etc.). */
+  function snapshotAllUnits(excludeSet) {
+    return G.state.units
+      .filter(u => u.health > 0 && !excludeSet?.has(u))
+      .map(u => snapshotUnit(u));
+  }
+
+  /** Restore a single unit from a snapshot. */
+  function restoreSnapshot(snap) {
+    snap.unit.q = snap.q;
+    snap.unit.r = snap.r;
+    snap.unit.health = snap.health;
+    snap.unit.conditions = snap.conditions;
+    if (snap.resources !== undefined) snap.unit.resources = snap.resources;
+  }
+
+  /** Restore an array of unit snapshots. */
+  function restoreSnapshots(snapshots) {
+    if (!snapshots) return;
+    for (const snap of snapshots) restoreSnapshot(snap);
+  }
+
   // ── Phase: Battle ─────────────────────────────────────────────
 
   function selectUnit(unit) {
@@ -430,13 +466,9 @@
     }
 
     // Snapshot for undo (terrain effects may change health/conditions/resources during traversal)
-    const prevHealth = act.unit.health;
-    const prevConditions = act.unit.conditions.map(c => ({ ...c }));
-    const prevResources = JSON.parse(JSON.stringify(act.unit.resources || {}));
+    const unitSnap = snapshotUnit(act.unit);
     // Snapshot other units for movement-trigger undo (push positions + Glider damage)
-    const otherUnitPositions = G.state.units
-      .filter(u => u !== act.unit && u.health > 0)
-      .map(u => ({ unit: u, q: u.q, r: u.r, health: u.health, conditions: u.conditions.map(c => ({ ...c })) }));
+    const otherUnitPositions = snapshotAllUnits(new Set([act.unit]));
     // Snapshot traps for undo (traps consumed during path traversal)
     const prevTraps = G.state.traps.size > 0 ? new Map(G.state.traps) : null;
 
@@ -536,7 +568,7 @@
     updateObjectiveControl(act.unit);
     if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
 
-    G.state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ: act.unit.q, toR: act.unit.r, prevObjControl, prevMoveDistance, prevHealth, prevConditions, otherUnitPositions, prevTraps, prevResources });
+    G.state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ: act.unit.q, toR: act.unit.r, prevObjControl, prevMoveDistance, prevHealth: unitSnap.health, prevConditions: unitSnap.conditions, otherUnitPositions, prevTraps, prevResources: unitSnap.resources });
     G.log(`${act.unit.name} moved (${fromQ},${fromR}) \u2192 (${act.unit.q},${act.unit.r})`, act.unit.player);
 
     // If both actions used, end activation (unless confirmEndTurn, pending effects,
@@ -597,11 +629,9 @@
    *  Walks the path calling onEnterHex at each step. Does NOT modify activation state.
    *  Returns undo data: { unit, fromQ, fromR, prevHealth, prevConditions }. */
   function relocateUnit(unit, toQ, toR, parentMap) {
-    const fromQ = unit.q, fromR = unit.r;
-    const prevHealth = unit.health;
-    const prevConditions = unit.conditions.map(c => ({ ...c }));
+    const snap = snapshotUnit(unit);
 
-    const path = Board.getPath(fromQ, fromR, toQ, toR, parentMap);
+    const path = Board.getPath(snap.q, snap.r, toQ, toR, parentMap);
     for (const step of path) {
       unit.q = step.q;
       unit.r = step.r;
@@ -611,9 +641,9 @@
 
     updateObjectiveControl(unit);
     if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
-    G.log(`${unit.name} relocated (${fromQ},${fromR}) → (${unit.q},${unit.r})`, unit.player);
+    G.log(`${unit.name} relocated (${snap.q},${snap.r}) → (${unit.q},${unit.r})`, unit.player);
 
-    return { unit, fromQ, fromR, prevHealth, prevConditions };
+    return { unit, fromQ: snap.q, fromR: snap.r, prevHealth: snap.health, prevConditions: snap.conditions };
   }
 
   function attackUnit(targetQ, targetR, bonusDamage, tossData, attackPath) {
@@ -891,16 +921,7 @@
     }
 
     // Snapshot other units before ability dispatch (Piercing, Hymn effects, etc.)
-    const healthSnapshots = [];
-    for (const u of G.state.units) {
-      if (u.health <= 0 || u === target || u === act.unit) continue;
-      healthSnapshots.push({
-        unit: u, prevHealth: u.health,
-        prevConditions: u.conditions.map(c => ({ ...c })),
-        prevQ: u.q, prevR: u.r,
-        prevResources: JSON.parse(JSON.stringify(u.resources || {})),
-      });
-    }
+    const healthSnapshots = snapshotAllUnits(new Set([target, act.unit]));
 
     // Store attack path for Piercing + Path resolution
     if (attackPath) act.attackPath = attackPath;
@@ -1535,23 +1556,24 @@
     if (!act) return false;
 
     const last = G.state.actionHistory[G.state.actionHistory.length - 1];
-    if (last.type === 'move' && !G.state.rules.canUndoMove) return false;
-    if (last.type === 'pushMove' && !G.state.rules.canUndoMove) return false;
-    if (last.type === 'zoom' && !G.state.rules.canUndoAttack) return false;
-    if (last.type === 'clocktoys') {
-      if (last.costType === 'move' && !G.state.rules.canUndoMove) return false;
-      if (last.costType === 'attack' && !G.state.rules.canUndoAttack) return false;
+
+    // Undo permission gate — declarative map of action type → required rule
+    const UNDO_GATES = {
+      move: 'canUndoMove', pushMove: 'canUndoMove', level: 'canUndoMove',
+      toter: 'canUndoMove', flareup: 'canUndoMove',
+      zoom: 'canUndoAttack', attack: 'canUndoAttack',
+    };
+    const gate = UNDO_GATES[last.type];
+    if (gate && !G.state.rules[gate]) return false;
+    // Cost-dependent gates (clocktoys, ability: cost determines which flag to check)
+    if (last.type === 'clocktoys' || last.type === 'ability') {
+      const cost = last.costType || last.actionCost;
+      if (cost === 'move' && !G.state.rules.canUndoMove) return false;
+      if (cost === 'attack' && !G.state.rules.canUndoAttack) return false;
     }
-    if (last.type === 'level' && !G.state.rules.canUndoMove) return false;
-    if (last.type === 'toter' && !G.state.rules.canUndoMove) return false;
-    if (last.type === 'flareup' && !G.state.rules.canUndoMove) return false;
-    if (last.type === 'attack' && !G.state.rules.canUndoAttack) return false;
+    // Attack-specific blocks
     if (last.type === 'attack' && last.guardianTriggered) return false;
     if (last.type === 'attack' && last.replacementTriggered) return false;
-    if (last.type === 'ability') {
-      if (last.actionCost === 'move' && !G.state.rules.canUndoMove) return false;
-      if (last.actionCost === 'attack' && !G.state.rules.canUndoAttack) return false;
-    }
 
     G.state.actionHistory.pop();
 
@@ -1564,14 +1586,7 @@
       if (last.prevHealth !== undefined) last.unit.health = last.prevHealth;
       if (last.prevConditions !== undefined) last.unit.conditions = last.prevConditions;
       // Restore other units affected by movement triggers (push, Glider damage, etc.)
-      if (last.otherUnitPositions) {
-        for (const snap of last.otherUnitPositions) {
-          snap.unit.q = snap.q;
-          snap.unit.r = snap.r;
-          snap.unit.health = snap.health;
-          snap.unit.conditions = snap.conditions;
-        }
-      }
+      restoreSnapshots(last.otherUnitPositions);
       // Restore traps consumed during path traversal
       if (last.prevTraps) G.state.traps = new Map(last.prevTraps);
       // Undo consuming terrain (remove from consumedUnits if applicable)
@@ -1595,14 +1610,7 @@
       act.moveDistance = last.prevMoveDistance !== undefined ? last.prevMoveDistance : 0;
       act.moved = false;
       // Restore all other units (pushed enemy + terrain-damaged)
-      if (last.otherUnitPositions) {
-        for (const snap of last.otherUnitPositions) {
-          snap.unit.q = snap.q;
-          snap.unit.r = snap.r;
-          snap.unit.health = snap.health;
-          snap.unit.conditions = snap.conditions;
-        }
-      }
+      restoreSnapshots(last.otherUnitPositions);
       // Restore traps consumed during path traversal
       if (last.prevTraps) G.state.traps = new Map(last.prevTraps);
       // If no remaining pushMove in history, clear impactPushed
@@ -1617,12 +1625,7 @@
       act.attacked = false;
       if (G.hasCondition(act.unit, 'dizzy')) act.moved = false;
       // Restore all other units' health/conditions (damaged during Zoom)
-      if (last.otherSnapshots) {
-        for (const snap of last.otherSnapshots) {
-          snap.unit.health = snap.health;
-          snap.unit.conditions = snap.conditions;
-        }
-      }
+      restoreSnapshots(last.otherSnapshots);
       // Un-mark once-per-game
       act.unit.usedAbilities.delete('Zoom');
       // Restore traps consumed during path traversal
@@ -1691,14 +1694,7 @@
       if (last.prevAttackerConditions) act.unit.conditions = last.prevAttackerConditions;
       if (last.prevAttackerQ != null) { act.unit.q = last.prevAttackerQ; act.unit.r = last.prevAttackerR; }
       // Restore other units (health, conditions, position, resources — Piercing, Hymn, etc.)
-      if (last.healthSnapshots) {
-        for (const snap of last.healthSnapshots) {
-          snap.unit.health = snap.prevHealth;
-          if (snap.prevConditions) snap.unit.conditions = snap.prevConditions;
-          if (snap.prevQ != null) { snap.unit.q = snap.prevQ; snap.unit.r = snap.prevR; }
-          if (snap.prevResources) snap.unit.resources = snap.prevResources;
-        }
-      }
+      restoreSnapshots(last.healthSnapshots);
       // Restore hymn repetition counter
       if (last.prevHymnRepetition != null) {
         G.state.hymnRepetition[act.unit.player] = last.prevHymnRepetition;
@@ -1734,32 +1730,17 @@
     } else if (last.type === 'woundup') {
       // Restore all trap positions and unit health from snapshot
       G.state.traps = new Map(last.trapSnapshot);
-      if (last.unitSnapshots) {
-        for (const snap of last.unitSnapshots) {
-          snap.unit.health = snap.health;
-          snap.unit.conditions = snap.conditions;
-        }
-      }
+      restoreSnapshots(last.unitSnapshots);
       delete act.woundUp;
     } else if (last.type === 'falcongust') {
       // Restore all unit positions/health/conditions and terrain
-      const { unitSnapshots, terrainSnapshot } = last.undoData;
-      for (const snap of unitSnapshots) {
-        snap.unit.q = snap.q;
-        snap.unit.r = snap.r;
-        snap.unit.health = snap.health;
-        snap.unit.conditions = snap.conditions;
-      }
+      restoreSnapshots(last.undoData.unitSnapshots);
       G.state.terrain.clear();
-      for (const [k, v] of terrainSnapshot) G.state.terrain.set(k, v);
+      for (const [k, v] of last.undoData.terrainSnapshot) G.state.terrain.set(k, v);
       initFalconGust(act.unit);
     } else if (last.type === 'ability') {
       // Restore all affected units (health, position, conditions)
-      for (const snap of last.healthSnapshots) {
-        snap.unit.health = snap.prevHealth;
-        if (snap.prevQ != null) { snap.unit.q = snap.prevQ; snap.unit.r = snap.prevR; }
-        if (snap.prevConditions) snap.unit.conditions = snap.prevConditions;
-      }
+      restoreSnapshots(last.healthSnapshots);
       // Restore relocate target position specifically
       if (last.relocateData) {
         const rd = last.relocateData;
@@ -1942,11 +1923,8 @@
 
     // Snapshot for undo
     const fromQ = u.q, fromR = u.r;
-    const prevHealth = u.health;
-    const prevConditions = u.conditions.map(c => ({ ...c }));
-    const otherSnapshots = G.state.units
-      .filter(o => o !== u && o.health > 0)
-      .map(o => ({ unit: o, health: o.health, conditions: o.conditions.map(c => ({ ...c })) }));
+    const zoomSnap = snapshotUnit(u);
+    const otherSnapshots = snapshotAllUnits(new Set([u]));
     const prevTraps = G.state.traps.size > 0 ? new Map(G.state.traps) : null;
 
     // Walk path: deal 1 damage to each unit on ALL hexes (intermediates + destination)
@@ -1990,9 +1968,9 @@
       type: 'zoom',
       unit: u,
       fromQ, fromR, toQ, toR,
-      prevHealth, prevConditions,
+      prevHealth: zoomSnap.health, prevConditions: zoomSnap.conditions,
       otherSnapshots, prevTraps,
-      prevResources: JSON.parse(JSON.stringify(u.resources || {})),
+      prevResources: zoomSnap.resources,
     });
 
     // Objective control
@@ -2118,13 +2096,10 @@
     const fromQ = u.q;
     const fromR = u.r;
     const prevMoveDistance = act.moveDistance;
-    const prevHealth = u.health;
-    const prevConditions = u.conditions.map(c => ({ ...c }));
+    const pushSnap = snapshotUnit(u);
 
     // Snapshot ALL other units (pushed enemy + any terrain-damaged units during traversal)
-    const otherUnitPositions = G.state.units
-      .filter(o => o !== u && o.health > 0)
-      .map(o => ({ unit: o, q: o.q, r: o.r, health: o.health, conditions: o.conditions.map(c => ({ ...c })) }));
+    const otherUnitPositions = snapshotAllUnits(new Set([u]));
     const prevTraps = G.state.traps.size > 0 ? new Map(G.state.traps) : null;
 
     // 1. Push enemy to chosen destination
@@ -2173,9 +2148,9 @@
       enemy: data.enemy,
       pathCost: data.pathCost,
       prevMoveDistance,
-      prevHealth, prevConditions,
+      prevHealth: pushSnap.health, prevConditions: pushSnap.conditions,
       otherUnitPositions, prevTraps,
-      prevResources: JSON.parse(JSON.stringify(u.resources || {})),
+      prevResources: pushSnap.resources,
     });
 
     G.log(`${u.name} pushes ${data.enemy.name} and moves to (${u.q},${u.r})`, u.player);
@@ -2473,8 +2448,7 @@
     // Snapshot traps and unit health for undo (traps can damage allies)
     const trapSnapshot = new Map();
     for (const [k, v] of G.state.traps) trapSnapshot.set(k, { ...v });
-    const unitSnapshots = G.state.units.filter(u => u.health > 0)
-      .map(u => ({ unit: u, health: u.health, conditions: u.conditions.map(c => ({ ...c })) }));
+    const unitSnapshots = snapshotAllUnits();
 
     act.woundUp = {
       phase: 'targeting',
@@ -2572,12 +2546,7 @@
     if (!act || !act.woundUp) return;
     // Restore trap positions and unit health from snapshot
     G.state.traps = new Map(act.woundUp.undoData.trapSnapshot);
-    if (act.woundUp.undoData.unitSnapshots) {
-      for (const snap of act.woundUp.undoData.unitSnapshots) {
-        snap.unit.health = snap.health;
-        snap.unit.conditions = snap.conditions;
-      }
-    }
+    restoreSnapshots(act.woundUp.undoData.unitSnapshots);
     delete act.woundUp;
   }
 
@@ -2751,9 +2720,7 @@
   function initFalconGust(unit) {
     const act = G.state.activationState;
     if (!act) return;
-    const unitSnapshots = G.state.units.filter(u => u.health > 0)
-      .map(u => ({ unit: u, q: u.q, r: u.r, health: u.health,
-                   conditions: u.conditions.map(c => ({ ...c })) }));
+    const unitSnapshots = snapshotAllUnits();
     const terrainSnapshot = new Map();
     for (const [k, v] of G.state.terrain) terrainSnapshot.set(k, { ...v });
 
@@ -2871,15 +2838,9 @@
   function undoFalconGust() {
     const act = G.state.activationState;
     if (!act || !act.falconGust || !act.falconGust.undoData) return false;
-    const { unitSnapshots, terrainSnapshot } = act.falconGust.undoData;
-    for (const snap of unitSnapshots) {
-      snap.unit.q = snap.q;
-      snap.unit.r = snap.r;
-      snap.unit.health = snap.health;
-      snap.unit.conditions = snap.conditions;
-    }
+    restoreSnapshots(act.falconGust.undoData.unitSnapshots);
     G.state.terrain.clear();
-    for (const [k, v] of terrainSnapshot) G.state.terrain.set(k, v);
+    for (const [k, v] of act.falconGust.undoData.terrainSnapshot) G.state.terrain.set(k, v);
     delete act.falconGust;
     return true;
   }

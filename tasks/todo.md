@@ -11,23 +11,39 @@ Code-complete but not verified in gameplay. Only move to Tested after user confi
 - [ ] Harbringer (Celae) — NO DEF in abilityDefs, needs spreadsheet entry
 - [ ] Honeydew (Ash) — NO DEF in abilityDefs, needs spreadsheet entry
 
-### Dusters (data-driven, dispatched via spreadsheet)
-- [ ] Sand Stormed (faction rule) — Hidden in Sand
-- [ ] Parting Gift system — all 12 death rules + ability defs
-- [ ] Protector (Shield PG) — bonusarmor aura
-- [ ] True Sight (Scope PG) — truesight bypasses Hidden/Cover/Concealing
-- [ ] Sneak Attack (Sniper PG) — +1 dmg if attacker hidden
-- [ ] Regen (Stimpak PG) — activation heal
-- [ ] Tumbler (Slider PG) — move into enemies action
-- [ ] Hidden (Cloak PG) — passive hidden
-- [ ] Mobile (Greaves PG) — passive mobile
-- [ ] Bump (Lance PG) — hit push + move self
+### Dusters (smoke tested)
+- [x] Sand Stormed (faction rule) — Hidden in Sand ✅ isHidden=true on sand, false off sand, non-Dusters false
+- [x] Parting Gift system — grantAbility fires on death, closestAlly targeting ✅ (BUG FIXED: resolveTargets camelCase split)
+- [x] Parting Gift chaining — inherited PGs transfer on subsequent death ✅ (Cloak→Ashen got both PG-Cloak + PG-Lance)
+- [x] Poison Attack (Ashen) — hit.Poison applies poisoned condition ✅
+- [x] Hidden (Cloak) — passive.hidden:always, blocks attacks from dist>1 ✅
+- [x] Move undo — position restored correctly ✅
+- [x] Attack undo — HP restored correctly ✅
+- [ ] Protector (Shield PG) — NOT TESTED (Shield not in roster, needs spreadsheet def)
+- [ ] True Sight (Scope PG) — NOT TESTED (Scope not in roster, needs spreadsheet def)
+- [ ] Sneak Attack (Sniper PG) — NOT TESTED (needs spreadsheet def)
+- [ ] Regen (Stimpak PG) — NOT TESTED (needs spreadsheet def)
+- [ ] Tumbler (Slider PG) — NOT TESTED (needs spreadsheet def)
+- [ ] Mobile (Greaves PG) — NOT TESTED (needs spreadsheet def)
+- [ ] Absorber (Haboob) — NOT TESTED (Haboob not in roster, needs spreadsheet def)
+- [ ] Collector (Shiney) — NOT TESTED (Shiney not in roster, needs spreadsheet def)
 
 ### Stonehart (smoke tested — previous session)
 - [x] All Stonehart abilities — smoke tested. Earth Rune bug found & fixed (resolveTargets hex fallback).
 
 ### Red Ridge (smoke tested — previous session)
 - [x] Fire Charged (faction rule) + 5 core abilities — smoke tested. hasFlag case-sensitivity bug found & fixed.
+
+### Dusters Smoke Test Summary (2026-02-20)
+**BUG FOUND & FIXED:** `resolveTargets()` camelCase tokenizer broke compound keywords (`closestAlly`, `deadAlly`, `allAllies`, `allEnemies`). CamelCase split turned `closestAlly` into tokens `{closest, ally}` but checks looked for `closestally` as single token. **Fix:** check `joined` (pre-tokenized lowercase) for compound keywords instead of `tokens`. This blocked ALL Parting Gift grantability effects and would have affected allAllies/allEnemies hymn targets.
+
+**Resolved abilities (4):** Poison Attack, Parting Gift - Cloak, Hidden, Parting Gift - Lance
+**Faction-wide ability:** "Dusters" → `passive.hidden.sand` ✅
+**Missing ability defs (13):** HAZWOPER, Shifting Winds, Plagued Memories, Remember - Affliction, Flanker: Brutal, Deprived Recollection, Remember - Hunger, Enfeebling Attack, Sanguine Echoes, Remember - Slaughter, Sand Elemental, Sweeping, Shove
+
+**Legendary passives (3 in game-battle.js):** `plaguedmemories`, `sanguineechoes`, `dutifulreflection` — all need passive flag rules in spreadsheet to expose `hasFlag()` checks.
+**No code exists:** `deprivedrecollection` — only a specialRule name, needs full action ability def in spreadsheet.
+**Remember abilities (3):** Need allyDeath type rules in spreadsheet — `dispatchAllyDeath()` code path is confirmed working.
 
 ---
 
@@ -36,8 +52,8 @@ Code-complete but not verified in gameplay. Only move to Tested after user confi
 Code handlers exist. Just needs rules/ability defs added to Google Sheets.
 
 ### Dusters — Existing effects, need sheet entries
+- [x] Poison Attack (Ashen) — hit.Poison ✅ WORKS (ability def exists)
 - [ ] Shove (Lance, Bouncer) — hit.Push.1. Needs "Shove" ability def.
-- [ ] Poison Attack (Ashen) — hit.Poison. Ability def may exist.
 - [ ] HAZWOPER (Hook, Diffuser, Aeolus, Bouncer) — `passive.hazwoper`, effect=`ignoreTerrainRule`, value=`dangerous,poisonous`
 - [ ] Shifting Winds (Aeolus) — `action.shiftingwinds`, effect=`relocate` (same as Tree Song for shifting terrain)
 - [ ] Enfeebling Attack (Dearth) — `hit.weakness.1`
