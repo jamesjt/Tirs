@@ -36,7 +36,6 @@ const Abilities = (() => {
     vulnerable:   'endOfRound',
     protected:    'endOfRound',
     strengthened: 'untilAttack',
-    empowered:    'untilAttack',
     weakness:     'endOfActivation',
     leveled:      'permanent',
     movebonus:    'endOfActivation',
@@ -388,7 +387,7 @@ const Abilities = (() => {
 
   // No-op effects that are resolved at scan time, not runtime
   const PASSIVE_ONLY_EFFECTS = new Set([
-    'tag', 'maxresource', 'resetresource', 'resourcemod', 'terrainresource', 'damageresource',
+    'tag', 'maxresource', 'resetresource', 'refillresource', 'resourcemod', 'terrainresource', 'damageresource',
   ]);
 
   function applyEffect(targets, effect, value, ctx) {
@@ -683,10 +682,18 @@ const Abilities = (() => {
 
   function applyTerrainCreateEffect(targets, lower, value, ctx) {
     const owner = ctx.unit ? ctx.unit.player : 0;
-    // Always place terrain immediately — the target hex is already resolved
-    // (either from action targeting or from a non-interactive context).
-    // No need to queue: unlike push/pull, create effects don't require
-    // the user to pick a destination after the ability fires.
+    const count = parseInt(value, 10) || 0; // 0 = place all
+    // When queuing and count limits placement to fewer than available targets,
+    // queue for interactive selection (e.g. Burning Cinder: pick 1 of N)
+    if (isQueuing && count > 0 && count < targets.length) {
+      const validHexes = new Set(targets.map(t => `${t.q},${t.r}`));
+      effectQueue.push({
+        type: 'create', surface: lower, player: owner,
+        validHexes, unit: ctx.unit, remaining: count,
+      });
+      return;
+    }
+    // No count limit or single target: place all immediately (e.g. Volatile)
     for (const t of targets) {
       Game.placeTerrain(t.q, t.r, lower, owner);
       const tName = (Units.terrainRules[lower] || {}).displayName || lower;
@@ -707,9 +714,22 @@ const Abilities = (() => {
   }
 
   function applyPlaceTerrain(targets, value, ctx) {
+    // value format: "surface" or "surface:count"
+    const parts = (value || '').split(':');
+    const surface = parts[0];
+    const count = parts.length >= 2 ? (parseInt(parts[1], 10) || 0) : 0;
+    const owner = ctx.unit ? ctx.unit.player : 0;
+    if (isQueuing && count > 0 && count < targets.length) {
+      const validHexes = new Set(targets.map(t => `${t.q},${t.r}`));
+      effectQueue.push({
+        type: 'create', surface, player: owner,
+        validHexes, unit: ctx.unit, remaining: count,
+      });
+      return;
+    }
     for (const t of targets) {
-      Game.placeTerrain(t.q, t.r, value, ctx.unit ? ctx.unit.player : 0);
-      Game.log(`${ctx.unit ? ctx.unit.name : 'Effect'} creates ${value} terrain at (${t.q},${t.r})`, ctx.unit ? ctx.unit.player : 0);
+      Game.placeTerrain(t.q, t.r, surface, owner);
+      Game.log(`${ctx.unit ? ctx.unit.name : 'Effect'} creates ${surface} terrain at (${t.q},${t.r})`, ctx.unit ? ctx.unit.player : 0);
     }
   }
 
@@ -2007,6 +2027,14 @@ const Abilities = (() => {
     return actions;
   }
 
+  /** Check if an action rule's conditions are met for a unit (e.g. resource gates). */
+  function isActionAvailable(unit, actionRuleId) {
+    if (!actionRuleId) return true;
+    const rule = atomicRules[actionRuleId];
+    if (!rule || !rule.condition) return true;
+    return evaluateCondition(rule.condition, rule.conditionValue, { unit });
+  }
+
   /** Get targeting parameters for a targeted action ability. */
   function getTargeting(abilityName, actionRuleId) {
     const def = abilityDefs[abilityName];
@@ -2295,14 +2323,20 @@ const Abilities = (() => {
     const eff = effectQueue[0];
     if (!eff) return false;
 
-    // Create effect: place terrain and consume
+    // Create effect: place terrain, then re-queue or consume
     if (eff.type === 'create') {
       Game.placeTerrain(q, r, eff.surface, eff.player || 0);
       const tName = (Units.terrainRules[eff.surface] || {}).displayName || eff.surface;
       const src = eff.unit ? eff.unit.name : 'Effect';
       const player = eff.unit ? eff.unit.player : 0;
       Game.log(`${src} creates ${tName} terrain at (${q},${r})`, player);
-      effectQueue.shift();
+      // If remaining > 1, keep in queue for next pick
+      if (eff.remaining && eff.remaining > 1) {
+        eff.remaining--;
+        eff.validHexes.delete(`${q},${r}`);
+      } else {
+        effectQueue.shift();
+      }
       return true;
     }
 
@@ -2445,6 +2479,7 @@ const Abilities = (() => {
     getTerrainAuraMap,
     getAfterMoveTeleports,
     getActions,
+    isActionAvailable,
     getTargeting,
     executeAction,
 

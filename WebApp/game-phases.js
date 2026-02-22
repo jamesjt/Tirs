@@ -548,6 +548,26 @@
           }
         },
       },
+      // Refill resources marked with refillresource passive (once-per-round pattern)
+      {
+        id: 'refillResources',
+        label: 'Refill resources',
+        auto: true,
+        execute() {
+          if (typeof Abilities === 'undefined') return;
+          for (const u of G.state.units) {
+            if (u.health <= 0 || !u.resources) continue;
+            const refills = Abilities.getPassiveList(u, 'refillresource');
+            for (const resType of refills) {
+              const max = Abilities.getMaxResource(u, resType);
+              if (u.resources[resType] !== undefined && u.resources[resType] < max) {
+                u.resources[resType] = max;
+                G.log(`${u.name}'s ${resType} refills to ${max}`, u.player);
+              }
+            }
+          }
+        },
+      },
       // Dancer: interactive round-start poise choice
       (() => {
         const dancers = [];

@@ -157,7 +157,6 @@ const Game = (() => {
     vulnerable:   { armor: -1 },
     strengthened: { damage: 1 },
     leveled:      { damage: 1 },
-    empowered:    { damage: 2 },
     weakness:     { damage: -1 },
     break:       { armor: -1 },
     movebonus:    { move: 1 },

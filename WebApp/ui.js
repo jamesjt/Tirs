@@ -87,7 +87,6 @@ const UI = (() => {
   // ── Condition icon mapping (swap values to change icon style) ─
   const COND_ICONS = {
     strengthened: '\u2694',  // ⚔ crossed swords
-    empowered:    '\u2694',  // ⚔ crossed swords (same icon, different color)
     weakness:     '\u25BC',  // ▼ down triangle
     vulnerable:   '\u2666',  // ♦ diamond (exposed)
     protected:    '\u25C6',  // ◆ solid diamond (shielded)
@@ -2275,6 +2274,7 @@ const UI = (() => {
         for (const ab of actions) {
           if (ab.oncePerGame && act.unit.usedAbilities.has(ab.name)) continue;
           if (ab.oncePerRound && act.unit.usedAbilitiesThisRound && act.unit.usedAbilitiesThisRound.has(ab.name)) continue;
+          if (!Abilities.isActionAvailable(act.unit, ab.actionRuleId)) continue;
           if (ab.actionCost === 'move' && act.moved) continue;
           if (ab.actionCost === 'attack' && act.attacked) continue;
           if (Game.hasCondition(act.unit, 'silenced')) continue;
@@ -5153,7 +5153,6 @@ const UI = (() => {
     { id: 'protected',    duration: 'endOfRound' },
     { id: 'vulnerable',   duration: 'endOfRound' },
     { id: 'strengthened',  duration: 'untilAttack' },
-    { id: 'empowered',    duration: 'untilAttack' },
     { id: 'weakness',     duration: 'endOfActivation' },
     { id: 'poisoned',     duration: 'endOfActivation' },
     { id: 'burning',      duration: 'permanent' },
@@ -5309,67 +5308,79 @@ const UI = (() => {
 
   // ── Debug: Resource Menu ──────────────────────────────────────
 
-  const DEBUG_RESOURCES = ['mana', 'lightning', 'energy', 'charge'];
-
   let debugSelectedResource = null; // { type, action } where action = 'add' | 'remove' | 'recharge'
   let debugPickingResource = false;
+
+  /** Get dynamic resource types from deployed units (falls back to defaults if none). */
+  function getDebugResourceTypes() {
+    if (typeof Abilities !== 'undefined') {
+      const types = Abilities.getAllResourceTypes();
+      if (types.length > 0) return types;
+    }
+    return ['mana'];
+  }
 
   function buildDebugResourceMenu(nav) {
     const wrap = document.createElement('div');
     wrap.className = 'debug-menu';
-    let btns = DEBUG_RESOURCES.map(r =>
-      `<div class="debug-res-row">` +
-      `<span class="debug-res-label">${r}</span>` +
-      `<button class="btn-debug-cond" data-res="${r}" data-res-action="add">+1</button>` +
-      `<button class="btn-debug-cond" data-res="${r}" data-res-action="remove">-1</button>` +
-      `</div>`
-    ).join('');
     wrap.innerHTML = '<button class="btn-debug-toggle">Resources</button>' +
-      '<div class="debug-dropdown hidden">' +
-      btns +
-      '<hr class="debug-sep">' +
-      '<button class="btn-debug-cond" data-res="__recharge__">Recharge All</button>' +
-      '<hr class="debug-sep">' +
-      '<button class="btn-debug-cond" data-res="__heal__" data-res-action="heal">Heal 1</button>' +
-      '<button class="btn-debug-cond" data-res="__damage__" data-res-action="damage">Damage 1</button>' +
-      '</div>';
+      '<div class="debug-dropdown hidden"></div>';
     nav.appendChild(wrap);
 
     const toggle = wrap.querySelector('.btn-debug-toggle');
     const dropdown = wrap.querySelector('.debug-dropdown');
 
+    function rebuildDropdown() {
+      const resources = getDebugResourceTypes();
+      let btns = resources.map(r =>
+        `<div class="debug-res-row">` +
+        `<span class="debug-res-label">${r}</span>` +
+        `<button class="btn-debug-cond" data-res="${r}" data-res-action="add">+1</button>` +
+        `<button class="btn-debug-cond" data-res="${r}" data-res-action="remove">-1</button>` +
+        `</div>`
+      ).join('');
+      dropdown.innerHTML = btns +
+        '<hr class="debug-sep">' +
+        '<button class="btn-debug-cond" data-res="__recharge__">Recharge All</button>' +
+        '<hr class="debug-sep">' +
+        '<button class="btn-debug-cond" data-res="__heal__" data-res-action="heal">Heal 1</button>' +
+        '<button class="btn-debug-cond" data-res="__damage__" data-res-action="damage">Damage 1</button>';
+      // Re-bind click handlers
+      dropdown.querySelectorAll('.btn-debug-cond').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const res = btn.dataset.res;
+          const action = btn.dataset.resAction || 'recharge';
+          if (res === '__recharge__') {
+            debugSelectedResource = { type: null, action: 'recharge' };
+          } else if (res === '__heal__') {
+            debugSelectedResource = { type: null, action: 'heal' };
+          } else if (res === '__damage__') {
+            debugSelectedResource = { type: null, action: 'damage' };
+          } else {
+            debugSelectedResource = { type: res, action };
+          }
+          debugPickingResource = true;
+          dropdown.classList.add('hidden');
+          let label;
+          if (res === '__recharge__') label = 'RECHARGE all resources';
+          else if (res === '__heal__') label = 'HEAL 1 HP';
+          else if (res === '__damage__') label = 'DAMAGE 1 HP';
+          else label = `${action === 'add' ? '+1' : '-1'} ${res}`;
+          document.getElementById('status-bar').textContent =
+            `Click a unit to ${label}... (ESC to cancel)`;
+        });
+      });
+    }
+
     toggle.addEventListener('click', e => {
       e.stopPropagation();
+      // Rebuild on each open to pick up newly deployed resource types
+      if (dropdown.classList.contains('hidden')) rebuildDropdown();
       dropdown.classList.toggle('hidden');
     });
 
     document.addEventListener('click', () => dropdown.classList.add('hidden'));
     dropdown.addEventListener('click', e => e.stopPropagation());
-
-    dropdown.querySelectorAll('.btn-debug-cond').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const res = btn.dataset.res;
-        const action = btn.dataset.resAction || 'recharge';
-        if (res === '__recharge__') {
-          debugSelectedResource = { type: null, action: 'recharge' };
-        } else if (res === '__heal__') {
-          debugSelectedResource = { type: null, action: 'heal' };
-        } else if (res === '__damage__') {
-          debugSelectedResource = { type: null, action: 'damage' };
-        } else {
-          debugSelectedResource = { type: res, action };
-        }
-        debugPickingResource = true;
-        dropdown.classList.add('hidden');
-        let label;
-        if (res === '__recharge__') label = 'RECHARGE all resources';
-        else if (res === '__heal__') label = 'HEAL 1 HP';
-        else if (res === '__damage__') label = 'DAMAGE 1 HP';
-        else label = `${action === 'add' ? '+1' : '-1'} ${res}`;
-        document.getElementById('status-bar').textContent =
-          `Click a unit to ${label}... (ESC to cancel)`;
-      });
-    });
   }
 
   function handleDebugResourceClick(hex) {

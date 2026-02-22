@@ -5,13 +5,21 @@
 ## Overarching Goals
 
 ### Rework Mana & Recharge into Unified Resource System
-- [ ] Audit all current mana usage (Primordial Mists consume/gain, resource caps, resourcemod)
-- [ ] Audit all recharge usage (Fire Charged, Forest Charged — reset usedAbilities on trigger)
-- [ ] Design unified resource primitives that handle both mana-like pools and recharge triggers
-- [ ] Migrate existing mana abilities to unified system
-- [ ] Migrate existing recharge abilities to unified system
-- [ ] Update spreadsheet rules to use new unified format
-- [ ] Test all affected factions (Primordial Mists, Red Ridge, Syli)
+- [x] Phase 1: Code changes
+  - [x] `refillresource` passive — refills resource to max at round start (for once-per-round)
+  - [x] `isActionAvailable()` — UI hides action buttons when resource condition fails
+  - [x] Dynamic debug resource dropdown — discovers types from deployed units
+  - [x] Removed orphaned `empowered` condition (CONDITION_MODS, CONDITION_DEFAULTS, COND_ICONS, CSS)
+- [ ] Phase 2: Spreadsheet migration (user)
+  - [ ] Convert once-per-game abilities to deploy rule (gainresource) + resource condition + consume
+  - [ ] Convert once-per-round abilities to same + refillresource passive
+  - [ ] Convert Fire Charged / Forest Charged to damageresource / terrainresource passives
+  - [ ] Test all affected factions (Red Ridge, Syli, Primordial Mists)
+- [ ] Phase 3: Cleanup (after migration verified)
+  - [ ] Remove oncePerGame/oncePerRound parsing and checks (9 dispatch sites + units.js)
+  - [ ] Remove usedAbilities/usedAbilitiesThisRound system
+  - [ ] Remove hardcoded Fire Charged / Forest Charged triggers
+  - [ ] Remove applyRecharge() function
 
 ### Make Mobile Friendly
 - [ ] Responsive layout — adapt board + panels to portrait/landscape mobile viewports

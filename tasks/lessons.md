@@ -49,6 +49,16 @@ Clock Traps are NOT terrain — they share a space with surfaces and are consume
 - Same principle applies everywhere: prefer `push` with a value over `pushSpecificUnit`, `heal` over `healSelf`, etc.
 - When designing a new ability, ask: "Can this be expressed as a generic effect with parameters?" If yes, build the generic version.
 
+## Resource System Design (2026-02-21)
+- **Resource types are arbitrary strings** — no hardcoded registry. A type exists when a `gainresource` effect creates it on a unit.
+- **Initialization via deploy rules**, not code: `type: deploy, target: self, effect: gainresource, value: typename:amount`. The `afterDeploy` dispatch already fires at deploy time.
+- **`maxresource` passive only needed for cap > 1** — `getMaxResource()` defaults to 1 when no passive exists.
+- **Once-per-game = deploy gives 1 resource + action consumes it.** No `oncePerGame` flag needed.
+- **Once-per-round = same + `refillresource` passive** refills to max at round start.
+- **Rechargeable = same + `damageresource`/`terrainresource` passives** grant resource on triggers.
+- **Multi-resource units** (e.g., Runesmith with 3 rune types): each resource type is independent, each ability gates on its own `resource` condition.
+- **`isActionAvailable(unit, ruleId)`** checks the action rule's condition before showing the button — so depleted resources hide the button.
+
 ## No Runtime Patches for Spreadsheet Data
 - **NEVER inject rules or ability defs via runtime patches in code** (e.g. `Abilities.setAtomicRules(...)` in units.js). The spreadsheet is the single source of truth for ability data and is trivially editable. Runtime patches are junk code that obscures the real data source, creates maintenance burden, and confuses future debugging.
 - If an ability needs a new rule or changed ruleIds, **tell the user to update the spreadsheet**. Don't add "temporary" code patches — they always outlive their welcome.
