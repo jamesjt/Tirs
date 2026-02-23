@@ -267,6 +267,7 @@ const UI = (() => {
         if (act && actionCost) {
           if (actionCost === 'move') act.moved = true;
           else if (actionCost === 'attack') act.attacked = true;
+          else if (actionCost === 'non-activation') act._nonActivationUsed = true;
         }
         Game.log(`${unit.name} uses ${abilityName}${actionCost ? ' (uses ' + actionCost + ')' : ''}`, unit.player);
         // Undo history (include condition changes for self-buff abilities)
@@ -490,6 +491,7 @@ const UI = (() => {
     if (act) {
       if (actionCost === 'move') act.moved = true;
       else if (actionCost === 'attack') act.attacked = true;
+      else if (actionCost === 'non-activation') act._nonActivationUsed = true;
     }
     targeting.relocate = null;
     if (typeof Abilities !== 'undefined') Abilities.clearEffectQueue();
@@ -3933,6 +3935,7 @@ const UI = (() => {
         }
         if (actionCost === 'move') act.moved = true;
         else if (actionCost === 'attack') act.attacked = true;
+        else if (actionCost === 'non-activation') act._nonActivationUsed = true;
         if (actionCost) Game.log(`${act.unit.name} uses ${abilityName} (uses ${actionCost})`, act.unit.player);
         if (act.moved && act.attacked && !Game.state.rules.confirmEndTurn) {
           if (typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) {
@@ -4763,6 +4766,7 @@ const UI = (() => {
         if (act && actionCost) {
           if (actionCost === 'move') act.moved = true;
           else if (actionCost === 'attack') act.attacked = true;
+          else if (actionCost === 'non-activation') act._nonActivationUsed = true;
         }
         Game.log(`${targeting.ability.unit.name} uses ${abName}${actionCost ? ' (uses ' + actionCost + ')' : ''}`, targeting.ability.unit.player);
 

@@ -1143,6 +1143,11 @@
     const act = G.state.activationState;
     if (act) {
       act.unit.activated = true;
+      // Non-activation actions (e.g. Restless): if unit didn't move or attack,
+      // don't count this as their activation for the round
+      if (!act.moved && !act.attacked && act._nonActivationUsed) {
+        act.unit.activated = false;
+      }
       G.clearConditions(act.unit, 'endOfActivation');
       // Clear suppressed from all teammates — the "skip turn" has been served
       for (const u of G.state.units) {
@@ -1711,6 +1716,8 @@
       act.unit.usedAbilities.delete('Zoom');
       // Restore traps consumed during path traversal
       if (last.prevTraps) G.state.traps = new Map(last.prevTraps);
+      // Restore mana
+      if (last.prevResources) act.unit.resources = last.prevResources;
     } else if (last.type === 'level') {
       // Restore original terrain
       if (last.prevSurface) {
@@ -2008,6 +2015,10 @@
     const zoomSnap = snapshotUnit(u);
     const otherSnapshots = snapshotAllUnits(new Set([u]));
     const prevTraps = G.state.traps.size > 0 ? new Map(G.state.traps) : null;
+
+    // Consume mana
+    u.resources.mana = (u.resources.mana || 0) - 1;
+    G.log(`${u.name} consumes 1 mana (${u.resources.mana} remaining)`, u.player);
 
     // Walk path: deal 1 damage to each unit on ALL hexes (intermediates + destination)
     const damagedUnits = [];
