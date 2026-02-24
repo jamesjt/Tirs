@@ -4417,16 +4417,15 @@ const UI = (() => {
     const trapKey = `${trap.q},${trap.r}`;
     const trapOwner = Game.state.traps.get(trapKey);
     const trapPlayer = trapOwner ? trapOwner.player : 0;
-    // Split destinations: occupied hexes → red attack reticles, others → yellow/cyan highlights
+    // Build destination highlights: all valid hexes get yellow highlight, occupied also get red reticle
     const moveHexes = new Map();
     const occupiedTargets = new Map();
     for (const [k] of dests) {
       const [dq, dr] = k.split(',').map(Number);
+      moveHexes.set(k, k === trapKey ? 2 : 1);
       const occupant = Game.state.units.find(u => u.q === dq && u.r === dr && u.health > 0);
       if (occupant) {
         occupiedTargets.set(k, { damage: 1 });
-      } else {
-        moveHexes.set(k, k === trapKey ? 2 : 1);
       }
     }
     targeting.woundUp = { trapIndex: wu.currentIndex, validHexes: dests, currentTrap: trap };

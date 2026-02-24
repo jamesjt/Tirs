@@ -97,105 +97,143 @@
       if (others.length > 0) return null;
     }
 
+    // Auto-revert pending activation effects if switching to a different unit
+    const prevActivation = (G.state.actionHistory || []).find(h => h.type === 'activation');
+    if (prevActivation && prevActivation.unit !== unit) {
+      // Selecting a different unit — revert all activation effects from previous unit
+      restoreSnapshots(prevActivation.snapshot.unitSnapshots);
+      G.state.delayedEffects = prevActivation.snapshot.delayedEffects;
+      G.state.traps = prevActivation.snapshot.traps;
+      G.state.terrain.clear();
+      for (const [k, v] of prevActivation.snapshot.terrain) G.state.terrain.set(k, v);
+      G.state.combatLog.length = prevActivation.snapshot.logLength;
+      G.state.actionHistory = [];
+    } else if (prevActivation) {
+      // Re-selecting same unit — preserve activation entries, discard action entries
+      G.state.actionHistory = (G.state.actionHistory || []).filter(
+        h => h.type === 'activation' || h.type === 'woundup' || h.type === 'falcongust'
+      );
+    } else {
+      G.state.actionHistory = [];
+    }
+
     G.state.activationState = { unit, moved: false, attacked: false, moveDistance: 0, damagedEnemies: [], startQ: unit.q, startR: unit.r };
-    G.state.actionHistory = [];
     G.state._logIndexAtSelect = G.state.combatLog.length;
-    G.log(`${unit.name} activated`, unit.player);
+
+    // Check if activation effects already fired (re-select same unit after deselect)
+    const activationAlreadyDone = G.state.actionHistory.some(h => h.type === 'activation');
 
     // Tumbler: moving through enemies IS the attack — mark attacked
     if (G.hasCondition(unit, 'tumbler')) {
       G.state.activationState.attacked = true;
     }
 
-    // Resolve delayed effects from this unit's previous turn
-    const pendingDE = G.state.delayedEffects.filter(de => de.unit === unit);
-    for (const de of pendingDE) {
-      const target = G.state.units.find(u => u.q === de.targetQ && u.r === de.targetR && u.health > 0);
-      let dmg = 0;
-      if (target) {
-        let defArm = G.getEffective(target, 'armor');
-        if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'ignoreBaseArmor')) {
-          defArm = defArm - target.armor;
-        }
-        dmg = Math.max(1, de.atkDmg - defArm);
-        if (typeof Abilities !== 'undefined') {
-          const caps = Abilities.getPassiveList(target, 'reducedamageto');
-          if (caps.length > 0) { const cap = parseInt(caps[0], 10); if (!isNaN(cap) && dmg > cap) dmg = cap; }
-        }
-        target.health -= dmg;
-        const killText = target.health <= 0 ? ' \u2620 KILLED' : ` (${target.health}/${target.maxHealth} HP)`;
-        G.log(`${unit.name}'s delayed attack hits ${target.name} for ${dmg} dmg${killText}`, de.player);
-        // Process delayed empowerments
-        if (de.empowers && target.health > 0) {
-          for (const val of de.empowers) {
-            const parts = val.split(',');
-            const effect = (parts[0] || '').trim();
-            const severity = (parts[1] || '').trim();
-            if (!effect) continue;
-            if (effect === 'bonusdamage') {
-              const dmgVal = parseInt(severity, 10) || 1;
-              damageUnit(target, dmgVal, unit, 'empower');
-              G.log(`${unit.name}'s delayed empowered attack deals ${dmgVal} bonus damage to ${target.name}`, de.player);
-            } else {
-              const dur = (typeof Abilities !== 'undefined' && Abilities.getConditionDefault(effect)) || 'permanent';
-              const condVal = severity ? (isNaN(parseFloat(severity)) ? undefined : parseFloat(severity)) : undefined;
-              G.addCondition(target, effect, dur, de.player, condVal);
-              G.log(`${unit.name}'s delayed empowered attack applies ${effect} to ${target.name}`, de.player);
+    if (!activationAlreadyDone) {
+      G.log(`${unit.name} activated`, unit.player);
+
+      // Snapshot BEFORE any activation effects fire (for unified undo)
+      const activationSnapshot = {
+        unitSnapshots: snapshotAllUnits(),
+        delayedEffects: G.state.delayedEffects.map(de => ({ ...de })),
+        traps: new Map([...G.state.traps].map(([k, v]) => [k, { ...v }])),
+        terrain: new Map([...G.state.terrain].map(([k, v]) => [k, { ...v }])),
+        logLength: G.state.combatLog.length,
+      };
+
+      // Resolve delayed effects from this unit's previous turn
+      const pendingDE = G.state.delayedEffects.filter(de => de.unit === unit);
+      for (const de of pendingDE) {
+        const target = G.state.units.find(u => u.q === de.targetQ && u.r === de.targetR && u.health > 0);
+        let dmg = 0;
+        if (target) {
+          let defArm = G.getEffective(target, 'armor');
+          if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'ignoreBaseArmor')) {
+            defArm = defArm - target.armor;
+          }
+          dmg = Math.max(1, de.atkDmg - defArm);
+          if (typeof Abilities !== 'undefined') {
+            const caps = Abilities.getPassiveList(target, 'reducedamageto');
+            if (caps.length > 0) { const cap = parseInt(caps[0], 10); if (!isNaN(cap) && dmg > cap) dmg = cap; }
+          }
+          target.health -= dmg;
+          const killText = target.health <= 0 ? ' \u2620 KILLED' : ` (${target.health}/${target.maxHealth} HP)`;
+          G.log(`${unit.name}'s delayed attack hits ${target.name} for ${dmg} dmg${killText}`, de.player);
+          // Process delayed empowerments
+          if (de.empowers && target.health > 0) {
+            for (const val of de.empowers) {
+              const parts = val.split(',');
+              const effect = (parts[0] || '').trim();
+              const severity = (parts[1] || '').trim();
+              if (!effect) continue;
+              if (effect === 'bonusdamage') {
+                const dmgVal = parseInt(severity, 10) || 1;
+                damageUnit(target, dmgVal, unit, 'empower');
+                G.log(`${unit.name}'s delayed empowered attack deals ${dmgVal} bonus damage to ${target.name}`, de.player);
+              } else {
+                const dur = (typeof Abilities !== 'undefined' && Abilities.getConditionDefault(effect)) || 'permanent';
+                const condVal = severity ? (isNaN(parseFloat(severity)) ? undefined : parseFloat(severity)) : undefined;
+                G.addCondition(target, effect, dur, de.player, condVal);
+                G.log(`${unit.name}'s delayed empowered attack applies ${effect} to ${target.name}`, de.player);
+              }
             }
           }
+        } else {
+          G.log(`${unit.name}'s delayed attack at [${de.targetQ},${de.targetR}] hits nothing`, de.player);
         }
-      } else {
-        G.log(`${unit.name}'s delayed attack at [${de.targetQ},${de.targetR}] hits nothing`, de.player);
-      }
-      // Always dispatch afterAttack — Piercing damages units on the line even if target hex is empty
-      if (typeof Abilities !== 'undefined') {
-        Abilities.clearEffectQueue();
-        // Temporarily set attackPath for Piercing + Path resolution
-        if (de.attackPath) G.state.activationState.attackPath = de.attackPath;
-        const dispatchTarget = target || { q: de.targetQ, r: de.targetR };
-        Abilities.dispatch('afterAttack', { unit, target: dispatchTarget, damage: dmg, damagedUnits: target ? [target] : [] });
-        if (target && target.health <= 0) {
-          Abilities.dispatch('afterDeath', { unit: target, killer: unit });
-          Abilities.dispatchAllyDeath(target, unit);
+        // Always dispatch afterAttack — Piercing damages units on the line even if target hex is empty
+        if (typeof Abilities !== 'undefined') {
+          Abilities.clearEffectQueue();
+          // Temporarily set attackPath for Piercing + Path resolution
+          if (de.attackPath) G.state.activationState.attackPath = de.attackPath;
+          const dispatchTarget = target || { q: de.targetQ, r: de.targetR };
+          Abilities.dispatch('afterAttack', { unit, target: dispatchTarget, damage: dmg, damagedUnits: target ? [target] : [] });
+          if (target && target.health <= 0) {
+            Abilities.dispatch('afterDeath', { unit: target, killer: unit });
+            Abilities.dispatchAllyDeath(target, unit);
+          }
+          delete G.state.activationState.attackPath;
         }
-        delete G.state.activationState.attackPath;
       }
-    }
-    if (pendingDE.length > 0) {
-      G.state.delayedEffects = G.state.delayedEffects.filter(de => !pendingDE.includes(de));
-    }
+      if (pendingDE.length > 0) {
+        G.state.delayedEffects = G.state.delayedEffects.filter(de => !pendingDE.includes(de));
+      }
 
-    // X Marks the Spot: allies on friendly markers get strengthened
-    const markerData = G.state.markers && G.state.markers.get(`${unit.q},${unit.r}`);
-    if (markerData && markerData.player === unit.player) {
-      G.addCondition(unit, 'strengthened', 'untilAttack');
-      G.log(`${unit.name} is strengthened by the marked position`, unit.player);
-    }
-
-    // Invigorating terrain: heal 1 or gain strengthened if full
-    if (hasTerrainRule(unit.q, unit.r, 'invigorating', unit)) {
-      if (unit.health < unit.maxHealth) {
-        unit.health = Math.min(unit.health + 1, unit.maxHealth);
-        G.log(`${unit.name} healed by invigorating terrain (${unit.health}/${unit.maxHealth} HP)`, unit.player);
-      } else {
+      // X Marks the Spot: allies on friendly markers get strengthened
+      const markerData = G.state.markers && G.state.markers.get(`${unit.q},${unit.r}`);
+      if (markerData && markerData.player === unit.player) {
         G.addCondition(unit, 'strengthened', 'untilAttack');
-        G.log(`${unit.name} strengthened by invigorating terrain`, unit.player);
+        G.log(`${unit.name} is strengthened by the marked position`, unit.player);
       }
+
+      // Invigorating terrain: heal 1 or gain strengthened if full
+      if (hasTerrainRule(unit.q, unit.r, 'invigorating', unit)) {
+        if (unit.health < unit.maxHealth) {
+          unit.health = Math.min(unit.health + 1, unit.maxHealth);
+          G.log(`${unit.name} healed by invigorating terrain (${unit.health}/${unit.maxHealth} HP)`, unit.player);
+        } else {
+          G.addCondition(unit, 'strengthened', 'untilAttack');
+          G.log(`${unit.name} strengthened by invigorating terrain`, unit.player);
+        }
+      }
+
+      if (typeof Abilities !== 'undefined') {
+        Abilities.dispatch('afterSelect', { unit });
+      }
+
+      // Push activation undo entry (unit ref used to detect same-unit re-select vs switch)
+      G.state.actionHistory.push({ type: 'activation', unit, snapshot: activationSnapshot });
     }
 
-    if (typeof Abilities !== 'undefined') {
-      Abilities.dispatch('afterSelect', { unit });
-    }
-
-    // Falcon Gust: interactive activation ability
+    // Interactive activation abilities: skip if already completed
+    const fgAlreadyDone = G.state.actionHistory.some(h => h.type === 'falcongust');
     if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'falcongust')
-        && !G.hasCondition(unit, 'silenced')) {
+        && !G.hasCondition(unit, 'silenced') && !fgAlreadyDone) {
       initFalconGust(unit);
     }
 
-    // Wound Up: interactive activation — move traps
+    const wuAlreadyDone = G.state.actionHistory.some(h => h.type === 'woundup');
     if (typeof Abilities !== 'undefined' && Abilities.hasFlag(unit, 'woundup')
-        && !G.hasCondition(unit, 'silenced')) {
+        && !G.hasCondition(unit, 'silenced') && !wuAlreadyDone) {
       initWoundUp(unit);
     }
 
@@ -204,14 +242,9 @@
 
   function deselectUnit() {
     const act = G.state.activationState;
-    if (act && act.falconGust) undoFalconGust();
-    if (act && act.woundUp) undoWoundUp();
-    // Remove any activation-ability history entries (already undone above)
-    if (G.state.actionHistory) {
-      G.state.actionHistory = G.state.actionHistory.filter(
-        h => h.type !== 'woundup' && h.type !== 'falcongust'
-      );
-    }
+    // Only undo interactive abilities if still in targeting phase; completed ones persist (use undo button)
+    if (act && act.falconGust && act.falconGust.phase !== 'done') undoFalconGust();
+    if (act && act.woundUp && act.woundUp.phase !== 'done') undoWoundUp();
     G.state.activationState = null;
   }
 
@@ -1008,8 +1041,9 @@
       }
     }
 
-    // Snapshot other units before ability dispatch (Piercing, Hymn effects, etc.)
+    // Snapshot other units + terrain before ability dispatch (Piercing, Hymn, Volatile, etc.)
     const healthSnapshots = snapshotAllUnits(new Set([target, act.unit]));
+    const prevTerrain = new Map([...G.state.terrain].map(([k, v]) => [k, { ...v }]));
 
     // Store attack path for Piercing + Path resolution
     if (attackPath) act.attackPath = attackPath;
@@ -1040,7 +1074,7 @@
       type: 'attack', target, prevHealth, prevAttackerHealth,
       prevTargetConditions, prevTargetQ, prevTargetR,
       prevAttackerConditions, prevAttackerQ, prevAttackerR,
-      healthSnapshots,
+      healthSnapshots, prevTerrain,
       tossData: tossData || null,
       attackPath: attackPath || null,
       guardianTriggered: guardianTriggered || false,
@@ -1476,7 +1510,14 @@
         }
       }
     }
-    if (unit.health <= 0) return;
+    if (unit.health <= 0) {
+      // Dispatch afterDeath for trap kills (e.g. Volatile creates cinder)
+      if (typeof Abilities !== 'undefined') {
+        Abilities.dispatch('afterDeath', { unit, killer: null });
+        Abilities.dispatchAllyDeath(unit, null);
+      }
+      return;
+    }
 
     const terrainAuraMap = typeof Abilities !== 'undefined' ? Abilities.getTerrainAuraMap(unit) : new Map();
     const ignores = typeof Abilities !== 'undefined'
@@ -1486,6 +1527,14 @@
       const surface = td ? td.surface : '';
       damageUnit(unit, 1, null, surface === 'cinder' ? 'terrain-cinder' : 'terrain');
       G.log(`${unit.name} takes 1 terrain damage (${unit.health}/${unit.maxHealth} HP)`, unit.player);
+      if (unit.health <= 0) {
+        // Dispatch afterDeath for terrain kills (e.g. Volatile creates cinder)
+        if (typeof Abilities !== 'undefined') {
+          Abilities.dispatch('afterDeath', { unit, killer: null });
+          Abilities.dispatchAllyDeath(unit, null);
+        }
+        return;
+      }
     }
     if (hasTerrainRule(q, r, 'poisonous', unit, terrainAuraMap) && !ignores('poisonous')) {
       G.addCondition(unit, 'poisoned', 'endOfActivation');
@@ -1796,6 +1845,11 @@
       if (last.prevAttackerQ != null) { act.unit.q = last.prevAttackerQ; act.unit.r = last.prevAttackerR; }
       // Restore other units (health, conditions, position, resources — Piercing, Hymn, etc.)
       restoreSnapshots(last.healthSnapshots);
+      // Restore terrain (Volatile cinder, etc.)
+      if (last.prevTerrain) {
+        G.state.terrain.clear();
+        for (const [k, v] of last.prevTerrain) G.state.terrain.set(k, v);
+      }
       // Restore hymn repetition counter
       if (last.prevHymnRepetition != null) {
         G.state.hymnRepetition[act.unit.player] = last.prevHymnRepetition;
@@ -1828,6 +1882,14 @@
       // Restore spent resource
       if (last.costType === 'move') act.moved = false;
       else if (last.costType === 'attack') act.attacked = false;
+    } else if (last.type === 'activation') {
+      // Restore all state from before activation effects fired
+      restoreSnapshots(last.snapshot.unitSnapshots);
+      G.state.delayedEffects = last.snapshot.delayedEffects;
+      G.state.traps = last.snapshot.traps;
+      G.state.terrain.clear();
+      for (const [k, v] of last.snapshot.terrain) G.state.terrain.set(k, v);
+      G.state.combatLog.length = last.snapshot.logLength;
     } else if (last.type === 'woundup') {
       // Restore all trap positions and unit health from snapshot
       G.state.traps = new Map(last.trapSnapshot);

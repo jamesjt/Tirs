@@ -608,6 +608,7 @@ const Board = (() => {
     const file = info?.image || 'toytrap.png';
     const img = new Image();
     img.src = `../nandeck/images/unitImages/RedRidge/${file}`;
+    img.onload = () => { if (lastState) render(lastState); };
     trapImages[type] = img;
     return img;
   }
