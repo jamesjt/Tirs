@@ -54,8 +54,10 @@ const Game = (() => {
       units: [],                // deployed Unit objects
       terrain: new Map(),       // "q,r" -> { surface, player }
       consumedUnits: [],        // [{ unit, fromQ, fromR }] — units swallowed by consuming terrain
+      rapaciousCaptures: [],    // [{ captor, target, range }] — units devoured by Rapacious
       delayedEffects: [],       // [{ unit, player, targetQ, targetR, atkDmg, round }]
       traps: new Map(),         // "q,r" -> { player } — clock traps (4th hex layer)
+      markers: new Map(),       // "q,r" -> { player, type } — X Marks the Spot etc.
       pendingDeployTraps: null, // { unit, count, placed } — interactive trap placement after deploy
       pendingDeployTerrain: null, // { unit, terrainType, player } — interactive terrain placement after deploy
       pendingReplacement: null,   // { unit, player, q, r, available: [templates] } — Hymn replacement choice

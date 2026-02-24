@@ -1090,6 +1090,28 @@ const Board = (() => {
       }
     }
 
+    // 4a2. Markers (X Marks the Spot — rendered above traps)
+    if (state.markers) {
+      for (const [key, marker] of state.markers) {
+        const [q, r] = key.split(',').map(Number);
+        const hex = getHex(q, r);
+        if (!hex) continue;
+        const { x, y } = px(hex);
+        const s = sz();
+        const color = marker.player === 1 ? '#3080d0' : '#d03030';
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.globalAlpha = 0.7;
+        const half = s * 0.35;
+        ctx.beginPath();
+        ctx.moveTo(x - half, y - half); ctx.lineTo(x + half, y + half);
+        ctx.moveTo(x + half, y - half); ctx.lineTo(x - half, y + half);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
     // 4b. Dots+border highlights (movement, deployment — rendered above terrain/objectives)
     if (state.highlights && state.highlightStyle === 'dots') {
       const s = sz();

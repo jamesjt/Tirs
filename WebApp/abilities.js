@@ -66,6 +66,7 @@ const Abilities = (() => {
     allyDeath:     'afterAllyDeath',
     deploy:        'afterDeploy',
     hymn:          'hymn',
+    onTurnEnd:     'turnEnd',
   };
 
   // Reverse map: trigger string -> ability type
@@ -204,6 +205,9 @@ const Abilities = (() => {
     // lineToTarget as sole spec → return units on line (e.g. Piercing)
     if (tokens.has('line') && tokens.has('target') && !tokens.has('around') && !tokens.has('empty') && !tokens.has('spaces'))
       return resolveLineToTarget(ctx);
+    // pathToTarget as sole spec → return units on shortest path
+    if (joined === 'pathtotarget')
+      return resolvePathToTarget(ctx);
 
     // ── Determine anchor (center point for area collection) ──
     let anchor = ctx.unit;
@@ -261,6 +265,15 @@ const Abilities = (() => {
       }
     }
 
+    // "path" collects hex positions along BFS shortest path (exclusive of both endpoints)
+    if (tokens.has('path') && ctx.unit && anchor) {
+      const pathHexes = findShortestPath(ctx.unit.q, ctx.unit.r, anchor.q, anchor.r);
+      for (const h of pathHexes) {
+        const k = `${h.q},${h.r}`;
+        if (!seen.has(k)) { seen.add(k); hexes.push(h); }
+      }
+    }
+
     // "own" includes the anchor's hex itself
     if (tokens.has('own')) {
       const k = `${anchor.q},${anchor.r}`;
@@ -272,9 +285,9 @@ const Abilities = (() => {
     // ── Identify terrain rule tokens (any unknown token checked against terrain rules) ──
     const KEYWORDS = new Set([
       'self', 'target', 'atktarget', 'attacker', 'occupant',
-      'around', 'adjacent', 'own', 'line',
+      'around', 'adjacent', 'own', 'line', 'path',
       'units', 'unit', 'spaces', 'empty', 'enemy', 'ally', 'terrain',
-      'alldamaged', 'linetotarget', 'allallies', 'allenemies'
+      'alldamaged', 'linetotarget', 'pathtotarget', 'allallies', 'allenemies'
     ]);
     const terrainRuleTokens = [...tokens].filter(t => !KEYWORDS.has(t));
 
@@ -380,6 +393,48 @@ const Abilities = (() => {
     return result;
   }
 
+  /** Resolve units along BFS shortest path from unit to target (exclusive of both endpoints). */
+  function resolvePathToTarget(ctx) {
+    if (!ctx.unit || !ctx.target) return [];
+    const pathHexes = findShortestPath(ctx.unit.q, ctx.unit.r, ctx.target.q, ctx.target.r);
+    return pathHexes
+      .map(h => Game.state.units.find(u => u.q === h.q && u.r === h.r && u.health > 0))
+      .filter(Boolean);
+  }
+
+  /** BFS shortest path between two hexes (exclusive of both endpoints). No blocking. */
+  function findShortestPath(fromQ, fromR, toQ, toR) {
+    const startKey = `${fromQ},${fromR}`;
+    const endKey = `${toQ},${toR}`;
+    if (startKey === endKey) return [];
+    const parent = new Map();
+    const queue = [{ q: fromQ, r: fromR }];
+    parent.set(startKey, null);
+    while (queue.length > 0) {
+      const cur = queue.shift();
+      const curKey = `${cur.q},${cur.r}`;
+      if (curKey === endKey) break;
+      for (const n of Board.getNeighbors(cur.q, cur.r)) {
+        const nk = `${n.q},${n.r}`;
+        if (!parent.has(nk)) {
+          parent.set(nk, curKey);
+          queue.push(n);
+        }
+      }
+    }
+    if (!parent.has(endKey)) return [];
+    const path = [];
+    let key = endKey;
+    while (key && key !== startKey) {
+      const [q, r] = key.split(',').map(Number);
+      path.push({ q, r });
+      key = parent.get(key);
+    }
+    path.reverse();
+    path.pop(); // remove endpoint (target hex)
+    return path;
+  }
+
   // ── Effect Executors ─────────────────────────────────────────
   // Split into domain sub-functions for readability.
   // applyEffect() dispatches to: applyDamageEffect, applyMovementEffect_fx,
@@ -426,6 +481,7 @@ const Abilities = (() => {
       // ── Terrain ──
       case 'destroyterrain': return applyDestroyTerrain(targets, ctx);
       case 'placeterrain':   return applyPlaceTerrain(targets, value, ctx);
+      case 'placemarker':    return applyPlaceMarker(targets, value, ctx);
 
       // ── Resources ──
       case 'consume':      return applyConsume(value, ctx);
@@ -439,6 +495,9 @@ const Abilities = (() => {
       case 'laststand':        return applyLastStand(ctx);
       case 'replace':          return applyReplace(value, ctx);
       case 'empower':          return applyEmpower(targets, value, ctx);
+      case 'chainlightning':   return applyChainLightning(targets, value, ctx);
+      case 'lightbeam':        return applyLightBeam(value, ctx);
+      case 'rapacious':        return applyRapacious(targets, value, ctx);
 
       default:
         console.warn(`[Abilities] Unknown effect: "${effect}"`);
@@ -678,6 +737,143 @@ const Abilities = (() => {
     }
   }
 
+  // ── Chain Lightning ──
+
+  function applyChainLightning(targets, value, ctx) {
+    const bounceRange = int(value) || 2;
+    const unit = ctx.unit;
+    if (!unit) return;
+    // Initial target already took normal attack damage; start bouncing from them
+    const initialTarget = targets.find(t => isUnit(t) && t.health > 0);
+    if (!initialTarget) return;
+
+    const hit = new Set();
+    hit.add(initialTarget);
+    let current = initialTarget;
+
+    while (true) {
+      // Find units on straight lines from current within bounceRange
+      let best = null;
+      let bestDist = Infinity;
+      for (let dir = 0; dir < 6; dir++) {
+        const lineHexes = Board.getLineHexes(current.q, current.r, dir, bounceRange);
+        for (const h of lineHexes) {
+          const u = Game.state.units.find(u => u.q === h.q && u.r === h.r && u.health > 0 && !hit.has(u) && u !== unit);
+          if (u) {
+            const d = Board.hexDistance(current.q, current.r, u.q, u.r);
+            if (d < bestDist) { bestDist = d; best = u; }
+            break; // take first on this line (closest in this direction)
+          }
+        }
+      }
+      if (!best) break;
+      hit.add(best);
+
+      if (best.player !== unit.player) {
+        // Enemy: deal damage (attacker's effective damage vs target's armor)
+        const atkDmg = Game.getEffective(unit, 'damage');
+        const defArm = Game.getEffective(best, 'armor');
+        const dmg = Math.max(1, atkDmg - defArm);
+        Game.damageUnit(best, dmg, unit, 'ability');
+        Game.log(`Chain Lightning bounces to ${best.name} for ${dmg} dmg${best.health <= 0 ? ' KILLED' : ''}`, unit.player);
+        if (best.health <= 0) {
+          if (typeof Abilities !== 'undefined') {
+            Abilities.dispatch('afterDeath', { unit: best, killer: unit });
+            Abilities.dispatchAllyDeath(best, unit);
+          }
+        }
+      } else {
+        // Ally: grant lightning resource
+        const max = getMaxResource(best, 'lightning');
+        const cur = (best.resources && best.resources.lightning) || 0;
+        if (max > 0 && cur < max) {
+          best.resources.lightning = Math.min(cur + 1, max);
+          Game.log(`Chain Lightning energizes ${best.name} (⚡${best.resources.lightning})`, unit.player);
+        } else {
+          Game.log(`Chain Lightning passes through ${best.name}`, unit.player);
+        }
+      }
+      current = best;
+    }
+  }
+
+  // ── Light Beam ──
+
+  function applyLightBeam(value, ctx) {
+    const unit = ctx.unit;
+    const target = ctx.target; // the hex the player clicked (determines direction)
+    if (!unit || !target) return;
+
+    // Determine direction from unit to clicked hex
+    const inter = [];
+    const dir = Board.straightLineDir(unit.q, unit.r, target.q, target.r, inter);
+    if (dir < 0) return; // not on a straight line
+
+    // Walk the full line from unit in that direction to board edge
+    const lineHexes = Board.getLineHexes(unit.q, unit.r, dir, 20); // 20 = more than board size
+
+    // Check if unit has lightning resource
+    const hasLightning = unit.resources && (unit.resources.lightning || 0) >= 1;
+    let appliedToFirst = false;
+    let chargeGranted = false;
+
+    for (const h of lineHexes) {
+      const u = Game.state.units.find(u => u.q === h.q && u.r === h.r && u.health > 0);
+      if (!u) continue;
+
+      if (u.player !== unit.player) {
+        // Enemy: apply vulnerable
+        if (!hasLightning && appliedToFirst) continue; // without charge, only first enemy
+        Game.addCondition(u, 'vulnerable', 'endOfRound');
+        Game.log(`Light Beam: ${u.name} becomes vulnerable`, unit.player);
+        appliedToFirst = true;
+      } else if (hasLightning && !chargeGranted) {
+        // Ally: grant lightning (only first ally, only when charged)
+        const max = getMaxResource(u, 'lightning');
+        const cur = (u.resources && u.resources.lightning) || 0;
+        if (max > 0 && cur < max) {
+          u.resources.lightning = Math.min(cur + 1, max);
+          Game.log(`Light Beam energizes ${u.name} (⚡${u.resources.lightning})`, unit.player);
+          chargeGranted = true;
+        }
+      }
+    }
+
+    // Consume lightning if it was used for enhanced effect
+    if (hasLightning) {
+      unit.resources.lightning = Math.max(0, (unit.resources.lightning || 0) - 1);
+      Game.log(`${unit.name} discharges lightning for enhanced Light Beam`, unit.player);
+    }
+  }
+
+  // ── Rapacious ──
+
+  function applyRapacious(targets, value, ctx) {
+    const unit = ctx.unit;
+    if (!unit) return;
+    for (const t of targets) {
+      if (!isUnit(t) || t.health <= 0) continue;
+      // Heal captor 1 HP
+      if (unit.health < unit.maxHealth) {
+        unit.health = Math.min(unit.health + 1, unit.maxHealth);
+        Game.log(`${unit.name} heals 1 (${unit.health}/${unit.maxHealth} HP)`, unit.player);
+      }
+      // Deal 1 extra damage to target
+      Game.damageUnit(t, 1, unit, 'ability');
+      Game.log(`${unit.name}'s Rapacious deals 1 bonus damage to ${t.name}`, unit.player);
+      if (t.health <= 0) continue; // killed — no need to capture
+      // Remove target from board and store for round-end return
+      Game.state.rapaciousCaptures.push({
+        captor: unit,
+        target: t,
+        range: unit.range || 3,
+      });
+      t.q = -99;
+      t.r = -99;
+      Game.log(`${unit.name} devours ${t.name}!`, unit.player);
+    }
+  }
+
   // ── Terrain Effects ──
 
   function applyTerrainCreateEffect(targets, lower, value, ctx) {
@@ -710,6 +906,16 @@ const Abilities = (() => {
         td.surface = null;
         Game.log(`${ctx.unit ? ctx.unit.name : 'Effect'} destroys ${surfaceName} terrain`, ctx.unit ? ctx.unit.player : 0);
       }
+    }
+  }
+
+  function applyPlaceMarker(targets, value, ctx) {
+    const owner = ctx.unit ? ctx.unit.player : 0;
+    const type = (value || 'xmarks').toLowerCase();
+    for (const t of targets) {
+      const key = `${t.q},${t.r}`;
+      Game.state.markers.set(key, { player: owner, type });
+      Game.log(`${ctx.unit ? ctx.unit.name : 'Effect'} marks (${t.q},${t.r})`, owner);
     }
   }
 
@@ -1071,6 +1277,14 @@ const Abilities = (() => {
           return compare(current, op, num);
         }
         return current >= 1;
+      }
+
+      case 'onsurface': {
+        if (!ctx.unit) return false;
+        const td = Game.state.terrain.get(`${ctx.unit.q},${ctx.unit.r}`);
+        if (!td || !td.surface) return false;
+        const surfaces = val.toLowerCase().split(',').map(s => s.trim());
+        return surfaces.includes(td.surface.toLowerCase());
       }
 
       default:

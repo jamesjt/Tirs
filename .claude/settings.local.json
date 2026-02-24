@@ -37,7 +37,9 @@
       "Bash(find:*)",
       "Bash(git ls-files:*)",
       "Bash(test:*)",
-      "Bash(ping:*)"
+      "Bash(ping:*)",
+      "Bash(python3:*)",
+      "mcp__mcp-registry__search_mcp_registry"
     ]
   }
 }

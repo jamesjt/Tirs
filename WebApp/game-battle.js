@@ -165,6 +165,13 @@
       G.state.delayedEffects = G.state.delayedEffects.filter(de => !pendingDE.includes(de));
     }
 
+    // X Marks the Spot: allies on friendly markers get strengthened
+    const markerData = G.state.markers && G.state.markers.get(`${unit.q},${unit.r}`);
+    if (markerData && markerData.player === unit.player) {
+      G.addCondition(unit, 'strengthened', 'untilAttack');
+      G.log(`${unit.name} is strengthened by the marked position`, unit.player);
+    }
+
     // Invigorating terrain: heal 1 or gain strengthened if full
     if (hasTerrainRule(unit.q, unit.r, 'invigorating', unit)) {
       if (unit.health < unit.maxHealth) {
@@ -1155,6 +1162,11 @@
           u.conditions = u.conditions.filter(c => c.id !== 'suppressed');
         }
       }
+      // onTurnEnd dispatch: fire rules that trigger at end of activation
+      if (typeof Abilities !== 'undefined') {
+        Abilities.dispatch('turnEnd', { unit: act.unit });
+      }
+
       // Last Stand: unit dies after their bonus activation
       if (act.unit._lastStand) {
         act.unit._lastStand = false;
@@ -1864,6 +1876,10 @@
       // Restore once-per-round charge
       if (last.oncePerRound && last.unitRef && last.unitRef.usedAbilitiesThisRound) {
         last.unitRef.usedAbilitiesThisRound.delete(last.abilityName);
+      }
+      // Restore markers (X Marks the Spot undo)
+      if (last.prevMarkers) {
+        G.state.markers = last.prevMarkers;
       }
     }
 

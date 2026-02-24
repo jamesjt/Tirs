@@ -436,6 +436,19 @@
           },
         };
       })(),
+      (() => {
+        const alive = G.state.rapaciousCaptures.filter(e => e.target.health > 0 && e.captor.health > 0);
+        return {
+          id: 'rapacious-restore',
+          label: 'Devoured units return',
+          auto: alive.length === 0,
+          data: { pending: alive, currentIndex: 0 },
+          execute() {
+            // Auto: nothing to place
+            G.state.rapaciousCaptures = [];
+          },
+        };
+      })(),
       {
         id: 'terrainEntry',
         label: 'Terrain entry effects',
@@ -587,7 +600,27 @@
           data: { dancers, currentIndex: 0 },
         };
       })(),
-      // [Future: Ebb and Flow, etc. inserted here]
+      // Ebb and Flow: Tidehaven round-start — grant lightning if none have it
+      (() => {
+        const ebbFlowPlayers = [];
+        for (const p of [1, 2]) {
+          if (!G.state.players[p].faction) continue;
+          if (G.state.players[p].faction.toLowerCase() !== 'tidehaven') continue;
+          const alive = G.state.units.filter(u => u.player === p && u.health > 0);
+          if (alive.length === 0) continue;
+          const hasCharge = alive.some(u => u.resources && (u.resources.lightning || 0) >= 1);
+          if (!hasCharge) ebbFlowPlayers.push({ player: p, units: alive });
+        }
+        return {
+          id: 'ebb-and-flow',
+          label: 'Ebb and Flow',
+          auto: ebbFlowPlayers.length === 0,
+          data: { players: ebbFlowPlayers, currentPlayerIndex: 0 },
+          execute() {
+            // Auto: nothing to do — all players already have lightning
+          },
+        };
+      })(),
     ];
     G.state.roundStepIndex = 0;
     G.state.phase = G.PHASE.ROUND_START;
@@ -918,6 +951,104 @@
     return step.data.currentIndex >= step.data.pending.length;
   }
 
+  // ── Ebb and Flow helpers (lightning charge grant) ────────────
+
+  /** Get the current Ebb and Flow player data. */
+  function getEbbFlowCurrent() {
+    const step = G.state.roundStepQueue[G.state.roundStepIndex];
+    if (!step || step.id !== 'ebb-and-flow') return null;
+    const { players, currentPlayerIndex } = step.data;
+    if (currentPlayerIndex >= players.length) return null;
+    return players[currentPlayerIndex];
+  }
+
+  /** Grant lightning to chosen unit for Ebb and Flow. */
+  function resolveEbbFlowChoice(unitIndex) {
+    const step = G.state.roundStepQueue[G.state.roundStepIndex];
+    if (!step || step.id !== 'ebb-and-flow') return false;
+    const current = getEbbFlowCurrent();
+    if (!current) return false;
+    const unit = current.units[unitIndex];
+    if (!unit || unit.health <= 0) return false;
+    // Grant 1 lightning resource
+    if (!unit.resources) unit.resources = {};
+    const max = (typeof Abilities !== 'undefined' && Abilities.getMaxResource(unit, 'lightning')) || 1;
+    unit.resources.lightning = Math.min((unit.resources.lightning || 0) + 1, max);
+    G.log(`Ebb and Flow: ${unit.name} gains ⚡ lightning`, current.player);
+    step.data.currentPlayerIndex++;
+    return true;
+  }
+
+  /** Check if all Ebb and Flow choices have been made. */
+  function allEbbFlowDecided() {
+    const step = G.state.roundStepQueue[G.state.roundStepIndex];
+    if (!step || step.id !== 'ebb-and-flow') return true;
+    return step.data.currentPlayerIndex >= step.data.players.length;
+  }
+
+  // ── Rapacious helpers (devoured unit placement) ─────────────
+
+  /** Get valid placement hexes for the current devoured unit. */
+  function getRapaciousValidHexes() {
+    const step = G.state.roundStepQueue[G.state.roundStepIndex];
+    if (!step || step.id !== 'rapacious-restore') return null;
+    const { pending, currentIndex } = step.data;
+    if (currentIndex >= pending.length) return null;
+    const entry = pending[currentIndex];
+    const captor = entry.captor;
+    const valid = new Map();
+    // Place within captor's range
+    for (const hex of Board.hexes) {
+      if (Board.hexDistance(captor.q, captor.r, hex.q, hex.r) > entry.range) continue;
+      if (G.state.units.some(u => u.q === hex.q && u.r === hex.r && u.health > 0)) continue;
+      if (G.hasTerrainRule(hex.q, hex.r, 'impassable')) continue;
+      valid.set(`${hex.q},${hex.r}`, 1);
+    }
+    return valid;
+  }
+
+  /** Place a devoured unit back on the board at the chosen hex. */
+  function resolveRapaciousPlacement(q, r) {
+    const step = G.state.roundStepQueue[G.state.roundStepIndex];
+    if (!step || step.id !== 'rapacious-restore') return false;
+    const { pending, currentIndex } = step.data;
+    if (currentIndex >= pending.length) return false;
+    const entry = pending[currentIndex];
+    entry.target.q = q;
+    entry.target.r = r;
+    G.log(`${entry.target.name} returns to the board at (${q},${r})`, entry.target.player);
+    // Queue bonus activation if target hasn't activated this round
+    if (!entry.target.activated) {
+      G.queueBonusActivation(entry.target);
+      G.log(`${entry.target.name} is forced to activate!`, entry.captor.player);
+    }
+    step.data.currentIndex++;
+    if (step.data.currentIndex >= pending.length) {
+      G.state.rapaciousCaptures = [];
+    }
+    return true;
+  }
+
+  /** Skip placing a devoured unit. */
+  function skipRapaciousPlacement() {
+    const step = G.state.roundStepQueue[G.state.roundStepIndex];
+    if (!step || step.id !== 'rapacious-restore') return false;
+    const { pending, currentIndex } = step.data;
+    if (currentIndex >= pending.length) return false;
+    step.data.currentIndex++;
+    if (step.data.currentIndex >= pending.length) {
+      G.state.rapaciousCaptures = [];
+    }
+    return true;
+  }
+
+  /** Check if all devoured units have been placed. */
+  function allRapaciousPlaced() {
+    const step = G.state.roundStepQueue[G.state.roundStepIndex];
+    if (!step || step.id !== 'rapacious-restore') return true;
+    return step.data.currentIndex >= step.data.pending.length;
+  }
+
   // ── Hot Suit helpers (burning redirect) ──────────────────────
 
   /** Get valid targets for burning redirect: self + living adjacent units. */
@@ -1078,6 +1209,17 @@
   G.resolveConsumingPlacement = resolveConsumingPlacement;
   G.skipConsumingPlacement = skipConsumingPlacement;
   G.allConsumingPlaced = allConsumingPlaced;
+
+  // Ebb and Flow helpers
+  G.getEbbFlowCurrent = getEbbFlowCurrent;
+  G.resolveEbbFlowChoice = resolveEbbFlowChoice;
+  G.allEbbFlowDecided = allEbbFlowDecided;
+
+  // Rapacious helpers
+  G.getRapaciousValidHexes = getRapaciousValidHexes;
+  G.resolveRapaciousPlacement = resolveRapaciousPlacement;
+  G.skipRapaciousPlacement = skipRapaciousPlacement;
+  G.allRapaciousPlaced = allRapaciousPlaced;
 
   // Hot Suit helpers
   G.getHotSuitTargets = getHotSuitTargets;

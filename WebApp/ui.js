@@ -2012,6 +2012,28 @@ const UI = (() => {
       if (Game.allConsumingPlaced()) {
         html += `<button class="btn btn-confirm" data-action="advance-round-step">Continue</button>`;
       }
+    } else if (step.id === 'rapacious-restore') {
+      // Show current unit to place
+      const { pending, currentIndex } = step.data;
+      if (currentIndex < pending.length) {
+        const entry = pending[currentIndex];
+        html += `<p>Place <strong>${entry.target.name}</strong> (P${entry.target.player}) within range of ${entry.captor.name}.</p>`;
+        html += `<p class="step-pending">Click a highlighted hex to place.</p>`;
+        const valid = Game.getRapaciousValidHexes();
+        if (valid && valid.size > 0) {
+          uiState.highlights = valid;
+          uiState.highlightColor = 'rgba(200, 50, 50, 0.4)';
+        } else {
+          html += `<p>No valid hex available.</p>`;
+          html += `<button class="btn btn-back" data-action="skip-rapacious">Skip</button>`;
+        }
+      }
+      for (let i = 0; i < currentIndex; i++) {
+        html += `<p class="step-done">${pending[i].target.name}: Placed</p>`;
+      }
+      if (Game.allRapaciousPlaced()) {
+        html += `<button class="btn btn-confirm" data-action="advance-round-step">Continue</button>`;
+      }
     } else if (step.id === 'arcfire-resolve') {
       const { bearers, currentIndex } = step.data;
       for (let i = 0; i < currentIndex; i++) {
@@ -2032,6 +2054,23 @@ const UI = (() => {
       }
       if (Game.allArcFireResolved()) {
         // Auto-advance when all arc fire resolved
+        setTimeout(() => { Game.advanceRoundStep(); showPhase(); render(); }, 300);
+      }
+    } else if (step.id === 'ebb-and-flow') {
+      const current = Game.getEbbFlowCurrent();
+      if (current) {
+        html += `<p class="step-pending"><strong>Ebb and Flow</strong> — Player ${current.player}</p>`;
+        html += `<p>Choose a unit to grant ⚡ lightning:</p>`;
+        html += `<div class="dancer-grid">`;
+        current.units.forEach((u, idx) => {
+          html += `<div class="dancer-choice" data-action="ebb-flow-choice" data-unit-index="${idx}">`;
+          html += `<span class="dancer-label">${u.name}</span>`;
+          html += `<span class="dancer-desc">${u.health}/${u.maxHealth} HP</span>`;
+          html += `</div>`;
+        });
+        html += `</div>`;
+      }
+      if (Game.allEbbFlowDecided()) {
         setTimeout(() => { Game.advanceRoundStep(); showPhase(); render(); }, 300);
       }
     } else if (step.id === 'dancer') {
@@ -2366,6 +2405,22 @@ const UI = (() => {
         hymnEl.classList.remove('hidden');
       } else {
         hymnEl.classList.add('hidden');
+      }
+    }
+
+    // Lightning charge counter (Tidehaven)
+    for (const p of [1, 2]) {
+      const lightEl = document.getElementById(`hud-lightning-${p}`);
+      if (!lightEl) continue;
+      const faction = s.players[p] && s.players[p].faction;
+      if (faction === 'Tidehaven') {
+        const charged = s.units.filter(u => u.player === p && u.health > 0
+          && u.resources && u.resources.lightning >= 1).length;
+        const total = s.units.filter(u => u.player === p && u.health > 0).length;
+        lightEl.textContent = `\u26A1 ${charged}/${total}`;
+        lightEl.classList.remove('hidden');
+      } else {
+        lightEl.classList.add('hidden');
       }
     }
   }
@@ -3710,7 +3765,7 @@ const UI = (() => {
     const action = btn.dataset.action;
 
     // Block battle-phase actions when it's opponent's turn online
-    const battleActions = ['undo-action','remove-burning','end-activation','skip-consuming','skip-arcfire',
+    const battleActions = ['undo-action','remove-burning','end-activation','skip-consuming','skip-rapacious','skip-arcfire','ebb-flow-choice',
       'shift-skip-dest','shift-ride','shift-stay','terrain-ride','terrain-stay',
       'advance-round-step','use-ability','delayed-target',
       'fg-skip','gust-push','wu-skip-all','pass-turn'];
@@ -3929,15 +3984,36 @@ const UI = (() => {
           enterAbilityTargeting(abilityName, act.unit, tdata, actionCost, actionRuleId);
           return;
         }
-        // Non-targeted action — execute immediately
+        // Non-targeted action — execute immediately (with undo support)
+        const s = Game.state;
+        const unit = act.unit;
+        // Snapshot all living units for undo
+        const healthBefore = s.units
+          .filter(u => u.health > 0)
+          .map(u => ({ unit: u, q: u.q, r: u.r, health: u.health,
+            conditions: u.conditions.map(c => ({ ...c })),
+            resources: u.resources ? JSON.parse(JSON.stringify(u.resources)) : undefined }));
+        const prevMarkers = s.markers ? new Map(s.markers) : new Map();
         if (typeof Abilities !== 'undefined') {
-          Abilities.executeAction(abilityName, { unit: act.unit }, actionRuleId);
+          Abilities.executeAction(abilityName, { unit }, actionRuleId);
         }
         if (actionCost === 'move') act.moved = true;
         else if (actionCost === 'attack') act.attacked = true;
         else if (actionCost === 'non-activation') act._nonActivationUsed = true;
-        if (actionCost) Game.log(`${act.unit.name} uses ${abilityName} (uses ${actionCost})`, act.unit.player);
-        if (act.moved && act.attacked && !Game.state.rules.confirmEndTurn) {
+        if (actionCost) Game.log(`${unit.name} uses ${abilityName} (uses ${actionCost})`, unit.player);
+        // Undo history
+        const healthSnapshots = healthBefore.filter(snap =>
+          snap.unit.health !== snap.health || snap.unit.q !== snap.q || snap.unit.r !== snap.r
+          || snap.unit.conditions.length !== snap.conditions.length);
+        const abDef = typeof Abilities !== 'undefined' ? Abilities.getActions(unit).find(a => a.name === abilityName) : null;
+        s.actionHistory.push({
+          type: 'ability', abilityName, actionCost,
+          oncePerGame: abDef ? abDef.oncePerGame : false,
+          oncePerRound: abDef ? abDef.oncePerRound : false,
+          unitRef: unit, healthSnapshots, prevMarkers,
+          prevResources: JSON.parse(JSON.stringify(unit.resources || {})),
+        });
+        if (act.moved && act.attacked && !s.rules.confirmEndTurn) {
           if (typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) {
             tryEndActivation();
             return;
@@ -3956,9 +4032,24 @@ const UI = (() => {
       render();
     }
 
+    else if (action === 'skip-rapacious') {
+      Game.skipRapaciousPlacement();
+      netSend({ type: 'skipRapaciousPlacement' });
+      showPhase();
+      render();
+    }
+
     else if (action === 'skip-arcfire') {
       Game.skipArcFire();
       netSend({ type: 'skipArcFire' });
+      showPhase();
+      render();
+    }
+
+    else if (action === 'ebb-flow-choice') {
+      const idx = parseInt(btn.dataset.unitIndex, 10);
+      Game.resolveEbbFlowChoice(idx);
+      netSend({ type: 'resolveEbbFlowChoice', unitIndex: idx });
       showPhase();
       render();
     }
@@ -4122,6 +4213,20 @@ const UI = (() => {
         Game.resolveConsumingPlacement(hex.q, hex.r);
         netSend({ type: 'resolveConsumingPlacement', q: hex.q, r: hex.r });
         if (Game.allConsumingPlaced()) {
+          uiState.highlights = null;
+        }
+        showPhase();
+        render();
+      }
+    }
+
+    // Rapacious: click highlighted hex to place a devoured unit
+    if (step.id === 'rapacious-restore') {
+      const key = `${hex.q},${hex.r}`;
+      if (uiState.highlights && uiState.highlights.has(key)) {
+        Game.resolveRapaciousPlacement(hex.q, hex.r);
+        netSend({ type: 'resolveRapaciousPlacement', q: hex.q, r: hex.r });
+        if (Game.allRapaciousPlaced()) {
           uiState.highlights = null;
         }
         showPhase();
