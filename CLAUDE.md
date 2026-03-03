@@ -64,11 +64,24 @@ Game.state = {
 - Flat-top hexes, neighbors by pixel distance
 - Player 1 zone: columns 0-3 (left), Player 2: columns 9-12 (right)
 
-### Attack Types
+### Targeting Types (L/P/D)
+
+Three geometric targeting patterns used by attacks AND action abilities:
 
 - **L (Line)**: Straight hex line, blocked by units and "cover" terrain
 - **P (Path)**: Shortest path must be clear
 - **D (Direct)**: Line-of-sight, blocked by "concealing" terrain
+
+`computeActionTargets()` validates L/P/D geometry for all target types (enemies, allies, empty hexes, terrain), not just attacks. For enemies, `canAttack()` adds hidden/LoE checks.
+
+### Ability Targeting (`validTargets` column)
+
+The `validTargets` column on atomic rules is the single source for both purposes:
+
+- **UI click-filtering** (`computeActionTargets`): Matches hex tags — `enemy`, `ally`, `empty`, `spaces` (wildcard), terrain surface names. Determines which hexes highlight as clickable.
+- **Effect resolution** (`resolveTargets`): Tokenizes keywords — `lineToTarget`, `aroundTarget`, `allEnemies`, `self`, `path`, etc. Determines who receives the effect when the rule fires.
+
+There is no separate "target" column — `validTargets` serves both roles.
 
 ## External Data
 
@@ -78,6 +91,12 @@ Google Sheets ID: `17lSSg1vt-m9sM9kfVxL0Noxy-mGClb8RfzedWf5aDlk`
 - "terrain map" sheet (terrain rules, faction assignments)
 
 Unit images load from `../nandeck/images/unitImages/` (sibling folder).
+
+## Ability System Reference
+
+**When working on abilities, effects, conditions, rules, or the targeting system, read `WebApp/abilities.md` first.** It contains comprehensive documentation of every effect type, condition, rule type, condition evaluator, targeting keyword, passive flag, and integration point in the ability system.
+
+Key topics covered: 3-layer architecture, rule types & triggers, condition evaluators, all effects with value formats, condition defaults & stat modifiers, targeting dual-purpose system, resource system, beam/trap/marker systems, two-rule pattern, action cost system, passive flags, effect queue, and the full public API.
 
 ## Workflow Orchestration
 
@@ -122,6 +141,14 @@ When given a bug report: just fix it. Don't ask for hand-holding
 Point at logs, errors, failing tests - then resolve them
 Zero context switching required from the user
 Go fix failing CI tests without being told how
+
+### 7. Agent System
+
+Read `agents.md` for the agent roster, routing table, and handoff protocol.
+When a prompt matches a single domain, launch that agent via `/project:<agent>` or Task tool.
+For multi-domain tasks, decompose and route per the sequence templates in agents.md.
+PM dashboard: `tasks/dashboard.html`. Agent communication: `tasks/agent-log.md`.
+Direct slash commands (`/project:engineer`, etc.) bypass routing for targeted work.
 
 ## Task Management
 

@@ -58,6 +58,7 @@ const Game = (() => {
       delayedEffects: [],       // [{ unit, player, targetQ, targetR, atkDmg, round }]
       traps: new Map(),         // "q,r" -> { player } — clock traps (4th hex layer)
       markers: new Map(),       // "q,r" -> { player, type } — X Marks the Spot etc.
+      beams: [],                // [{ unit, player, targetQ, targetR, conditions, damage, targetFilter, range, penetrate, blockedBy, ... }]
       pendingDeployTraps: null, // { unit, count, placed } — interactive trap placement after deploy
       pendingDeployTerrain: null, // { unit, terrainType, player } — interactive terrain placement after deploy
       pendingReplacement: null,   // { unit, player, q, r, available: [templates] } — Hymn replacement choice

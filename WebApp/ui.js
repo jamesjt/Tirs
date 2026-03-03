@@ -11,6 +11,13 @@ const UI = (() => {
   let didPan = false;          // true once drag exceeds threshold — suppresses click
   let panStartX = 0, panStartY = 0;
 
+  // ── Touch / mobile support ─────────────────────────────────────
+  const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+  let touchStartTime = 0;
+  let pinchState = null;         // { startDist, startZoom, midX, midY }
+  let longPressTimer = null;
+  let terrainTooltipTimer = null;
+
   // ── Smooth camera (WASD + zoom) ──────────────────────────────
   const heldKeys = new Set();
   const CAM_ACCEL = 1.2;       // px/frame² acceleration
@@ -110,10 +117,11 @@ const UI = (() => {
 
   // ── Resource icon mapping ────────────────────────────────────
   const RESOURCE_ICONS = {
-    mana:      '\u2B20',  // ⬠ pentagon
-    lightning: '\u26A1',  // ⚡ lightning bolt
-    energy:    '\u2600',  // ☀ sun
-    charge:    '\u2726',  // ✦ 4-point star
+    mana:             '\u2B20',  // ⬠ pentagon
+    lightning:        '\u26A1',  // ⚡ lightning bolt
+    lightningcharge:  '\u26A1',  // ⚡ lightning bolt
+    energy:           '\u2600',  // ☀ sun
+    charge:           '\u2726',  // ✦ 4-point star
   };
 
   /** Return inline HTML for a resource icon — prefers Icon Map image, falls back to Unicode. */
@@ -214,7 +222,7 @@ const UI = (() => {
     ability: null,       // { abilityName, unit, validTargets, actionCost, targetList? }
     relocate: null,      // { unit, range, reachable, parentMap, abilityName, actionCost, sourceUnit }
     endAct: null,        // { targets: [{ type, key, q, r, unit }] }
-    toss: null,          // { phase: 1|2, unit, targetQ, targetR, sources, destinations, tossSource, bonusDamage }
+    tossLand: null,      // { validHexes: Set, source: tossGrabSource }
     level: null,         // { phase: 1|2, unit, terrainHexes, data, selectedHex }
     zoom: null,          // { unit, validTargets: Set }
     pushMove: null,      // { targetQ, targetR, enemy, path, pathCost, pushDestinations: Set }
@@ -259,6 +267,8 @@ const UI = (() => {
           .map(u => ({ unit: u, q: u.q, r: u.r, health: u.health,
             conditions: u.conditions.map(c => ({ ...c })),
             resources: u.resources ? JSON.parse(JSON.stringify(u.resources)) : undefined }));
+        const resourcesBefore = JSON.parse(JSON.stringify(unit.resources || {}));
+        const beamsBefore = s.beams.map(b => ({ ...b }));
         // Execute
         if (typeof Abilities !== 'undefined') {
           Abilities.executeAction(abilityName, { unit, target: unit, targetQ: unit.q, targetR: unit.r }, actionRuleId);
@@ -280,7 +290,8 @@ const UI = (() => {
           oncePerGame: abDef ? abDef.oncePerGame : false,
           oncePerRound: abDef ? abDef.oncePerRound : false,
           unitRef: unit, healthSnapshots,
-          prevResources: JSON.parse(JSON.stringify(unit.resources || {})),
+          prevResources: resourcesBefore,
+          prevBeams: beamsBefore,
         });
         // Pending effects / auto-end
         if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
@@ -741,12 +752,12 @@ const UI = (() => {
     render();
   }
 
-  /** Animate push-move: slide Dozer token along path to enemy's old hex. */
-  function animatePushMove(tgt, pushDestQ, pushDestR, speed) {
+  /** Animate push-move: slide unit token along path to enemy's old hex. */
+  function animatePushMove(unit, tgt, pushDestQ, pushDestR, speed) {
     moveAnimating = true;
-    // Render first to update pushed enemy token position, then animate Dozer
+    // Render first to update pushed enemy token position, then animate unit
     render();
-    animateTokenAlongPath(Game.state.activationState.unit, tgt.path, speed, () => {
+    animateTokenAlongPath(unit, tgt.path, speed, () => {
       moveAnimating = false;
       finishPostPushMove();
     });
@@ -1052,6 +1063,10 @@ const UI = (() => {
     c.addEventListener('contextmenu', onContextMenu);
     c.addEventListener('wheel', onWheel, { passive: false });
     c.addEventListener('click', onClick);
+    // Touch events for mobile
+    c.addEventListener('touchstart', onTouchStart, { passive: false });
+    c.addEventListener('touchmove', onTouchMove, { passive: false });
+    c.addEventListener('touchend', onTouchEnd, { passive: false });
     // Pan tracking on document so dragging beyond canvas edge still works
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
@@ -1116,6 +1131,7 @@ const UI = (() => {
     syncRosterCardActivation();
     updateStatusBar();
     renderGameLog();
+    drainToastQueue();
   }
 
   // ── HTML unit tokens ─────────────────────────────────────────
@@ -1288,6 +1304,70 @@ const UI = (() => {
       }
     });
 
+    // Touch on token → pan or tap-to-select or long-press-to-inspect
+    el.addEventListener('touchstart', e => {
+      e.preventDefault();
+      isPanning = true;
+      didPan = false;
+      panStartX = e.touches[0].clientX;
+      panStartY = e.touches[0].clientY;
+      touchStartTime = Date.now();
+      // Long-press: show inspect card after 500ms
+      if (longPressTimer) clearTimeout(longPressTimer);
+      longPressTimer = setTimeout(() => {
+        longPressTimer = null;
+        didPan = true; // suppress tap
+        showHoverCard(unit, true); // true = enlarged/inspect mode
+      }, 500);
+    }, { passive: false });
+
+    el.addEventListener('touchmove', e => {
+      e.preventDefault();
+      // Clear long-press if finger moves
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+      if (isPanning) {
+        const dx = e.touches[0].clientX - panStartX;
+        const dy = e.touches[0].clientY - panStartY;
+        if (!didPan && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
+          didPan = true;
+          panStartX = e.touches[0].clientX;
+          panStartY = e.touches[0].clientY;
+          return;
+        }
+        if (didPan) {
+          Board.panX += dx;
+          Board.panY += dy;
+          panStartX = e.touches[0].clientX;
+          panStartY = e.touches[0].clientY;
+          syncRosterCards();
+          render();
+        }
+      }
+    }, { passive: false });
+
+    el.addEventListener('touchend', e => {
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+      if (e.touches.length === 0) {
+        isPanning = false;
+        // Dismiss inspect card if showing
+        hideUnitCard();
+        if (!didPan && (Date.now() - touchStartTime) < 300) {
+          // Tap on token → delegate to hex click
+          const hex = Board.getHex(unit.q, unit.r);
+          if (!hex) return;
+          if (debugPickingUnit && handleDebugClick(hex)) return;
+          if (debugPickingTerrain && handleDebugTerrainClick(hex)) return;
+          if (debugPickingResource && handleDebugResourceClick(hex)) return;
+          const phase = Game.state.phase;
+          if (phase === Game.PHASE.TERRAIN_DEPLOY) handleTerrainClick(hex);
+          else if (phase === Game.PHASE.UNIT_DEPLOY) handleDeployClick(hex);
+          else if (phase === Game.PHASE.BATTLE) handleBattleClick(hex);
+          else if (phase === Game.PHASE.ROUND_END) handleRoundEndClick(hex);
+          else if (phase === Game.PHASE.ROUND_START) handleRoundStartClick(hex);
+        }
+      }
+    }, { passive: false });
+
     // Hover → show enlarged card (bottom-left for P1, bottom-right for P2)
     el.addEventListener('mouseenter', () => {
       hoveredTokenUnit = unit;
@@ -1428,14 +1508,14 @@ const UI = (() => {
       } else if (targeting.hotSuit) {
         text = 'Redirect burning damage to self or adjacent unit (ESC to skip)';
       // Toss targeting messages
-      } else if (targeting.toss) {
-        if (targeting.toss.phase === 1) {
-          text = 'Toss an adjacent ally or terrain? (ESC to skip)';
-        } else {
-          const name = targeting.toss.tossSource.type === 'unit'
-            ? targeting.toss.tossSource.unit.name : targeting.toss.tossSource.surface;
-          text = `Choose where to toss ${name} (ESC to go back)`;
-        }
+      } else if (targeting.tossLand) {
+        const src = targeting.tossLand.source;
+        const name = src.type === 'unit' ? src.unit.name : src.surface;
+        text = `Choose where to land ${name}`;
+      } else if (s.activationState && s.activationState.tossGrab && !s.activationState.pendingTossLand) {
+        const src = s.activationState.tossGrab.source;
+        const name = src.type === 'unit' ? src.unit.name : src.surface;
+        text = `Holding ${name} — select attack target (ESC to release)`;
       // Delayed targeting mode
       } else if (targeting.delayed) {
         text = 'Target a space for delayed attack (ESC to cancel)';
@@ -1526,6 +1606,91 @@ const UI = (() => {
     }
     gameLogRenderedCount = entries.length;
     body.scrollTop = body.scrollHeight;
+  }
+
+  // ── Ability Toast Notifications ─────────────────────────────
+
+  const TOAST_DURATION = 2500;    // ms before fade-out starts
+  const TOAST_FADE = 400;         // ms fade-out transition
+  const TOAST_MAX_VISIBLE = 3;
+  let activeToasts = [];          // [{ el, timer }]
+
+  function drainToastQueue() {
+    if (typeof Abilities === 'undefined') return;
+    const notifications = Abilities.drainNotifications();
+    if (notifications.length === 0) return;
+
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+
+    for (const note of notifications) {
+      spawnToast(note, container);
+    }
+  }
+
+  function spawnToast(note, container) {
+    // Evict oldest if at capacity
+    while (activeToasts.length >= TOAST_MAX_VISIBLE) {
+      dismissToast(activeToasts[0]);
+    }
+
+    const el = document.createElement('div');
+    el.className = `ability-toast toast-p${note.player}`;
+
+    const header = document.createElement('div');
+    header.className = 'toast-header';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'toast-ability-name';
+    nameSpan.textContent = note.abilityName;
+
+    const unitSpan = document.createElement('span');
+    unitSpan.className = 'toast-unit-name';
+    unitSpan.textContent = note.unitName;
+
+    header.appendChild(nameSpan);
+    header.appendChild(unitSpan);
+    el.appendChild(header);
+
+    const textDiv = document.createElement('div');
+    textDiv.className = 'toast-text';
+    textDiv.textContent = note.text;
+    el.appendChild(textDiv);
+
+    container.appendChild(el);
+
+    // Pulse the source unit's token
+    pulseToken(note.unitRef);
+
+    // Auto-dismiss after duration
+    const timer = setTimeout(() => {
+      el.classList.add('toast-exit');
+      setTimeout(() => {
+        el.remove();
+        activeToasts = activeToasts.filter(t => t.el !== el);
+      }, TOAST_FADE);
+    }, TOAST_DURATION);
+
+    activeToasts.push({ el, timer });
+  }
+
+  function dismissToast(entry) {
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    entry.el.remove();
+    activeToasts = activeToasts.filter(t => t !== entry);
+  }
+
+  function pulseToken(unitRef) {
+    if (!unitRef) return;
+    const el = tokenEls.get(unitRef);
+    if (!el) return;
+    el.classList.remove('token-ability-pulse');
+    void el.offsetWidth;  // force reflow to restart animation
+    el.classList.add('token-ability-pulse');
+    el.addEventListener('animationend', () => {
+      el.classList.remove('token-ability-pulse');
+    }, { once: true });
   }
 
   /** Apply correct per-player collapsed state to the game log */
@@ -2056,21 +2221,21 @@ const UI = (() => {
         // Auto-advance when all arc fire resolved
         setTimeout(() => { Game.advanceRoundStep(); showPhase(); render(); }, 300);
       }
-    } else if (step.id === 'ebb-and-flow') {
-      const current = Game.getEbbFlowCurrent();
+    } else if (step.id === 'roundstart-interactive') {
+      const current = Game.getRoundStartCurrent();
       if (current) {
-        html += `<p class="step-pending"><strong>Ebb and Flow</strong> — Player ${current.player}</p>`;
-        html += `<p>Choose a unit to grant ⚡ lightning:</p>`;
+        html += `<p class="step-pending"><strong>${current.label}</strong> — Player ${current.player}</p>`;
+        html += `<p>Choose a unit for ${current.ruleName}:</p>`;
         html += `<div class="dancer-grid">`;
-        current.units.forEach((u, idx) => {
-          html += `<div class="dancer-choice" data-action="ebb-flow-choice" data-unit-index="${idx}">`;
+        current.targets.forEach((u, idx) => {
+          html += `<div class="dancer-choice" data-action="roundstart-choice" data-unit-index="${idx}">`;
           html += `<span class="dancer-label">${u.name}</span>`;
           html += `<span class="dancer-desc">${u.health}/${u.maxHealth} HP</span>`;
           html += `</div>`;
         });
         html += `</div>`;
       }
-      if (Game.allEbbFlowDecided()) {
+      if (Game.allRoundStartDecided()) {
         setTimeout(() => { Game.advanceRoundStep(); showPhase(); render(); }, 300);
       }
     } else if (step.id === 'dancer') {
@@ -2273,6 +2438,17 @@ const UI = (() => {
         return;
       }
 
+      // Toss grab interactive prompt
+      if (act.tossGrab && !act.pendingTossLand) {
+        const src = act.tossGrab.source;
+        const name = src.type === 'unit' ? src.unit.name : src.surface;
+        html += `<span class="ability-prompt">Holding: <strong>${name}</strong></span>`;
+        html += `<button class="btn btn-action" data-action="undo-grab">\u2190 Release</button>`;
+        actEl.innerHTML = html;
+        actEl.classList.remove('hidden');
+        return;
+      }
+
       // Terrain Ride/Stay interactive prompt
       if (targeting.effect && targeting.effect.effect && targeting.effect.effect.type === 'terrainRide') {
         const eff = targeting.effect.effect;
@@ -2345,7 +2521,8 @@ const UI = (() => {
                         (last.type === 'woundup') ||
                         (last.type === 'falcongust') ||
                         (last.type === 'ability' && last.actionCost === 'move' && s.rules.canUndoMove) ||
-                        (last.type === 'ability' && last.actionCost === 'attack' && s.rules.canUndoAttack);
+                        (last.type === 'ability' && last.actionCost === 'attack' && s.rules.canUndoAttack) ||
+                        (last.type === 'ability' && last.actionCost !== 'move' && last.actionCost !== 'attack');
         if (canUndo) {
           const label = last.type === 'ability' ? last.abilityName :
                         last.type === 'zoom' ? 'Zoom' :
@@ -2359,6 +2536,11 @@ const UI = (() => {
                         last.type === 'move' ? 'Move' : 'Attack';
           html += `<button class="btn btn-action" data-action="undo-action">\u2190 ${label}</button>`;
         }
+      }
+
+      // Mobile cancel button (replaces ESC key on touch devices)
+      if (isTouchDevice && hasActiveTargeting()) {
+        html += `<button class="btn btn-cancel-touch" data-action="cancel-targeting">\u2715 Cancel</button>`;
       }
 
       actEl.innerHTML = html;
@@ -2408,20 +2590,27 @@ const UI = (() => {
       }
     }
 
-    // Lightning charge counter (Tidehaven)
+    // Faction resource counter (generic — scans for maxresource passives)
     for (const p of [1, 2]) {
       const lightEl = document.getElementById(`hud-lightning-${p}`);
       if (!lightEl) continue;
-      const faction = s.players[p] && s.players[p].faction;
-      if (faction === 'Tidehaven') {
-        const charged = s.units.filter(u => u.player === p && u.health > 0
-          && u.resources && u.resources.lightning >= 1).length;
-        const total = s.units.filter(u => u.player === p && u.health > 0).length;
-        lightEl.textContent = `\u26A1 ${charged}/${total}`;
-        lightEl.classList.remove('hidden');
-      } else {
-        lightEl.classList.add('hidden');
+      if (typeof Abilities === 'undefined') { lightEl.classList.add('hidden'); continue; }
+      const alive = s.units.filter(u => u.player === p && u.health > 0);
+      // Collect resource types with maxresource passives across this player's units
+      const resTypes = new Set();
+      for (const u of alive) {
+        const defs = Abilities.getPassiveResourceDefs(u);
+        for (const t of Object.keys(defs)) resTypes.add(t);
       }
+      if (resTypes.size === 0) { lightEl.classList.add('hidden'); continue; }
+      const parts = [];
+      for (const resType of resTypes) {
+        const charged = alive.filter(u => u.resources && (u.resources[resType] || 0) >= 1).length;
+        const icon = RESOURCE_ICONS[resType] || '\u26A1';
+        parts.push(`${icon} ${charged}/${alive.length}`);
+      }
+      lightEl.textContent = parts.join('  ');
+      lightEl.classList.remove('hidden');
     }
   }
 
@@ -3064,6 +3253,195 @@ const UI = (() => {
 
   // ── Event handlers ────────────────────────────────────────────
 
+  /** Returns true if any targeting mode is active (for showing mobile Cancel button). */
+  function hasActiveTargeting() {
+    return !!(targeting.guardian || targeting.deployTerrain || targeting.deployTrap
+      || targeting.clockToys || targeting.woundUp || targeting.level
+      || targeting.falconGust || targeting.gustPush || targeting.zoom
+      || targeting.pushMove || targeting.teleport || targeting.tossLand
+      || targeting.delayed || targeting.hotSuit || targeting.effect
+      || targeting.endAct || targeting.relocate || targeting.ability
+      || (Game.state.activationState && Game.state.activationState.tossGrab));
+  }
+
+  /** Programmatic ESC — walks the same priority chain as onKeyDown ESC handlers. */
+  function triggerEscapeAction() {
+    // Replacement — blocked (mandatory choice)
+    if (targeting.replacement) return;
+
+    if (targeting.guardian) {
+      Game.skipGuardian();
+      netSend({ type: 'guardianSkip' });
+      targeting.guardian = null;
+      uiState.highlights = null;
+      const s = Game.state;
+      if (s.pendingGuardian && s.pendingGuardian.currentIndex < s.pendingGuardian.units.length) {
+        enterGuardianTargeting();
+      } else {
+        finishGuardianTargeting();
+      }
+      return;
+    }
+
+    if (targeting.deployTerrain) {
+      netSend({ type: 'deployTerrainSkip' });
+      finishDeployTerrainPlacement();
+      return;
+    }
+
+    if (targeting.deployTrap) {
+      netSend({ type: 'deployTrapSkip' });
+      finishDeployTrapPlacement();
+      return;
+    }
+
+    if (targeting.clockToys) {
+      targeting.clockToys = null;
+      showActivationHighlights();
+      showPhase();
+      updateStatusBar();
+      render();
+      return;
+    }
+
+    if (targeting.woundUp) {
+      Game.skipWoundUpTrap();
+      netSend({ type: 'woundUp', action: 'skip' });
+      advanceWoundUpUI();
+      return;
+    }
+
+    if (targeting.level) {
+      if (targeting.level.phase === 2) {
+        hideLevelChoiceOverlay();
+        targeting.level.phase = 1;
+        targeting.level.selectedHex = null;
+        uiState.highlights = new Map(
+          targeting.level.terrainHexes.map(h => [`${h.q},${h.r}`, 1])
+        );
+        uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
+        showPhase();
+        render();
+      } else {
+        hideLevelChoiceOverlay();
+        targeting.level = null;
+        if (!checkAfterMoveTeleport()) finishPostMove();
+      }
+      return;
+    }
+
+    if (targeting.falconGust) {
+      if (targeting.falconGust.phase === 'allyDest') {
+        enterFalconGustTargeting();
+      } else {
+        Game.skipFalconGust();
+        netSend({ type: 'falconGust', action: 'skip' });
+        targeting.falconGust = null;
+        showActivationHighlights();
+        showPhase();
+        updateStatusBar();
+        render();
+      }
+      return;
+    }
+
+    if (targeting.gustPush) {
+      if (targeting.gustPush.phase === 'pushDest') {
+        enterGustPushTargeting();
+      } else {
+        targeting.gustPush = null;
+        showActivationHighlights();
+        showPhase();
+        updateStatusBar();
+        render();
+      }
+      return;
+    }
+
+    if (targeting.zoom) {
+      targeting.zoom = null;
+      showActivationHighlights();
+      updateStatusBar();
+      render();
+      return;
+    }
+
+    if (targeting.pushMove) {
+      targeting.pushMove = null;
+      showActivationHighlights();
+      updateStatusBar();
+      render();
+      return;
+    }
+
+    if (targeting.teleport) {
+      if (targeting.teleport.phase === 2) {
+        targeting.teleport.phase = 1;
+        targeting.teleport.selectedSource = null;
+        uiState.highlights = new Map(targeting.teleport.sources.map(s => [`${s.q},${s.r}`, 1]));
+        uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
+        showPhase();
+        render();
+      } else {
+        const remaining = targeting.teleport.remaining;
+        const unit = targeting.teleport.unit;
+        targeting.teleport = null;
+        if (!tryNextTeleport(unit, remaining)) finishPostMove();
+      }
+      return;
+    }
+
+    // Toss landing — must pick destination, block cancel
+    if (targeting.tossLand) return;
+
+    if (Game.state.activationState && Game.state.activationState.tossGrab && !targeting.tossLand) {
+      Game.undoGrabForToss();
+      netSend({ type: 'tossUndoGrab' });
+      showActivationHighlights();
+      showPhase();
+      render();
+      return;
+    }
+
+    if (targeting.delayed) {
+      cancelDelayedTargeting();
+      return;
+    }
+
+    if (targeting.hotSuit) {
+      Game.skipBurningRedirect();
+      netSend({ type: 'skipBurningRedirect' });
+      finishPostAttack();
+      return;
+    }
+
+    if (targeting.effect) {
+      Abilities.skipEffect();
+      enterEffectTargeting();
+      return;
+    }
+
+    if (targeting.endAct) {
+      targeting.endAct = null;
+      if (typeof Abilities !== 'undefined') Abilities.clearPendingEndAct();
+      Game.completeEndActivation();
+      resetUiState();
+      showPhase();
+      render();
+      return;
+    }
+
+    if (targeting.relocate) {
+      cancelAbilityTargeting();
+      return;
+    }
+
+    if (targeting.ability) {
+      cancelAbilityTargeting();
+      return;
+    }
+  }
+
   function onKeyDown(e) {
     const key = e.key.toLowerCase();
 
@@ -3230,35 +3608,17 @@ const UI = (() => {
       return;
     }
 
-    // ESC: toss targeting — phase 2 goes back to phase 1, phase 1 skips toss
-    if (key === 'escape' && targeting.toss) {
-      if (targeting.toss.phase === 2) {
-        targeting.toss.phase = 1;
-        targeting.toss.tossSource = null;
-        uiState.highlights = new Map([...targeting.toss.sources.keys()].map(k => [k, 1]));
-        uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
-      } else {
-        // Skip toss — attack with no bonus
-        const tQ = targeting.toss.targetQ, tR = targeting.toss.targetR;
-        targeting.toss = null;
-        const ok = Game.attackUnit(tQ, tR);
-        if (ok) {
-          netSend({ type: 'attackUnit', q: tQ, r: tR });
-          if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
-            enterEffectTargeting();
-            e.preventDefault();
-            return;
-          }
-          if (checkBurningRedirect()) { e.preventDefault(); return; }
-          if (Game.state.pendingReplacement) { enterReplacementChoice(); e.preventDefault(); return; }
-          const tAct = Game.state.activationState;
-          if (tAct && tAct.moved && tAct.attacked && !Game.state.rules.confirmEndTurn) {
-            tryEndActivation(); e.preventDefault(); return;
-          }
-          if (!Game.state.activationState) { resetUiState(); }
-          else { showActivationHighlights(); }
-        }
-      }
+    // ESC: toss landing — must pick destination, block ESC
+    if (key === 'escape' && targeting.tossLand) {
+      e.preventDefault();
+      return;
+    }
+
+    // ESC: toss grab — release grabbed ally/terrain
+    if (key === 'escape' && Game.state.activationState?.tossGrab && !targeting.tossLand) {
+      Game.undoGrabForToss();
+      netSend({ type: 'tossUndoGrab' });
+      showActivationHighlights();
       showPhase();
       render();
       e.preventDefault();
@@ -3655,6 +4015,115 @@ const UI = (() => {
     if (e.button === 0) isPanning = false;
   }
 
+  // ── Touch handlers (mobile) ──────────────────────────────────
+  function onTouchStart(e) {
+    e.preventDefault();
+    if (moveAnimating) return;
+    const touches = e.touches;
+    if (touches.length === 2) {
+      // Pinch-zoom start
+      const dx = touches[1].clientX - touches[0].clientX;
+      const dy = touches[1].clientY - touches[0].clientY;
+      pinchState = {
+        startDist: Math.hypot(dx, dy),
+        startZoom: Board.zoomLevel,
+        midX: (touches[0].clientX + touches[1].clientX) / 2,
+        midY: (touches[0].clientY + touches[1].clientY) / 2,
+        prevMidX: (touches[0].clientX + touches[1].clientX) / 2,
+        prevMidY: (touches[0].clientY + touches[1].clientY) / 2,
+      };
+      didPan = true; // suppress tap
+    } else if (touches.length === 1) {
+      isPanning = true;
+      didPan = false;
+      panStartX = touches[0].clientX;
+      panStartY = touches[0].clientY;
+      touchStartTime = Date.now();
+    }
+  }
+
+  function onTouchMove(e) {
+    e.preventDefault();
+    if (moveAnimating) return;
+    const touches = e.touches;
+    if (touches.length === 2 && pinchState) {
+      // Pinch-zoom
+      const dx = touches[1].clientX - touches[0].clientX;
+      const dy = touches[1].clientY - touches[0].clientY;
+      const dist = Math.hypot(dx, dy);
+      const ratio = dist / pinchState.startDist;
+      targetZoom = Math.min(3, Math.max(0.3, pinchState.startZoom * ratio));
+      const midX = (touches[0].clientX + touches[1].clientX) / 2;
+      const midY = (touches[0].clientY + touches[1].clientY) / 2;
+      // Pan to keep midpoint stable
+      Board.panX += midX - pinchState.prevMidX;
+      Board.panY += midY - pinchState.prevMidY;
+      zoomAnchorX = midX;
+      zoomAnchorY = midY;
+      pinchState.prevMidX = midX;
+      pinchState.prevMidY = midY;
+      startAnimLoop();
+      didPan = true;
+    } else if (touches.length === 1 && isPanning) {
+      const dx = touches[0].clientX - panStartX;
+      const dy = touches[0].clientY - panStartY;
+      if (!didPan && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
+        didPan = true;
+        panStartX = touches[0].clientX;
+        panStartY = touches[0].clientY;
+        return;
+      }
+      if (didPan) {
+        Board.panX += dx;
+        Board.panY += dy;
+        panStartX = touches[0].clientX;
+        panStartY = touches[0].clientY;
+        syncRosterCards();
+        render();
+      }
+    }
+  }
+
+  function onTouchEnd(e) {
+    if (e.touches.length === 0) {
+      // All fingers lifted
+      pinchState = null;
+      isPanning = false;
+      if (!didPan && (Date.now() - touchStartTime) < 300) {
+        // Treat as tap — dispatch same as onClick
+        const t = e.changedTouches[0];
+        const hex = Board.hexAtPixel(t.clientX, t.clientY);
+        if (hex) {
+          if (debugPickingUnit && handleDebugClick(hex)) return;
+          if (debugPickingTerrain && handleDebugTerrainClick(hex)) return;
+          if (debugPickingResource && handleDebugResourceClick(hex)) return;
+          const phase = Game.state.phase;
+          if (phase === Game.PHASE.TERRAIN_DEPLOY) handleTerrainClick(hex);
+          else if (phase === Game.PHASE.UNIT_DEPLOY) handleDeployClick(hex);
+          else if (phase === Game.PHASE.BATTLE) handleBattleClick(hex);
+          else if (phase === Game.PHASE.ROUND_END) handleRoundEndClick(hex);
+          else if (phase === Game.PHASE.ROUND_START) handleRoundStartClick(hex);
+
+          // Show terrain tooltip briefly on touch
+          if (isTouchDevice) {
+            clearTimeout(terrainTooltipTimer);
+            updateTerrainTooltip({ clientX: t.clientX, clientY: t.clientY });
+            terrainTooltipTimer = setTimeout(() => {
+              const tip = document.getElementById('terrain-tooltip');
+              if (tip) tip.classList.add('hidden');
+            }, 1500);
+          }
+        }
+      }
+    } else if (e.touches.length === 1) {
+      // Went from two fingers to one — reset pan start to remaining finger
+      pinchState = null;
+      panStartX = e.touches[0].clientX;
+      panStartY = e.touches[0].clientY;
+      didPan = true; // suppress tap on the remaining finger
+    }
+  }
+
   /** Right-click to toggle waypoints on reachable hexes during battle. */
   function onContextMenu(e) {
     e.preventDefault();
@@ -3765,12 +4234,18 @@ const UI = (() => {
     const action = btn.dataset.action;
 
     // Block battle-phase actions when it's opponent's turn online
-    const battleActions = ['undo-action','remove-burning','end-activation','skip-consuming','skip-rapacious','skip-arcfire','ebb-flow-choice',
+    const battleActions = ['undo-action','remove-burning','end-activation','skip-consuming','skip-rapacious','skip-arcfire','roundstart-choice',
       'shift-skip-dest','shift-ride','shift-stay','terrain-ride','terrain-stay',
       'advance-round-step','use-ability','delayed-target',
-      'fg-skip','gust-push','wu-skip-all','pass-turn'];
+      'fg-skip','gust-push','wu-skip-all','undo-grab','pass-turn'];
     if (typeof Net !== 'undefined' && Net.isOnline() && !Net.isMyTurn() &&
         battleActions.includes(action)) {
+      return;
+    }
+
+    // Mobile cancel button (replaces ESC key)
+    if (action === 'cancel-targeting') {
+      triggerEscapeAction();
       return;
     }
 
@@ -3900,6 +4375,14 @@ const UI = (() => {
       render();
     }
 
+    else if (action === 'undo-grab') {
+      Game.undoGrabForToss();
+      netSend({ type: 'tossUndoGrab' });
+      showActivationHighlights();
+      showPhase();
+      render();
+    }
+
     else if (action === 'pass-turn') {
       const ok = Game.passTurn();
       if (ok) {
@@ -3994,6 +4477,8 @@ const UI = (() => {
             conditions: u.conditions.map(c => ({ ...c })),
             resources: u.resources ? JSON.parse(JSON.stringify(u.resources)) : undefined }));
         const prevMarkers = s.markers ? new Map(s.markers) : new Map();
+        const resourcesBefore = JSON.parse(JSON.stringify(unit.resources || {}));
+        const beamsBefore = s.beams.map(b => ({ ...b }));
         if (typeof Abilities !== 'undefined') {
           Abilities.executeAction(abilityName, { unit }, actionRuleId);
         }
@@ -4011,7 +4496,8 @@ const UI = (() => {
           oncePerGame: abDef ? abDef.oncePerGame : false,
           oncePerRound: abDef ? abDef.oncePerRound : false,
           unitRef: unit, healthSnapshots, prevMarkers,
-          prevResources: JSON.parse(JSON.stringify(unit.resources || {})),
+          prevResources: resourcesBefore,
+          prevBeams: beamsBefore,
         });
         if (act.moved && act.attacked && !s.rules.confirmEndTurn) {
           if (typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) {
@@ -4046,12 +4532,15 @@ const UI = (() => {
       render();
     }
 
-    else if (action === 'ebb-flow-choice') {
+    else if (action === 'roundstart-choice') {
       const idx = parseInt(btn.dataset.unitIndex, 10);
-      Game.resolveEbbFlowChoice(idx);
-      netSend({ type: 'resolveEbbFlowChoice', unitIndex: idx });
-      showPhase();
-      render();
+      const current = Game.getRoundStartCurrent();
+      if (current && current.targets[idx]) {
+        Game.resolveRoundStartChoice(current.targets[idx]);
+        netSend({ type: 'resolveRoundStartChoice', unitIndex: idx });
+        showPhase();
+        render();
+      }
     }
 
     else if (action === 'dancer-choice') {
@@ -4487,6 +4976,27 @@ const UI = (() => {
     uiState.highlightColor2 = null;
     uiState.highlightStyle = reachable ? 'dots' : null;
     uiState.attackTargets = targets;
+
+    // Toss grab highlights: cyan hexes on eligible adjacent allies/terrain
+    const hasToss = !act.tossGrab && !act.attacked
+      && typeof Abilities !== 'undefined' && Abilities.hasOnAttackRules(act.unit);
+    if (hasToss) {
+      const grabSources = Abilities.getTossSourceHexes(act.unit);
+      if (grabSources.size > 0) {
+        if (!uiState.highlights) uiState.highlights = new Map();
+        for (const [k] of grabSources) uiState.highlights.set(k, 2);
+        uiState.highlightColor2 = 'rgba(0, 200, 255, 0.4)';
+      }
+      uiState.tossGrabSources = grabSources.size > 0 ? grabSources : null;
+    } else {
+      uiState.tossGrabSources = null;
+    }
+    // Grabbed: suppress move highlights, show only attack targets
+    if (act.tossGrab) {
+      uiState.highlights = null;
+      uiState.tossGrabSources = null;
+    }
+
     // Enemy hexes that can be waypointed (Glider) or push-moved into (Impactful)
     const isGlider = Game.hasCondition(act.unit, 'moveintoenemies');
     const isImpactful = typeof Abilities !== 'undefined'
@@ -4590,10 +5100,17 @@ const UI = (() => {
           render();
           return;
         }
-        return;
-      }
-
-      if (fgPhase === 'allyDest') {
+        // Click another unit → cancel gust, fall through to unit switch logic below
+        const fgClickUnit = s.units.find(
+          u => u.q === hex.q && u.r === hex.r && u.player === s.currentPlayer && !u.activated && u.health > 0
+        );
+        if (fgClickUnit && fgClickUnit !== s.activationState.unit) {
+          targeting.falconGust = null;
+          // Fall through — unit switch logic below will handle selectUnit
+        } else {
+          return;
+        }
+      } else if (fgPhase === 'allyDest') {
         if (targeting.falconGust.validHexes.has(key)) {
           const ally = targeting.falconGust.selectedAlly;
           const allyIdx = Game.state.units.indexOf(ally);
@@ -4605,8 +5122,9 @@ const UI = (() => {
           render();
         }
         return;
+      } else {
+        return;
       }
-      return;
     }
 
     // Gust Push targeting mode (action: push enemy or place cinder)
@@ -4738,15 +5256,16 @@ const UI = (() => {
     if (targeting.pushMove) {
       if (targeting.pushMove.pushDestinations.has(key)) {
         const tgt = targeting.pushMove;
+        const animUnit = s.activationState.unit; // save before executePushMove may end activation
         const ok = Game.executePushMove(tgt.targetQ, tgt.targetR, hex.q, hex.r);
         if (ok) {
           netSend({ type: 'pushMove', targetQ: tgt.targetQ, targetR: tgt.targetR, pushQ: hex.q, pushR: hex.r });
           const animSpeed = s.rules.animSpeed || 0;
           targeting.pushMove = null;
           if (animSpeed > 0 && tgt.path.length > 0) {
-            // Animate Dozer along the path to the enemy's old hex
+            // Animate unit along the path to the enemy's old hex
             // The unit is already at the destination in game state; animate visually
-            animatePushMove(tgt, hex.q, hex.r, animSpeed);
+            animatePushMove(animUnit, tgt, hex.q, hex.r, animSpeed);
           } else {
             finishPostPushMove();
           }
@@ -4793,6 +5312,8 @@ const UI = (() => {
           .map(u => ({ unit: u, prevHealth: u.health, prevQ: u.q, prevR: u.r,
             prevConditions: u.conditions.map(c => ({ ...c })) }));
 
+        const resourcesBefore = JSON.parse(JSON.stringify(rt.sourceUnit.resources || {}));
+        const beamsBefore = s.beams.map(b => ({ ...b }));
         const undoData = Game.relocateUnit(rt.unit, hex.q, hex.r, rt.parentMap);
         Game.log(`${rt.sourceUnit.name} commands ${rt.unit.name} to move`, rt.sourceUnit.player);
 
@@ -4809,7 +5330,8 @@ const UI = (() => {
           unitRef: rt.sourceUnit,
           healthSnapshots,
           relocateData: undoData,
-          prevResources: JSON.parse(JSON.stringify(rt.sourceUnit.resources || {})),
+          prevResources: resourcesBefore,
+          prevBeams: beamsBefore,
         });
 
         finishRelocate(rt.abilityName, rt.actionCost, rt.sourceUnit);
@@ -4840,6 +5362,8 @@ const UI = (() => {
           .map(u => ({ unit: u, q: u.q, r: u.r, health: u.health,
             conditions: u.conditions.map(c => ({ ...c })),
             resources: u.resources ? JSON.parse(JSON.stringify(u.resources)) : undefined }));
+        const resourcesBefore = JSON.parse(JSON.stringify(targeting.ability.unit.resources || {}));
+        const beamsBefore = s.beams.map(b => ({ ...b }));
 
         if (typeof Abilities !== 'undefined') {
           Abilities.executeAction(abName, {
@@ -4887,7 +5411,8 @@ const UI = (() => {
           oncePerRound: abDef ? abDef.oncePerRound : false,
           unitRef: targeting.ability.unit,
           healthSnapshots,
-          prevResources: JSON.parse(JSON.stringify(targeting.ability.unit.resources || {})),
+          prevResources: resourcesBefore,
+          prevBeams: beamsBefore,
         });
 
         targeting.ability = null;
@@ -4982,52 +5507,29 @@ const UI = (() => {
       return;
     }
 
-    // Toss targeting mode (phase 1: pick source, phase 2: pick destination)
-    if (targeting.toss) {
-      if (targeting.toss.phase === 1) {
-        if (targeting.toss.sources.has(key)) {
-          targeting.toss.tossSource = targeting.toss.sources.get(key);
-          targeting.toss.phase = 2;
-          const dests = Abilities.getTossDestHexes(targeting.toss.targetQ, targeting.toss.targetR);
-          targeting.toss.destinations = dests;
-          uiState.highlights = new Map([...dests].map(k => [k, 1]));
-          uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
-          showPhase();
-          render();
+    // Toss landing targeting mode: pick where to land grabbed ally/terrain
+    if (targeting.tossLand) {
+      if (targeting.tossLand.validHexes.has(key)) {
+        Game.completeTossLand(hex.q, hex.r);
+        netSend({ type: 'tossLand', q: hex.q, r: hex.r });
+        targeting.tossLand = null;
+        // Post-attack flow: effects, burning redirect, replacement, auto-end
+        if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+          enterEffectTargeting();
+          return;
         }
-        return;
-      }
-      if (targeting.toss.phase === 2) {
-        if (targeting.toss.destinations.has(key)) {
-          const tossData = Game.executeToss(targeting.toss.tossSource, hex.q, hex.r);
-          netSend({ type: 'toss', source: {
-            type: targeting.toss.tossSource.type,
-            fromQ: targeting.toss.tossSource.q, fromR: targeting.toss.tossSource.r
-          }, toQ: hex.q, toR: hex.r });
-          const tQ = targeting.toss.targetQ, tR = targeting.toss.targetR;
-          const bonus = targeting.toss.bonusDamage;
-          targeting.toss = null;
-          const ok = Game.attackUnit(tQ, tR, bonus, tossData);
-          if (ok) {
-            netSend({ type: 'attackUnit', q: tQ, r: tR, bonusDamage: bonus });
-            if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
-              enterEffectTargeting();
-              return;
-            }
-            if (checkBurningRedirect()) return;
-            if (Game.state.pendingReplacement) { enterReplacementChoice(); return; }
-            const tossAct = Game.state.activationState;
-            if (tossAct && tossAct.moved && tossAct.attacked && !Game.state.rules.confirmEndTurn) {
-              tryEndActivation(); return;
-            }
-            if (!Game.state.activationState) { resetUiState(); }
-            else { showActivationHighlights(); }
-          }
-          showPhase();
-          render();
+        if (checkBurningRedirect()) return;
+        if (Game.state.pendingReplacement) { enterReplacementChoice(); return; }
+        const tossAct = Game.state.activationState;
+        if (tossAct && tossAct.moved && tossAct.attacked && !Game.state.rules.confirmEndTurn) {
+          tryEndActivation(); return;
         }
-        return;
+        if (!Game.state.activationState) { resetUiState(); }
+        else { showActivationHighlights(); }
+        showPhase();
+        render();
       }
+      return;
     }
 
     // Effect targeting mode (push/pull/move): click valid hex to resolve
@@ -5128,28 +5630,7 @@ const UI = (() => {
 
       // Try attack (click a red attack-target)
       if (uiState.attackTargets && uiState.attackTargets.has(key)) {
-        // Check for onAttack abilities (Toss) — enter toss targeting before dealing damage
-        // Skip for Delayed Effect (targets spaces, no pre-attack interactions)
         const act = s.activationState;
-        const isDelayedAtk = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'delayedattack');
-        if (!isDelayedAtk && typeof Abilities !== 'undefined' && Abilities.hasOnAttackRules(act.unit)) {
-          const sources = Abilities.getTossSourceHexes(act.unit);
-          if (sources.size > 0) {
-            const bonusDamage = Abilities.getOnAttackBonusDamage(act.unit);
-            targeting.toss = {
-              phase: 1, unit: act.unit,
-              targetQ: hex.q, targetR: hex.r,
-              sources, destinations: null,
-              tossSource: null, bonusDamage,
-            };
-            uiState.highlights = new Map([...sources.keys()].map(k => [k, 1]));
-            uiState.highlightColor = 'rgba(0, 200, 255, 0.4)';
-            uiState.attackTargets = null;
-            showPhase();
-            render();
-            return;
-          }
-        }
         // Build attack path for Piercing + Path attacks
         let attackPath = null;
         if (act._attackParentMap && typeof Abilities !== 'undefined'
@@ -5169,6 +5650,19 @@ const UI = (() => {
         const ok = Game.attackUnit(hex.q, hex.r, 0, null, attackPath);
         if (ok) {
           netSend({ type: 'attackUnit', q: hex.q, r: hex.r, attackPath: attackPath || undefined });
+
+          // Toss grab: after attack, enter landing targeting instead of normal post-attack flow
+          if (act && act.pendingTossLand) {
+            const dests = Abilities.getTossDestHexes(act.pendingTossLand.targetQ, act.pendingTossLand.targetR);
+            targeting.tossLand = { validHexes: dests, source: act.pendingTossLand.source };
+            uiState.highlights = new Map([...dests].map(k => [k, 1]));
+            uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
+            uiState.attackTargets = null;
+            showPhase();
+            render();
+            return;
+          }
+
           // Check for queued interactive effects (push/pull/move from abilities)
           if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
             enterEffectTargeting();
@@ -5195,16 +5689,33 @@ const UI = (() => {
         }
       }
 
-      // Block deselect/switch during Falcon Gust or Wound Up
-      const fgPending = s.activationState.falconGust && s.activationState.falconGust.phase !== 'done';
+      // Toss grab: click eligible adjacent ally/terrain (cyan highlights)
+      if (uiState.tossGrabSources && uiState.tossGrabSources.has(key)) {
+        const source = uiState.tossGrabSources.get(key);
+        Game.grabForToss(source);
+        const srcData = source.type === 'unit'
+          ? { type: 'unit', fromQ: source.q, fromR: source.r }
+          : { type: 'terrain', fromQ: source.q, fromR: source.r };
+        netSend({ type: 'tossGrab', source: srcData });
+        showActivationHighlights();
+        showPhase();
+        render();
+        return;
+      }
+
+      // Block deselect/switch during Wound Up, Toss Grab, or executed Falcon Gust
+      // Falcon Gust: targeting phase allows switching (cancels gust); executed gust blocks until undo
+      const fgExecuted = s.activationState.falconGust && s.activationState.falconGust.phase === 'done'
+        && s.activationState.falconGust.actionsTaken > 0;
       const wuPending = s.activationState.woundUp && s.activationState.woundUp.phase !== 'done';
+      const tossGrabPending = !!s.activationState.tossGrab;
 
       // Click own unactivated unit → switch selection only if no action taken yet
       const unit = s.units.find(
         u => u.q === hex.q && u.r === hex.r && u.player === s.currentPlayer && !u.activated && u.health > 0
       );
       if (unit && unit !== s.activationState.unit) {
-        if (!fgPending && !wuPending && !s.activationState.moved && !s.activationState.attacked) {
+        if (!fgExecuted && !wuPending && !tossGrabPending && !s.activationState.moved && !s.activationState.attacked) {
           const selected = Game.selectUnit(unit);
           if (selected) {
             netSend({ type: 'selectUnit', unitIndex: s.units.indexOf(unit) });
@@ -5224,7 +5735,7 @@ const UI = (() => {
       }
 
       // Click empty/unrelated space → deselect only if no action taken yet
-      if (!fgPending && !wuPending && !s.activationState.moved && !s.activationState.attacked) {
+      if (!fgExecuted && !wuPending && !s.activationState.moved && !s.activationState.attacked) {
         Game.deselectUnit();
         resetUiState();
         showPhase();
@@ -5721,10 +6232,10 @@ const UI = (() => {
       case 'pushMove': {
         // Remote push-move: get path data before executing, then animate
         const pmData = Game.getPushMoveData(data.targetQ, data.targetR);
+        const pmUnit = Game.state.activationState ? Game.state.activationState.unit : null;
         const pmOk = Game.executePushMove(data.targetQ, data.targetR, data.pushQ, data.pushR);
         if (pmOk) {
           const pmSpeed = Game.state.rules.animSpeed || 0;
-          const pmUnit = Game.state.activationState ? Game.state.activationState.unit : null;
           if (pmSpeed > 0 && pmData && pmData.path.length > 0 && pmUnit) {
             render();  // Update pushed enemy token position
             moveAnimating = true;
@@ -5855,22 +6366,36 @@ const UI = (() => {
         render();
         break;
       }
-      case 'toss': {
+      case 'tossGrab': {
         const src = data.source;
-        let tossSource;
+        let grabSource;
         if (src.type === 'unit') {
           const u = Game.state.units.find(
             u => u.q === src.fromQ && u.r === src.fromR && u.health > 0
           );
-          tossSource = { type: 'unit', unit: u, q: src.fromQ, r: src.fromR };
+          grabSource = { type: 'unit', unit: u, q: src.fromQ, r: src.fromR };
         } else {
           const td = Game.state.terrain.get(`${src.fromQ},${src.fromR}`);
-          tossSource = { type: 'terrain', q: src.fromQ, r: src.fromR, surface: td?.surface };
+          grabSource = { type: 'terrain', q: src.fromQ, r: src.fromR, surface: td?.surface };
         }
-        Game.executeToss(tossSource, data.toQ, data.toR);
+        Game.grabForToss(grabSource);
+        showActivationHighlights();
         render();
         break;
       }
+      case 'tossLand': {
+        Game.completeTossLand(data.q, data.r);
+        const netTlAct = Game.state.activationState;
+        if (!netTlAct) { resetUiState(); }
+        else { showActivationHighlights(); }
+        render();
+        break;
+      }
+      case 'tossUndoGrab':
+        Game.undoGrabForToss();
+        showActivationHighlights();
+        render();
+        break;
       case 'attackUnit': {
         Game.attackUnit(data.q, data.r, data.bonusDamage || 0, data.tossData || null, data.attackPath || null);
         const netAtkAct = Game.state.activationState;

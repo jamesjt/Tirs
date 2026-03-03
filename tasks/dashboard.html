@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tirs of Traea — Project Dashboard</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --accent: #e94560;
+    --accent2: #533483;
+    --text: #eee;
+    --text-dim: #8899aa;
+    --green: #4ecca3;
+    --yellow: #f0c040;
+    --red: #e94560;
+    --blue: #4ea8de;
+    --orange: #f08c00;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 20px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 1.6em;
+    margin-bottom: 4px;
+    color: var(--accent);
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 24px;
+  }
+
+  /* Health Banner */
+  .health-banner {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+  .health-card {
+    background: var(--surface);
+    border-radius: 10px;
+    padding: 16px 20px;
+    flex: 1;
+    min-width: 160px;
+    border-left: 4px solid var(--accent2);
+  }
+  .health-card.green { border-left-color: var(--green); }
+  .health-card.yellow { border-left-color: var(--yellow); }
+  .health-card.red { border-left-color: var(--red); }
+  .health-card .label { font-size: 0.75em; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; }
+  .health-card .value { font-size: 1.8em; font-weight: 700; margin: 4px 0; }
+  .health-card .detail { font-size: 0.8em; color: var(--text-dim); }
+
+  /* Progress Bar */
+  .progress-bar {
+    background: var(--bg);
+    border-radius: 6px;
+    height: 8px;
+    margin-top: 8px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    border-radius: 6px;
+    transition: width 0.3s ease;
+  }
+  .progress-fill.green { background: var(--green); }
+  .progress-fill.yellow { background: var(--yellow); }
+  .progress-fill.red { background: var(--red); }
+  .progress-fill.blue { background: var(--blue); }
+
+  /* Sections */
+  .section {
+    background: var(--surface);
+    border-radius: 10px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .section-header {
+    padding: 14px 20px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    user-select: none;
+    background: var(--surface2);
+    font-weight: 600;
+    font-size: 0.95em;
+  }
+  .section-header:hover { background: #1a4a7a; }
+  .section-header .arrow {
+    transition: transform 0.2s;
+    font-size: 0.8em;
+    color: var(--text-dim);
+  }
+  .section-header .arrow.collapsed { transform: rotate(-90deg); }
+  .section-header .badge {
+    background: var(--accent);
+    color: white;
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 0.75em;
+    margin-left: 8px;
+    font-weight: 400;
+  }
+  .section-body {
+    padding: 16px 20px;
+    transition: max-height 0.3s ease;
+  }
+  .section-body.collapsed { display: none; }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+  th { text-align: left; padding: 8px 12px; color: var(--text-dim); font-weight: 600; text-transform: uppercase; font-size: 0.75em; letter-spacing: 0.5px; border-bottom: 1px solid #2a2a4e; }
+  td { padding: 8px 12px; border-bottom: 1px solid #1a1a3e; }
+  tr:hover td { background: rgba(255,255,255,0.03); }
+
+  /* Status Pills */
+  .pill {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.8em;
+    font-weight: 500;
+  }
+  .pill.playable { background: rgba(78,204,163,0.2); color: var(--green); }
+  .pill.partial { background: rgba(240,192,64,0.2); color: var(--yellow); }
+  .pill.not-started { background: rgba(233,69,96,0.15); color: var(--red); }
+  .pill.blocked { background: rgba(233,69,96,0.2); color: var(--red); }
+  .pill.in-progress { background: rgba(78,168,222,0.2); color: var(--blue); }
+  .pill.done { background: rgba(78,204,163,0.2); color: var(--green); }
+
+  /* Decision Cards */
+  .decision-card {
+    background: var(--bg);
+    border: 1px solid var(--yellow);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 10px;
+  }
+  .decision-card .q { font-weight: 600; margin-bottom: 4px; }
+  .decision-card .context { font-size: 0.8em; color: var(--text-dim); }
+
+  /* Sprint Items */
+  .sprint-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid #1a1a3e;
+  }
+  .sprint-item:last-child { border-bottom: none; }
+  .sprint-rank {
+    width: 28px; height: 28px;
+    background: var(--surface2);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.85em; color: var(--accent);
+    flex-shrink: 0;
+  }
+  .sprint-agent {
+    font-size: 0.75em;
+    color: var(--accent2);
+    background: rgba(83,52,131,0.2);
+    padding: 1px 8px;
+    border-radius: 8px;
+  }
+
+  /* Filter bar */
+  .filter-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  .filter-btn {
+    background: var(--bg);
+    border: 1px solid #2a2a4e;
+    color: var(--text-dim);
+    padding: 4px 12px;
+    border-radius: 16px;
+    cursor: pointer;
+    font-size: 0.8em;
+    transition: all 0.15s;
+  }
+  .filter-btn:hover, .filter-btn.active {
+    border-color: var(--accent);
+    color: var(--text);
+    background: rgba(233,69,96,0.1);
+  }
+
+  /* Timestamps */
+  .timestamp { font-size: 0.75em; color: var(--text-dim); }
+
+  /* Responsive */
+  @media (max-width: 600px) {
+    body { padding: 12px; }
+    .health-banner { flex-direction: column; }
+    .health-card { min-width: unset; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Tirs of Traea</h1>
+<p class="subtitle">Project Dashboard &mdash; Last updated: <span id="lastUpdated"></span></p>
+
+<div class="health-banner" id="healthBanner"></div>
+
+<div id="sections"></div>
+
+<script>
+// ============================================================
+// DASHBOARD_DATA — PM agent updates this object
+// ============================================================
+const DASHBOARD_DATA = {
+  lastUpdated: "2026-03-02",
+  health: {
+    overall: "On Track",
+    abilitiesComplete: { done: 42, total: 65, label: "Abilities Tested" },
+    factionsPlayable: { done: 5, total: 9, label: "Factions" },
+    knownBugs: { blockers: 2, total: 5, label: "Known Bugs" }
+  },
+  sprintFocus: [
+    { task: "Smoke test all 24 Dusters abilities (spreadsheet wired)", agent: "QA + CD" },
+    { task: "Fix River Rush validTargets + wire Syli missing defs", agent: "Data Architect" },
+    { task: "Fix PM bugs: River Rush validTargets, consumeall effect", agent: "Data Architect + Engineer" },
+    { task: "Wire remaining Syli defs (Foul Hemolymph, Harbringer, Honeydew)", agent: "Data Architect" }
+  ],
+  decisions: [
+    { question: "Backend choice for multiplayer: Firebase vs Supabase vs custom?", context: "Async turn-based, needs push notifications, game state persistence. See tasks/todo.md 'Explore Native App Options'." },
+    { question: "Prioritize remaining factions: which 2 next after Dusters?", context: "Seri (partial), Soli, Tidehaven, Down Town all not started. Primordial Mists mostly done but has bugs." }
+  ],
+  factions: [
+    { name: "Syli", units: "12/12", abilities: "18/20", tested: "18/20", status: "playable" },
+    { name: "Red Ridge", units: "12/12", abilities: "10/12", tested: "10/12", status: "playable" },
+    { name: "Stonehart", units: "12/12", abilities: "12/12", tested: "12/12", status: "playable" },
+    { name: "Dusters", units: "12/12", abilities: "28/28", tested: "7/28", status: "partial" },
+    { name: "Primordial Mists", units: "10/10", abilities: "22/30", tested: "20/30", status: "partial" },
+    { name: "Seri", units: "?/?", abilities: "2/?", tested: "2/?", status: "partial" },
+    { name: "Soli", units: "?/?", abilities: "0/?", tested: "0/?", status: "not-started" },
+    { name: "Tidehaven", units: "?/?", abilities: "0/?", tested: "0/?", status: "not-started" },
+    { name: "Down Town", units: "?/?", abilities: "0/?", tested: "0/?", status: "not-started" }
+  ],
+  overarchingGoals: [
+    { name: "Unified Resource System", phase: "Phase 2: Spreadsheet Migration", progress: 40, status: "in-progress" },
+    { name: "Mobile Friendly", phase: "Not started", progress: 0, status: "not-started" },
+    { name: "Finish All Abilities", phase: "In progress", progress: 70, status: "in-progress" },
+    { name: "Native App / Multiplayer", phase: "Research phase", progress: 5, status: "not-started" }
+  ],
+  blocked: [
+    { task: "consumeall effect", blockedBy: "Needs code implementation in abilities.js", needsCD: false },
+    { task: "Chaos Telemental deploy-any-terrain", blockedBy: "Needs interactive terrain-type picker UI", needsCD: false },
+    { task: "Primordial Prelude", blockedBy: "placedterrain validTargets not implemented", needsCD: false }
+  ],
+  recentActivity: [
+    { date: "2026-03-02", item: "Dusters: 18 ability defs + 19 rules written to spreadsheet via sheets-cli", agent: "Data Architect" },
+    { date: "2026-03-02", item: "Set up sheets-cli with OAuth write access to Google Sheet", agent: "Data Architect" },
+    { date: "2026-03-01", item: "Improved undo for onactivation abilities", agent: "Engineer" },
+    { date: "2026-03-01", item: "Improved UI for trap movement", agent: "UX" },
+    { date: "2026-02-28", item: "Updating abilities, Claude sheet control", agent: "Engineer" }
+  ]
+};
+
+// ============================================================
+// Render Logic — do not modify unless changing dashboard layout
+// ============================================================
+
+function render() {
+  const D = DASHBOARD_DATA;
+  document.getElementById('lastUpdated').textContent = D.lastUpdated;
+
+  // Health Banner
+  const hb = document.getElementById('healthBanner');
+  const overallColor = D.health.overall === 'On Track' ? 'green' : D.health.overall === 'At Risk' ? 'yellow' : 'red';
+  const ab = D.health.abilitiesComplete;
+  const fa = D.health.factionsPlayable;
+  const bugs = D.health.knownBugs;
+  hb.innerHTML = `
+    <div class="health-card ${overallColor}">
+      <div class="label">Overall</div>
+      <div class="value">${D.health.overall}</div>
+    </div>
+    <div class="health-card green">
+      <div class="label">${ab.label}</div>
+      <div class="value">${ab.done}/${ab.total}</div>
+      <div class="detail">${Math.round(ab.done/ab.total*100)}% complete</div>
+      <div class="progress-bar"><div class="progress-fill green" style="width:${ab.done/ab.total*100}%"></div></div>
+    </div>
+    <div class="health-card ${fa.done >= 7 ? 'green' : fa.done >= 4 ? 'yellow' : 'red'}">
+      <div class="label">${fa.label}</div>
+      <div class="value">${fa.done}/${fa.total}</div>
+      <div class="detail">${Math.round(fa.done/fa.total*100)}% playable</div>
+      <div class="progress-bar"><div class="progress-fill ${fa.done >= 7 ? 'green' : fa.done >= 4 ? 'yellow' : 'red'}" style="width:${fa.done/fa.total*100}%"></div></div>
+    </div>
+    <div class="health-card ${bugs.blockers === 0 ? 'green' : 'red'}">
+      <div class="label">${bugs.label}</div>
+      <div class="value">${bugs.total}</div>
+      <div class="detail">${bugs.blockers} blocker${bugs.blockers !== 1 ? 's' : ''}</div>
+    </div>
+  `;
+
+  // Build sections
+  const container = document.getElementById('sections');
+  container.innerHTML = '';
+
+  // Sprint Focus
+  container.appendChild(buildSection('Sprint Focus', '', () => {
+    return D.sprintFocus.map((s, i) => `
+      <div class="sprint-item">
+        <div class="sprint-rank">${i + 1}</div>
+        <div style="flex:1">${s.task}</div>
+        <span class="sprint-agent">${s.agent}</span>
+      </div>
+    `).join('');
+  }));
+
+  // Decisions Pending
+  if (D.decisions.length > 0) {
+    container.appendChild(buildSection('Decisions Pending', `<span class="badge">${D.decisions.length}</span>`, () => {
+      return D.decisions.map(d => `
+        <div class="decision-card">
+          <div class="q">${d.question}</div>
+          <div class="context">${d.context}</div>
+        </div>
+      `).join('');
+    }));
+  }
+
+  // Overarching Goals
+  container.appendChild(buildSection('Overarching Goals', '', () => {
+    return `<table>
+      <tr><th>Goal</th><th>Phase</th><th>Progress</th><th>Status</th></tr>
+      ${D.overarchingGoals.map(g => `
+        <tr>
+          <td>${g.name}</td>
+          <td style="color:var(--text-dim)">${g.phase}</td>
+          <td>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div class="progress-bar" style="flex:1;min-width:80px"><div class="progress-fill ${g.progress >= 80 ? 'green' : g.progress >= 30 ? 'yellow' : 'red'}" style="width:${g.progress}%"></div></div>
+              <span style="font-size:0.8em;color:var(--text-dim)">${g.progress}%</span>
+            </div>
+          </td>
+          <td><span class="pill ${g.status}">${g.status.replace('-', ' ')}</span></td>
+        </tr>
+      `).join('')}
+    </table>`;
+  }));
+
+  // Faction Readiness
+  container.appendChild(buildSection('Faction Readiness', '', () => {
+    const filterHtml = `
+      <div class="filter-bar">
+        <button class="filter-btn active" data-filter="all">All</button>
+        <button class="filter-btn" data-filter="playable">Playable</button>
+        <button class="filter-btn" data-filter="partial">Partial</button>
+        <button class="filter-btn" data-filter="not-started">Not Started</button>
+      </div>
+    `;
+    const tableHtml = `<table id="factionTable">
+      <tr><th>Faction</th><th>Units</th><th>Abilities</th><th>Tested</th><th>Status</th></tr>
+      ${D.factions.map(f => `
+        <tr data-status="${f.status}">
+          <td style="font-weight:600">${f.name}</td>
+          <td>${f.units}</td>
+          <td>${f.abilities}</td>
+          <td>${f.tested}</td>
+          <td><span class="pill ${f.status}">${f.status.replace('-', ' ')}</span></td>
+        </tr>
+      `).join('')}
+    </table>`;
+    return filterHtml + tableHtml;
+  }, () => {
+    // Post-render: attach filter listeners
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const filter = btn.dataset.filter;
+        document.querySelectorAll('#factionTable tr[data-status]').forEach(row => {
+          row.style.display = (filter === 'all' || row.dataset.status === filter) ? '' : 'none';
+        });
+      });
+    });
+  }));
+
+  // Blocked
+  if (D.blocked.length > 0) {
+    container.appendChild(buildSection('Blocked Items', `<span class="badge" style="background:var(--red)">${D.blocked.length}</span>`, () => {
+      return `<table>
+        <tr><th>Task</th><th>Blocked By</th><th>CD?</th></tr>
+        ${D.blocked.map(b => `
+          <tr>
+            <td>${b.task}</td>
+            <td style="color:var(--text-dim)">${b.blockedBy}</td>
+            <td>${b.needsCD ? '<span class="pill blocked">Yes</span>' : 'No'}</td>
+          </tr>
+        `).join('')}
+      </table>`;
+    }));
+  }
+
+  // Recent Activity
+  container.appendChild(buildSection('Recent Activity', '', () => {
+    return D.recentActivity.map(a => `
+      <div class="sprint-item">
+        <span class="timestamp" style="min-width:80px">${a.date}</span>
+        <div style="flex:1">${a.item}</div>
+        <span class="sprint-agent">${a.agent}</span>
+      </div>
+    `).join('');
+  }));
+}
+
+function buildSection(title, headerExtra, contentFn, postRenderFn) {
+  const section = document.createElement('div');
+  section.className = 'section';
+
+  const header = document.createElement('div');
+  header.className = 'section-header';
+  header.innerHTML = `<span>${title}${headerExtra || ''}</span><span class="arrow">&#9660;</span>`;
+
+  const body = document.createElement('div');
+  body.className = 'section-body';
+  body.innerHTML = contentFn();
+
+  header.addEventListener('click', () => {
+    body.classList.toggle('collapsed');
+    header.querySelector('.arrow').classList.toggle('collapsed');
+  });
+
+  section.appendChild(header);
+  section.appendChild(body);
+
+  if (postRenderFn) {
+    // Defer to after DOM insertion
+    requestAnimationFrame(() => postRenderFn());
+  }
+
+  return section;
+}
+
+render();
+</script>
+</body>
+</html>

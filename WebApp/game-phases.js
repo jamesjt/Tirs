@@ -561,26 +561,7 @@
           }
         },
       },
-      // Refill resources marked with refillresource passive (once-per-round pattern)
-      {
-        id: 'refillResources',
-        label: 'Refill resources',
-        auto: true,
-        execute() {
-          if (typeof Abilities === 'undefined') return;
-          for (const u of G.state.units) {
-            if (u.health <= 0 || !u.resources) continue;
-            const refills = Abilities.getPassiveList(u, 'refillresource');
-            for (const resType of refills) {
-              const max = Abilities.getMaxResource(u, resType);
-              if (u.resources[resType] !== undefined && u.resources[resType] < max) {
-                u.resources[resType] = max;
-                G.log(`${u.name}'s ${resType} refills to ${max}`, u.player);
-              }
-            }
-          }
-        },
-      },
+      // (refillResources removed — roundStart rules with gainresource handle this now)
       // Dancer: interactive round-start poise choice
       (() => {
         const dancers = [];
@@ -600,25 +581,15 @@
           data: { dancers, currentIndex: 0 },
         };
       })(),
-      // Ebb and Flow: Tidehaven round-start — grant lightning if none have it
+      // Interactive roundStart rules (e.g. Ebb and Flow) — data-driven from spreadsheet
       (() => {
-        const ebbFlowPlayers = [];
-        for (const p of [1, 2]) {
-          if (!G.state.players[p].faction) continue;
-          if (G.state.players[p].faction.toLowerCase() !== 'tidehaven') continue;
-          const alive = G.state.units.filter(u => u.player === p && u.health > 0);
-          if (alive.length === 0) continue;
-          const hasCharge = alive.some(u => u.resources && (u.resources.lightning || 0) >= 1);
-          if (!hasCharge) ebbFlowPlayers.push({ player: p, units: alive });
-        }
+        const interactiveSteps = (typeof Abilities !== 'undefined') ? Abilities.scanRoundStartRules() : [];
         return {
-          id: 'ebb-and-flow',
-          label: 'Ebb and Flow',
-          auto: ebbFlowPlayers.length === 0,
-          data: { players: ebbFlowPlayers, currentPlayerIndex: 0 },
-          execute() {
-            // Auto: nothing to do — all players already have lightning
-          },
+          id: 'roundstart-interactive',
+          label: 'Round Start Abilities',
+          auto: interactiveSteps.length === 0,
+          data: { steps: interactiveSteps, currentIndex: 0 },
+          execute() { /* auto: nothing to do */ },
         };
       })(),
     ];
@@ -951,39 +922,38 @@
     return step.data.currentIndex >= step.data.pending.length;
   }
 
-  // ── Ebb and Flow helpers (lightning charge grant) ────────────
+  // ── Interactive Round Start helpers ──────────────────────────
 
-  /** Get the current Ebb and Flow player data. */
-  function getEbbFlowCurrent() {
+  /** Get the current interactive roundStart step data. */
+  function getRoundStartCurrent() {
     const step = G.state.roundStepQueue[G.state.roundStepIndex];
-    if (!step || step.id !== 'ebb-and-flow') return null;
-    const { players, currentPlayerIndex } = step.data;
-    if (currentPlayerIndex >= players.length) return null;
-    return players[currentPlayerIndex];
+    if (!step || step.id !== 'roundstart-interactive') return null;
+    const { steps, currentIndex } = step.data;
+    if (currentIndex >= steps.length) return null;
+    return steps[currentIndex];
   }
 
-  /** Grant lightning to chosen unit for Ebb and Flow. */
-  function resolveEbbFlowChoice(unitIndex) {
+  /** Execute the interactive roundStart rule on the chosen unit. */
+  function resolveRoundStartChoice(unit) {
     const step = G.state.roundStepQueue[G.state.roundStepIndex];
-    if (!step || step.id !== 'ebb-and-flow') return false;
-    const current = getEbbFlowCurrent();
+    if (!step || step.id !== 'roundstart-interactive') return false;
+    const current = getRoundStartCurrent();
     if (!current) return false;
-    const unit = current.units[unitIndex];
     if (!unit || unit.health <= 0) return false;
-    // Grant 1 lightning resource
-    if (!unit.resources) unit.resources = {};
-    const max = (typeof Abilities !== 'undefined' && Abilities.getMaxResource(unit, 'lightning')) || 1;
-    unit.resources.lightning = Math.min((unit.resources.lightning || 0) + 1, max);
-    G.log(`Ebb and Flow: ${unit.name} gains ⚡ lightning`, current.player);
-    step.data.currentPlayerIndex++;
+    if (!current.targets.some(t => t === unit)) return false;
+    // Use abilities system to execute the rule's effects on the chosen unit
+    const ctx = { unit: Game.state.units.find(u => u.player === current.player && u.health > 0) || unit };
+    Abilities.executeRuleOnTargets(current.ruleId, [unit], ctx);
+    G.log(`${current.label}: chose ${unit.name}`, current.player);
+    step.data.currentIndex++;
     return true;
   }
 
-  /** Check if all Ebb and Flow choices have been made. */
-  function allEbbFlowDecided() {
+  /** Check if all interactive roundStart steps have been resolved. */
+  function allRoundStartDecided() {
     const step = G.state.roundStepQueue[G.state.roundStepIndex];
-    if (!step || step.id !== 'ebb-and-flow') return true;
-    return step.data.currentPlayerIndex >= step.data.players.length;
+    if (!step || step.id !== 'roundstart-interactive') return true;
+    return step.data.currentIndex >= step.data.steps.length;
   }
 
   // ── Rapacious helpers (devoured unit placement) ─────────────
@@ -1210,10 +1180,10 @@
   G.skipConsumingPlacement = skipConsumingPlacement;
   G.allConsumingPlaced = allConsumingPlaced;
 
-  // Ebb and Flow helpers
-  G.getEbbFlowCurrent = getEbbFlowCurrent;
-  G.resolveEbbFlowChoice = resolveEbbFlowChoice;
-  G.allEbbFlowDecided = allEbbFlowDecided;
+  // Interactive round start helpers
+  G.getRoundStartCurrent = getRoundStartCurrent;
+  G.resolveRoundStartChoice = resolveRoundStartChoice;
+  G.allRoundStartDecided = allRoundStartDecided;
 
   // Rapacious helpers
   G.getRapaciousValidHexes = getRapaciousValidHexes;

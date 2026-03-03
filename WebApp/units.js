@@ -232,7 +232,6 @@ const Units = (() => {
       rules[ruleName] = {
         type,
         ruleName,
-        target: col(row, ['target']).trim() || (['action', 'endActivation'].includes(type) ? null : col(row, ['validtargets', 'valid targets']).trim()),
         effects,
         condition: col(row, ['condition']).trim() || null,
       conditionValue: col(row, ['condition value', 'conditionvalue']).trim() || null,
@@ -267,7 +266,7 @@ const Units = (() => {
 
       // Collect rule IDs from columns: "Rule N", "Ability N", "AbilityN"
       const ruleIds = [];
-      for (let i = 1; i <= 4; i++) {
+      for (let i = 1; i <= 8; i++) {
         const ruleId = col(row, [`rule ${i}`, `rule${i}`, `ability ${i}`, `ability${i}`]).trim();
         // Skip if it matches the ability name column itself
         if (ruleId && ruleId !== name) ruleIds.push(ruleId);

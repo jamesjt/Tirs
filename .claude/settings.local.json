@@ -39,7 +39,20 @@
       "Bash(test:*)",
       "Bash(ping:*)",
       "Bash(python3:*)",
-      "mcp__mcp-registry__search_mcp_registry"
+      "mcp__mcp-registry__search_mcp_registry",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(where:*)",
+      "Bash(wc:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(bun:*)",
+      "Bash(node:*)",
+      "Bash(export:*)",
+      "Bash(/tmp/sheets-cli/dist/sheets-cli.exe:*)",
+      "Bash(SHEETS_CLI_DEFAULT_SPREADSHEET_ID=\"17lSSg1vt-m9sM9kfVxL0Noxy-mGClb8RfzedWf5aDlk\" /tmp/sheets-cli/dist/sheets-cli.exe set:*)",
+      "Bash(set +H:*)",
+      "Bash(sheets-cli header:*)",
+      "Bash(npm install:*)"
     ]
   }
 }

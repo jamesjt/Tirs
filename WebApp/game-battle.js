@@ -106,6 +106,8 @@
       G.state.traps = prevActivation.snapshot.traps;
       G.state.terrain.clear();
       for (const [k, v] of prevActivation.snapshot.terrain) G.state.terrain.set(k, v);
+      G.state.beams = prevActivation.snapshot.beams || [];
+      updateBeamConditions();
       G.state.combatLog.length = prevActivation.snapshot.logLength;
       G.state.actionHistory = [];
     } else if (prevActivation) {
@@ -137,6 +139,7 @@
         delayedEffects: G.state.delayedEffects.map(de => ({ ...de })),
         traps: new Map([...G.state.traps].map(([k, v]) => [k, { ...v }])),
         terrain: new Map([...G.state.terrain].map(([k, v]) => [k, { ...v }])),
+        beams: G.state.beams.map(b => ({ ...b })),  // shallow copy preserving unit refs
         logLength: G.state.combatLog.length,
       };
 
@@ -321,6 +324,8 @@
   function getMoveRange() {
     const act = G.state.activationState;
     if (!act) return null;
+    // Block movement while holding a toss grab (must attack or release)
+    if (act.tossGrab) return null;
 
     const isMobile = typeof Abilities !== 'undefined' && Abilities.hasFlag(act.unit, 'mobile');
     const isImpactful = typeof Abilities !== 'undefined'
@@ -667,6 +672,7 @@
     // Update objective control
     updateObjectiveControl(act.unit);
     if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
+    updateBeamConditions();
 
     G.state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ: act.unit.q, toR: act.unit.r, prevObjControl, prevMoveDistance, prevHealth: unitSnap.health, prevConditions: unitSnap.conditions, otherUnitPositions, prevTraps, prevResources: unitSnap.resources });
     G.log(`${act.unit.name} moved (${fromQ},${fromR}) \u2192 (${act.unit.q},${act.unit.r})`, act.unit.player);
@@ -741,6 +747,7 @@
 
     updateObjectiveControl(unit);
     if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
+    updateBeamConditions();
     G.log(`${unit.name} relocated (${snap.q},${snap.r}) → (${unit.q},${unit.r})`, unit.player);
 
     return { unit, fromQ: snap.q, fromR: snap.r, prevHealth: snap.health, prevConditions: snap.conditions };
@@ -1070,12 +1077,18 @@
       }
     }
 
+    // Toss grab: after attack resolves, set pending toss landing
+    if (act.tossGrab) {
+      act.pendingTossLand = { targetQ, targetR, source: act.tossGrab.source };
+    }
+
     G.state.actionHistory.push({
       type: 'attack', target, prevHealth, prevAttackerHealth,
       prevTargetConditions, prevTargetQ, prevTargetR,
       prevAttackerConditions, prevAttackerQ, prevAttackerR,
       healthSnapshots, prevTerrain,
       tossData: tossData || null,
+      tossGrab: act.tossGrab ? { source: act.tossGrab.source, prevConditions: act.tossGrab.prevConditions } : null,
       attackPath: attackPath || null,
       guardianTriggered: guardianTriggered || false,
       replacementTriggered: !!G.state.pendingReplacement,
@@ -1107,9 +1120,9 @@
       return true;
     }
 
-    // If both actions used, end activation (unless confirmEndTurn, pending effects, or burning redirect)
+    // If both actions used, end activation (unless confirmEndTurn, pending effects, burning redirect, or toss landing)
     if (act.moved && act.attacked && !G.state.rules.confirmEndTurn) {
-      if ((typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) && !act.pendingBurningRedirect) {
+      if ((typeof Abilities === 'undefined' || !Abilities.hasPendingEffects()) && !act.pendingBurningRedirect && !act.pendingTossLand) {
         endActivation();
       }
     }
@@ -1876,6 +1889,12 @@
           G.state.terrain.set(`${last.tossData.toQ},${last.tossData.toR}`, { surface: null });
         }
       }
+      // Undo toss grab: restore grab state and conditions (new grab→attack→land flow)
+      if (last.tossGrab) {
+        act.tossGrab = last.tossGrab;
+        act.unit.conditions = last.tossGrab.prevConditions;
+        delete act.pendingTossLand;
+      }
     } else if (last.type === 'clocktoys') {
       // Remove the placed trap
       G.state.traps.delete(`${last.trapQ},${last.trapR}`);
@@ -1890,6 +1909,7 @@
       G.state.terrain.clear();
       for (const [k, v] of last.snapshot.terrain) G.state.terrain.set(k, v);
       G.state.combatLog.length = last.snapshot.logLength;
+      if (last.snapshot.beams) G.state.beams = last.snapshot.beams;
     } else if (last.type === 'woundup') {
       // Restore all trap positions and unit health from snapshot
       G.state.traps = new Map(last.trapSnapshot);
@@ -1943,6 +1963,10 @@
       if (last.prevMarkers) {
         G.state.markers = last.prevMarkers;
       }
+      // Restore beams (placebeam undo)
+      if (last.prevBeams) {
+        G.state.beams = last.prevBeams;
+      }
     }
 
     // Restore resources on undo (generic for all action types)
@@ -1950,6 +1974,7 @@
     if (last.prevTargetResources && last.target) last.target.resources = last.prevTargetResources;
 
     if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
+    updateBeamConditions();
     return true;
   }
 
@@ -2147,6 +2172,7 @@
     // Objective control
     if (u.health > 0) updateObjectiveControl(u);
     if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
+    updateBeamConditions();
 
     // Auto-end
     if (act.moved && act.attacked && !G.state.rules.confirmEndTurn) {
@@ -2306,6 +2332,7 @@
     updateObjectiveControl(u);
     if (data.enemy.health > 0) updateObjectiveControl(data.enemy);
     if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
+    updateBeamConditions();
 
     // 5. Action history for undo
     G.state.actionHistory.push({
@@ -2362,6 +2389,7 @@
     if (pushed > 0) {
       updateObjectiveControl(unit);
       if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
+    updateBeamConditions();
       G.log(`${unit.name} pushed ${pushed} hex${pushed > 1 ? 'es' : ''}`, unit.player);
     }
     return pushed;
@@ -2393,6 +2421,7 @@
     if (pulled > 0) {
       updateObjectiveControl(unit);
       if (typeof Abilities !== 'undefined') Abilities.recalcAuras();
+    updateBeamConditions();
       G.log(`${unit.name} pulled ${pulled} hex${pulled > 1 ? 'es' : ''}`, unit.player);
     }
     return pulled;
@@ -2754,6 +2783,44 @@
     }
   }
 
+  // ── Toss Grab/Land (new flow: grab → attack → land) ────────────
+
+  /** Grab an adjacent ally or terrain for tossing. Adds strengthened stacks. */
+  function grabForToss(source) {
+    const act = G.state.activationState;
+    if (!act) return;
+    const bonusDmg = (typeof Abilities !== 'undefined') ? Abilities.getOnAttackBonusDamage(act.unit) : 0;
+    act.tossGrab = {
+      source,
+      bonusDamage: bonusDmg,
+      prevConditions: act.unit.conditions.map(c => ({ ...c })),
+    };
+    for (let i = 0; i < bonusDmg; i++) {
+      G.addCondition(act.unit, 'strengthened', 'untilAttack', 'toss');
+    }
+    const name = source.type === 'unit' ? source.unit.name : source.surface;
+    G.log(`${act.unit.name} grabs ${name}`, act.unit.player);
+  }
+
+  /** Undo a toss grab (release without attacking). */
+  function undoGrabForToss() {
+    const act = G.state.activationState;
+    if (!act || !act.tossGrab) return;
+    act.unit.conditions = act.tossGrab.prevConditions;
+    delete act.tossGrab;
+  }
+
+  /** Complete the toss landing after attack. Attaches tossData to last history entry. */
+  function completeTossLand(destQ, destR) {
+    const act = G.state.activationState;
+    if (!act || !act.pendingTossLand) return;
+    const tossData = executeToss(act.pendingTossLand.source, destQ, destR);
+    const lastAtk = G.state.actionHistory[G.state.actionHistory.length - 1];
+    if (lastAtk) lastAtk.tossData = tossData;
+    delete act.pendingTossLand;
+    delete act.tossGrab;
+  }
+
   /** Execute Level ability: replace terrain and grant permanent +1 damage. */
   function executeLevel(unit, hexQ, hexR, newSurface, abilityName) {
     const td = G.state.terrain.get(`${hexQ},${hexR}`);
@@ -2879,6 +2946,12 @@
     if (unit.health <= 0) {
       for (const u of G.state.units) {
         u.conditions = u.conditions.filter(c => !(c.id === 'guarded' && c.source === unit));
+      }
+      // Beam death: remove beam when owning unit dies
+      const beamIdx = G.state.beams.findIndex(b => b.unit === unit);
+      if (beamIdx !== -1) {
+        G.state.beams.splice(beamIdx, 1);
+        updateBeamConditions();
       }
     }
   }
@@ -3085,6 +3158,175 @@
   G.getMovementContext = getMovementContext;
   G.getAttackTargets = getAttackTargets;
   G.moveUnit = moveUnit;
+  // ── Beam System (persistent directional effects) ────────────
+
+  /** Compute the active hex list for a beam, considering range, terrain blocking,
+   *  and penetration rules. Returns ordered array of { q, r }. */
+  function getActiveBeamHexes(beam) {
+    if (!beam || !beam.unit || beam.unit.health <= 0) return [];
+    const unit = beam.unit;
+    // Off-board (consumed) → beam pauses
+    if (unit.q === -99 || unit.r === -99) return [];
+
+    // Compute pixel-space ray and find hexes whose centers lie ON the ray
+    // (tight perpendicular tolerance → skips offset columns → clean hex lines)
+    const origin = Board.getHex(unit.q, unit.r);
+    const target = Board.getHex(beam.targetQ, beam.targetR);
+    if (!origin || !target) return [];
+    const dx = target.x - origin.x, dy = target.y - origin.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1) return [];
+    const ux = dx / len, uy = dy / len;
+    const hexSize = Board.hexSize || 39;
+    const tolerance = hexSize * 0.25;  // tight: only hexes truly on the line
+    const maxRange = beam.range || 9;
+
+    const rayHexes = [];
+    for (const hex of Board.hexes) {
+      if (hex.q === unit.q && hex.r === unit.r) continue; // skip origin
+      const hx = hex.x - origin.x, hy = hex.y - origin.y;
+      const proj = hx * ux + hy * uy;
+      if (proj <= 0) continue; // behind the ray
+      const perp = Math.abs(hx * uy - hy * ux);
+      if (perp > tolerance) continue; // too far from the ray line
+      if (Board.hexDistance(unit.q, unit.r, hex.q, hex.r) > maxRange) continue;
+      rayHexes.push({ q: hex.q, r: hex.r, dist: proj });
+    }
+    rayHexes.sort((a, b) => a.dist - b.dist);
+    if (rayHexes.length === 0) return [];
+
+    // Penetration: determined at beam creation by which rule fired (two-rule pattern).
+    // maxPenetrations: 0 = unlimited, N = stop after N targets.
+    const canPenetrate = !!beam.penetrate;
+    const maxPen = beam.maxPenetrations || 0;
+    let penetratedCount = 0;
+
+    const filter = (beam.targetFilter || 'enemy').toLowerCase();
+    const result = [];
+
+    for (const h of rayHexes) {
+      // Terrain blocking
+      if (beam.blockedBy && beam.blockedBy.length > 0) {
+        const td = G.state.terrain.get(`${h.q},${h.r}`);
+        if (td && td.surface && beam.blockedBy.includes(td.surface.toLowerCase())) break;
+      }
+
+      result.push(h);
+
+      // Penetration check against occupant units
+      const occupant = G.state.units.find(u =>
+        u.q === h.q && u.r === h.r && u.health > 0 && u !== unit
+      );
+      if (occupant) {
+        const isEnemy = occupant.player !== unit.player;
+        const isAlly = occupant.player === unit.player;
+        const matchesFilter =
+          filter === 'all' ||
+          (filter === 'enemy' && isEnemy) ||
+          (filter === 'ally' && isAlly);
+        if (matchesFilter) {
+          if (!canPenetrate) break; // no piercing — stop at first target (hex included)
+          penetratedCount++;
+          if (maxPen > 0 && penetratedCount >= maxPen) break; // piercing limit reached
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /** Reconcile beam conditions: strip all beam-sourced conditions, recompute,
+   *  cache hex lists for rendering, and reapply to affected units. */
+  function updateBeamConditions() {
+    // 1. Strip all beam-duration conditions from all living units
+    for (const u of G.state.units) {
+      if (u.health <= 0) continue;
+      const before = u.conditions.length;
+      u.conditions = u.conditions.filter(c => c.duration !== 'beam');
+    }
+
+    // 2. Compute & cache hex lists for each beam
+    if (!G.state._beamHexCache) G.state._beamHexCache = new Map();
+    G.state._beamHexCache.clear();
+
+    for (let i = 0; i < G.state.beams.length; i++) {
+      const beam = G.state.beams[i];
+      if (!beam.unit || beam.unit.health <= 0) continue;
+      const hexes = getActiveBeamHexes(beam);
+      G.state._beamHexCache.set(i, hexes);
+
+      const filter = (beam.targetFilter || 'enemy').toLowerCase();
+
+      // 3. Apply conditions to matching occupants
+      for (const h of hexes) {
+        const occupant = G.state.units.find(u =>
+          u.q === h.q && u.r === h.r && u.health > 0 && u !== beam.unit
+        );
+        if (!occupant) continue;
+        const isEnemy = occupant.player !== beam.player;
+        const isAlly = occupant.player === beam.player;
+        const matches =
+          filter === 'all' ||
+          (filter === 'enemy' && isEnemy) ||
+          (filter === 'ally' && isAlly);
+        if (!matches) continue;
+
+        // Apply each condition as beam-aura
+        if (beam.conditions && beam.conditions.length > 0) {
+          for (const condId of beam.conditions) {
+            G.addCondition(occupant, condId, 'beam', 'beam');
+          }
+        }
+
+        // Apply damage (if damageOnce, track per activation)
+        if (beam.damage && beam.damage > 0) {
+          if (beam.damageOnce) {
+            if (!beam._damagedUnits) beam._damagedUnits = new Set();
+            if (!beam._damagedUnits.has(occupant)) {
+              beam._damagedUnits.add(occupant);
+              damageUnit(occupant, beam.damage, beam.unit, 'beam');
+            }
+          } else {
+            damageUnit(occupant, beam.damage, beam.unit, 'beam');
+          }
+        }
+      }
+    }
+  }
+
+  /** Place a persistent beam from a unit. Replaces any existing beam from the same unit. */
+  function placeBeam(unit, config) {
+    removeBeam(unit);
+    G.state.beams.push({
+      unit,
+      player: unit.player,
+      targetQ: config.targetQ,
+      targetR: config.targetR,
+      conditions: config.conditions || [],
+      damage: config.damage || 0,
+      damageOnce: config.damageOnce !== false,
+      targetFilter: config.targetFilter || 'enemy',
+      range: config.range || 9,
+      penetrate: config.penetrate != null ? config.penetrate : false,
+      maxPenetrations: config.maxPenetrations || 0,
+      blockedBy: config.blockedBy || null,
+      color: config.color || null,
+    });
+    updateBeamConditions();
+    G.log(`${unit.name} projects a beam`, unit.player);
+  }
+
+  /** Remove a beam owned by a specific unit. */
+  function removeBeam(unit) {
+    const idx = G.state.beams.findIndex(b => b.unit === unit);
+    if (idx !== -1) {
+      G.state.beams.splice(idx, 1);
+      updateBeamConditions();
+    }
+  }
+
+  // ── Public API ────────────────────────────────────────────────
+
   G.getRelocateRange = getRelocateRange;
   G.relocateUnit = relocateUnit;
   G.attackUnit = attackUnit;
@@ -3103,6 +3345,7 @@
   G.getTerrainElementAt = getTerrainElementAt;
   G.onEnterHex = onEnterHex;
   G.hasLoS = hasLoS;
+  G.hasFreePath = hasFreePath;
   G.getAttackPathBFS = getAttackPathBFS;
   G.undoLastAction = undoLastAction;
   G.updateObjectiveControl = updateObjectiveControl;
@@ -3110,6 +3353,9 @@
   G.pullUnit = pullUnit;
   G.placeTerrain = placeTerrain;
   G.executeToss = executeToss;
+  G.grabForToss = grabForToss;
+  G.undoGrabForToss = undoGrabForToss;
+  G.completeTossLand = completeTossLand;
   G.executeLevel = executeLevel;
   G.executeToter = executeToter;
   G.executeFlareUp = executeFlareUp;
@@ -3145,6 +3391,12 @@
   G.placeTrap = placeTrap;
   G.removeTrap = removeTrap;
   G.getPlayerTraps = getPlayerTraps;
+
+  // Beam helpers
+  G.placeBeam = placeBeam;
+  G.removeBeam = removeBeam;
+  G.getActiveBeamHexes = getActiveBeamHexes;
+  G.updateBeamConditions = updateBeamConditions;
   G.executeClockToys = executeClockToys;
   G.initWoundUp = initWoundUp;
   G.getWoundUpDestinations = getWoundUpDestinations;

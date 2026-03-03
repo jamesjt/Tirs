@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "Tirs WebApp",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["serve", "."],
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["C:/Program Files/nodejs/node_modules/npm/bin/npx-cli.js", "serve", "."],
       "port": 3000
     }
   ]

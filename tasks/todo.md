@@ -34,7 +34,7 @@
 - [ ] Wire remaining spreadsheet defs for Dusters, Syli, Primordial Mists
 - [ ] Implement missing factions: Seri (partial), Soli, Tidehaven, Down Town
 - [ ] Implement missing effects: `consumeall`, Chaos Telemental deploy-any-terrain picker
-- [ ] Fix known bugs: litany/hymn rule ID mismatches, River Rush validTargets, Primordial Prelude
+- [ ] Fix known bugs: ~~litany/hymn rule ID mismatches (FIXED)~~, River Rush validTargets, Primordial Prelude
 
 ### Explore Native App Options
 - [ ] **Godot**: Evaluate feasibility — hex grid rendering, GDScript vs C#, export targets (PC/Mac/iOS/Android/Web)
@@ -67,14 +67,30 @@ Code-complete but not verified in gameplay. Only move to Tested after user confi
 - [x] Hidden (Cloak) — passive.hidden:always, blocks attacks from dist>1 ✅
 - [x] Move undo — position restored correctly ✅
 - [x] Attack undo — HP restored correctly ✅
-- [ ] Protector (Shield PG) — NOT TESTED (Shield not in roster, needs spreadsheet def)
-- [ ] True Sight (Scope PG) — NOT TESTED (Scope not in roster, needs spreadsheet def)
-- [ ] Sneak Attack (Sniper PG) — NOT TESTED (needs spreadsheet def)
-- [ ] Regen (Stimpak PG) — NOT TESTED (needs spreadsheet def)
-- [ ] Tumbler (Slider PG) — NOT TESTED (needs spreadsheet def)
-- [ ] Mobile (Greaves PG) — NOT TESTED (needs spreadsheet def)
-- [ ] Absorber (Haboob) — NOT TESTED (Haboob not in roster, needs spreadsheet def)
-- [ ] Collector (Shiney) — NOT TESTED (Shiney not in roster, needs spreadsheet def)
+- [ ] Protector (Shield PG) — spreadsheet wired, needs gameplay test
+- [ ] True Sight (Scope PG) — spreadsheet wired, needs gameplay test
+- [ ] Sneak Attack (Sniper PG) — spreadsheet wired, needs gameplay test
+- [ ] Regen (Stimpak PG) — spreadsheet wired, needs gameplay test
+- [ ] Tumbler (Slider PG) — spreadsheet wired, needs gameplay test
+- [ ] Mobile (Greaves PG) — spreadsheet wired, needs gameplay test
+- [ ] Absorber/Sweeping (Haboob) — spreadsheet wired, needs gameplay test
+- [ ] Collector/Shiney — spreadsheet wired, needs gameplay test
+- [ ] Shove (Lance, Bouncer) — spreadsheet wired, needs gameplay test
+- [ ] HAZWOPER (Hook, Diffuser, Aeolus, Bouncer) — spreadsheet wired, needs gameplay test
+- [ ] Shifting Winds (Aeolus) — spreadsheet wired, needs gameplay test
+- [ ] Hover (Jump Pack) — spreadsheet wired, needs gameplay test
+- [ ] Hook Pull (Hook) — spreadsheet wired, needs gameplay test
+- [ ] Diffuser (Diffuser) — spreadsheet wired, needs gameplay test
+- [ ] Plagued Memories (Ashen) — spreadsheet wired, needs gameplay test
+- [ ] Sanguine Echoes (Enmity) — spreadsheet wired, needs gameplay test
+- [ ] Dutiful Reflection (Apocrypha) — spreadsheet wired, needs gameplay test
+- [ ] Deprived Recollection (Dearth) — spreadsheet wired, needs gameplay test
+- [ ] Remember - Affliction (Ashen) — spreadsheet wired, needs gameplay test
+- [ ] Remember - Conquest (Apocrypha) — spreadsheet wired, needs gameplay test
+- [ ] Remember - Hunger (Dearth) — spreadsheet wired, needs gameplay test
+- [ ] Remember - Slaughter (Enmity) — spreadsheet wired, needs gameplay test
+- [ ] Sand Elemental (Haboob) — spreadsheet wired, needs gameplay test
+- [ ] Remember - Guidance (faction rule) — spreadsheet wired, needs gameplay test
 
 ### Stonehart (smoke tested — previous session)
 - [x] All Stonehart abilities — smoke tested. Earth Rune bug found & fixed (resolveTargets hex fallback).
@@ -99,41 +115,30 @@ Code-complete but not verified in gameplay. Only move to Tested after user confi
 
 Code handlers exist. Just needs rules/ability defs added to Google Sheets.
 
-### Dusters — Existing effects, need sheet entries
-- [x] Poison Attack (Ashen) — hit.Poison ✅ WORKS (ability def exists)
-- [ ] Shove (Lance, Bouncer) — hit.Push.1. Needs "Shove" ability def.
-- [ ] HAZWOPER (Hook, Diffuser, Aeolus, Bouncer) — `passive.hazwoper`, effect=`ignoreTerrainRule`, value=`dangerous,poisonous`
-- [ ] Shifting Winds (Aeolus) — `action.shiftingwinds`, effect=`relocate` (same as Tree Song for shifting terrain)
-- [ ] Enfeebling Attack (Dearth) — `hit.weakness.1`
+### Dusters — ALL WIRED (2026-03-02 via sheets-cli)
+- [x] Poison Attack (Ashen) — hit.Poison ✅
+- [x] Shove (Lance, Bouncer) — ability def → hit.Push.1 ✅
+- [x] HAZWOPER (Hook, Diffuser, Aeolus, Bouncer) — passive.hazwoper + ignoreTerrainRule ✅
+- [x] Shifting Winds (Aeolus) — action.shiftingwinds + relocate ✅
+- [x] Enfeebling Attack (Dearth) — hit.Weakness.1 (already existed) ✅
+- [x] Flanker: Brutal (Cloak) — hit.FlankerBrutal (already existed) ✅
+- [x] Hover (Jump Pack) — whenAttacked.hover + relocate ✅
+- [x] Hook Pull (Hook) — hit.Move.Self.1 + hit.HookPull.Pull ✅
+- [x] Diffuser (Diffuser) — activation.diffuser.damage + activation.diffuser.destroy ✅
+- [x] Collector/Shiney — passive.collector ✅
+- [x] Sweeping/Haboob — passive.absorber + death.sweeping ✅
+- [x] Plagued Memories (Ashen) — passive.plaguedmemories ✅
+- [x] Sanguine Echoes (Enmity) — passive.sanguineechoes ✅
+- [x] Dutiful Reflection (Apocrypha) — passive.dutifulreflection ✅
+- [x] Deprived Recollection (Dearth) — action.deprivedrecollection ✅
+- [x] Remember - Affliction (Ashen) — allyDeath.remember.affliction ✅
+- [x] Remember - Conquest (Apocrypha) — allyDeath.remember.conquest ✅
+- [x] Remember - Hunger (Dearth) — allyDeath.remember.hunger ✅
+- [x] Remember - Slaughter (Enmity) — allyDeath.remember.slaughter ✅
+- [x] Sand Elemental (Haboob) — passive.sandelemental (isterrain + deployterrain) ✅
+- [x] Remember - Guidance (faction rule) — allyDeath.remember.guidance ✅
 
-### Dusters — Code done, need sheet wiring
-- [ ] Flanker: Brutal (Cloak) — `targetAdjAlly` condition done. Sheet: hit rule, condition=`targetAdjAlly`, condValue=`>=1`, effect=`bonusDamage`, value=`2`
-- [ ] Hover (Jump Pack) — whenAttacked + relocate exist. Sheet: whenAttacked rule, target=self, effect=relocate
-- [ ] Hook Pull (Hook) — hit + move + pull exist. Sheet: hit rule, effect1=move value=1, effect2=pull value=1
-- [ ] Diffuser (Diffuser) — `onTerrain` condition + `destroyTerrain` effect done. Sheet: two activation rules with condition=`onTerrain`, condValue=`dangerous`
-- [ ] Collector (Shiney) — grantability hook done. Sheet: passive rule with `collector` tag
-- [ ] Haboob death damage — absorber redirect + `absorbedGifts` value done. Sheet: passive `absorber` tag + death rule, target=`enemy around self`, range=2, effect=damage, value=`absorbedGifts`
-
-### Dusters — Legendaries (code done, need sheet passive flags)
-- [ ] Plagued Memories (Ashen) — `plaguedmemories` flag hook done. Sheet: passive rule with `plaguedmemories` tag
-- [ ] Sanguine Echoes (Enmity) — `sanguineechoes` flag hook done. Sheet: passive rule with `sanguineechoes` tag
-
-### Dusters — Remember Abilities (allyDeath trigger done)
-- [ ] Remember - Affliction (Ashen) — Sheet: type=`allyDeath`, target=killer, effect=`poisoned`
-- [ ] Remember - Conquest (Apocrypha) — Sheet: type=`allyDeath`, target=`closestAlly`, effect=`heal`, value=1
-- [ ] Remember - Hunger (Dearth) — Sheet: type=`allyDeath`, target=killer, effect=`weakness`
-
----
-
-## Needs Spreadsheet (code done)
-
-### Dusters — Legendaries
-- [ ] Dutiful Reflection (Apocrypha) — Code done (`dutifulreflection` flag). Sheet: passive rule with `dutifulreflection` tag
-- [ ] Deprived Recollection (Dearth) — Code done (`bonusactivation` effect). Sheet: action rule, effect1=damage/1/self, effect2=damage/1/ally, effect3=bonusactivation/ally
-- [ ] Remember - Slaughter (Enmity) — Code done (`laststand` effect). Sheet: allyDeath rule, target=`deadAlly`, effect=`laststand`
-- [ ] Sand Elemental (Haboob) — Deploy terrain code done (`deployterrain` flag). Sheet: passive rule with `deployterrain` tag (value = terrain name). "Is Earth Terrain" NOT yet implemented.
-
-### Syli
+### Syli — Still needs spreadsheet
 - [ ] Honeydew (Ash) — Code done (`placeterrain` effect + `healing` terrain + Manna→Forest). Sheet: allyDeath rule, target=`deadAlly`, effect=`placeterrain`, value=`manna`. Also needs Manna in terrain sheet with `healing` rule.
 
 ---
@@ -216,13 +221,13 @@ Verified working by user in gameplay.
 - [x] Creeping Shroud (mist) — targeting works ✅
 - [x] Winds Whistle (gale) — targeting works ✅
 - [x] Tempest Tune (storm) — targeting works ✅
-- [ ] River Rush — ❌ FAIL: validTargets="Water" but surface is "pool" (spreadsheet data fix)
+- [x] River Rush — FIXED (2026-03-02): validTargets changed "Water" → "Pool"
 - [ ] Primordial Prelude — ❌ FAIL: `placedterrain` validTargets not implemented in code
 
 **Litany/Hymn System:**
 - [x] Litany fires: consume mana → increment hymnRepetition ✅ (tested with corrected rule ID)
 - [x] Hymn fires at rep 3: allallies get strengthened ✅ (tested with corrected rule ID)
-- [ ] ❌ BUG: ALL 9 litany+hymn ability defs have wrong rule IDs (e.g. `hit.litanyofpower` vs actual `hit.litany.of.power`)
+- [x] ~~BUG: litany+hymn rule ID mismatches~~ — VERIFIED FIXED (2026-03-02): all 18 defs now use dotted format matching Rules tab
 
 **AfterMove:**
 - [x] Flowing River — teleportAlly afterMove, gates on mana, tracks alliesPassedDuringMove ✅
@@ -234,9 +239,9 @@ Verified working by user in gameplay.
 - [ ] Water Spirit: needs `passive.mana.from.water` + `passive.use.mana.max.1` in Abilities tab
 - [ ] Chaos Spirit: needs `passive.mana.from.any` + `passive.use.mana.max.1` in Abilities tab
 - [ ] Flighty Storm: NO DEF in abilityDefs
-- [ ] All 9 litany defs: wrong rule IDs (concatenated vs dotted)
-- [ ] All 9 hymn defs: wrong rule IDs (concatenated vs dotted)
-- [ ] River Rush: validTargets should be "Pool" not "Water"
+- [x] All 9 litany defs: rule IDs verified matching (2026-03-02)
+- [x] All 9 hymn defs: rule IDs verified matching (2026-03-02)
+- [x] River Rush: validTargets fixed to "Pool" (2026-03-02)
 
 ### Seri
 - [x] Light's Shadow (faction rule) — `swapterrainrule: fae mist:revealing:concealing`, terrain rule swap system

@@ -746,6 +746,92 @@ const Board = (() => {
     return getNeighbors(q, r).find(a => a.dir === dir) || null;
   }
 
+  /** Compute the best hex direction (0-5) from one hex toward another using
+   *  pixel-based angle. Unlike straightLineDir, this works for ANY two hexes
+   *  regardless of whether they lie on a strict hex line. Returns -1 only if
+   *  either hex doesn't exist or they are the same hex. */
+  function pixelAngleDir(q1, r1, q2, r2) {
+    if (q1 === q2 && r1 === r2) return -1;
+    const h1 = getHex(q1, r1);
+    const h2 = getHex(q2, r2);
+    if (!h1 || !h2) return -1;
+
+    // Angle from h1 center to h2 center
+    const angle = Math.atan2(h2.y - h1.y, h2.x - h1.x);
+
+    // Find the neighbor whose direction most closely matches this angle
+    const nbs = getNeighbors(q1, r1);
+    if (nbs.length === 0) return -1;
+    let bestDir = -1, bestDiff = Infinity;
+    for (const nb of nbs) {
+      const nbHex = getHex(nb.q, nb.r);
+      if (!nbHex) continue;
+      const nbAngle = Math.atan2(nbHex.y - h1.y, nbHex.x - h1.x);
+      let diff = Math.abs(nbAngle - angle);
+      if (diff > Math.PI) diff = 2 * Math.PI - diff;
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestDir = nb.dir;
+      }
+    }
+    return bestDir;
+  }
+
+  /** Cast a pixel-space ray from hex (q1,r1) through/toward hex (q2,r2) and
+   *  return all hexes the ray passes through (excluding the origin).
+   *  Unlike getLineHexes, this follows a visually straight line in pixel space,
+   *  so it works correctly across the asymmetric grid over long distances.
+   *  maxSteps limits how far the ray extends (default 20). */
+  function pixelRayHexes(q1, r1, q2, r2, maxSteps) {
+    const h1 = getHex(q1, r1);
+    const h2 = getHex(q2, r2);
+    if (!h1 || !h2) return [];
+    if (q1 === q2 && r1 === r2) return [];
+
+    const dx = h2.x - h1.x;
+    const dy = h2.y - h1.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 0.001) return [];
+
+    // Unit direction vector
+    const ux = dx / dist;
+    const uy = dy / dist;
+
+    // Step size: roughly half a hex so we don't skip hexes
+    const step = hexSize * 0.6;
+    const limit = maxSteps || 20;
+    // Extend ray well beyond the grid (limit * hexSize * 1.8 covers the board)
+    const maxDist = limit * hexSize * 1.8;
+
+    const result = [];
+    const seen = new Set();
+    seen.add(`${q1},${r1}`); // exclude origin
+
+    for (let t = step; t <= maxDist; t += step) {
+      const px = h1.x + ux * t;
+      const py = h1.y + uy * t;
+
+      // Find closest hex to this point
+      let closest = null, minD = Infinity;
+      for (const hex of hexes) {
+        const d = Math.hypot(hex.x - px, hex.y - py);
+        if (d < hexSize && d < minD) {
+          closest = hex;
+          minD = d;
+        }
+      }
+      if (closest) {
+        const key = `${closest.q},${closest.r}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          result.push({ q: closest.q, r: closest.r });
+          if (result.length >= limit) break;
+        }
+      }
+    }
+    return result;
+  }
+
   /** BFS reachable hexes within moveRange steps.
    *  blockedHexes: Set of "q,r" strings that cannot be entered.
    *  costFn(fromQ, fromR, toQ, toR): optional, returns movement cost to enter (default 1).
@@ -1110,6 +1196,71 @@ const Board = (() => {
         ctx.moveTo(x + half, y - half); ctx.lineTo(x - half, y + half);
         ctx.stroke();
         ctx.restore();
+      }
+    }
+
+    // 4a3. Persistent beams (Light Beam etc.)
+    if (state.beams && state.beams.length > 0 && state._beamHexCache) {
+      for (let bi = 0; bi < state.beams.length; bi++) {
+        const beam = state.beams[bi];
+        if (!beam.unit || beam.unit.health <= 0) continue;
+        const hexList = state._beamHexCache.get(bi);
+        if (!hexList || hexList.length === 0) continue;
+
+        // Determine if beam is penetrating (for visual distinction)
+        let isPenetrating = beam.penetrate === true;
+        if (typeof beam.penetrate === 'string') {
+          // Check dynamic condition (resource check)
+          const parts = beam.penetrate.split(':');
+          if (parts[0] === 'resource' && parts.length >= 3) {
+            const resType = parts[1].toLowerCase();
+            const current = (beam.unit.resources && beam.unit.resources[resType]) || 0;
+            const comp = parts.slice(2).join(':');
+            const m = comp.match(/^([<>=!]+)\s*(\d+)$/);
+            if (m) {
+              const op = m[1], num = parseInt(m[2], 10);
+              isPenetrating = op.includes('>') ? current >= num : current > num;
+            }
+          }
+        }
+
+        // Beam color: custom or player-based default
+        let cr, cg, cb;
+        if (beam.color) {
+          const m = beam.color.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+          if (m) { cr = +m[1]; cg = +m[2]; cb = +m[3]; }
+          else { cr = 0; cg = 200; cb = 255; }
+        } else {
+          // Player 1: cyan, Player 2: amber
+          if (beam.player === 1) { cr = 0; cg = 200; cb = 255; }
+          else { cr = 255; cg = 180; cb = 0; }
+        }
+        const alpha = isPenetrating ? 0.3 : 0.18;
+
+        // Draw hex fills
+        for (const h of hexList) {
+          const hex = getHex(h.q, h.r);
+          if (!hex) continue;
+          drawHexShape(hex, `rgba(${cr}, ${cg}, ${cb}, ${alpha})`);
+        }
+
+        // Draw center line from unit to last beam hex
+        const originHex = getHex(beam.unit.q, beam.unit.r);
+        const lastH = hexList[hexList.length - 1];
+        const lastHex = lastH ? getHex(lastH.q, lastH.r) : null;
+        if (originHex && lastHex) {
+          const o = px(originHex);
+          const e = px(lastHex);
+          ctx.save();
+          ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, 0.55)`;
+          ctx.lineWidth = isPenetrating ? 3 : 2;
+          if (!isPenetrating) ctx.setLineDash([6, 4]);
+          ctx.beginPath();
+          ctx.moveTo(o.x, o.y);
+          ctx.lineTo(e.x, e.y);
+          ctx.stroke();
+          ctx.restore();
+        }
       }
     }
 
@@ -1562,6 +1713,8 @@ const Board = (() => {
     getLineHexes,
     hexDistance,
     straightLineDir,
+    pixelAngleDir,
+    pixelRayHexes,
     getIconFile,
     get hexes() { return hexes; },
     get hexSize() { return hexSize; },

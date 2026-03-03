@@ -274,14 +274,14 @@ Expand from anchor position:
 
 ## 6. Effect Application
 
-### `applyEffect(targets, effect, value, ctx)` — Master Dispatcher
-Routes effects by name. Skip passive-only effects. Conditions route to `applyConditionEffect()`. Terrain types route to `applyTerrainCreateEffect()`. Everything else goes through the switch.
+### `applyEffect(targets, effect, value, ctx, rule)` — Master Dispatcher
+Routes effects by name. The optional `rule` parameter is passed through from `executeRules()` so that effect handlers like `applyPlaceBeam` can read the rule's range, check sibling effects, etc. Skip passive-only effects. Conditions route to `applyConditionEffect()`. Terrain types route to `applyTerrainCreateEffect()`. Everything else goes through the switch.
 
 ### Damage & Heal Effects
 
 | Function | Effect Name | Behavior |
 |----------|-------------|----------|
-| `applyDamageEffect` | `damage`, `piercing` | Ability damage: value - target armor, min 1 |
+| `applyDamageEffect` | `damage`, `piercing` | Ability damage: value - target armor, min 1. For `piercing` on passives: LoE bypass flag. On beams: value = max targets to penetrate (0/blank = unlimited). |
 | `applyBonusDamage` | `bonusdamage` | Flat bonus to ctx.target, no armor calc |
 | `applyBonusDamagePerTerrain` | `bonusdamageperterrain` | Count terrain hexes of type within radius, deal as damage. Value: `"terrainName,radius"` |
 | `applyArmorReduce` | `armorreduce` | Permanently reduce target's armor stat |
@@ -370,7 +370,7 @@ Routes effects by name. Skip passive-only effects. Conditions route to `applyCon
 | `targetadjally` | Count of attacker's allies adjacent to target | `">=1"` |
 | `covered` | Cover terrain on LoS line between attacker/target (ray-cast) | comparison val |
 | `flanked` | Attacker's allies on opposite side of target (direction-aware) | `">=1"` |
-| `resource` | Unit's resource count vs comparison | `"lightning:>=1"`, `"mana:<1"` |
+| `resource` | Unit's resource count vs comparison. Supports comma-separated AND logic for multiple resources. | `"lightning:>=1"`, `"mana:<1"`, `"lightbeam,lightning:>=1"` |
 | `onsurface` | Unit's hex terrain surface matches list | `"tide,pool"` |
 | (default) | Falls through to `evaluateConditionLegacy()` | — |
 
@@ -428,6 +428,8 @@ Actions are player-activated abilities (click a button in the battle panel). The
 }
 ```
 Handles dual-cost abilities (comma-separated action column like `"Move,Attack"`) by creating separate button entries.
+
+**Two-rule pattern for actions:** When an ability has multiple action rules with conditions, `getActions()` evaluates the conditions and selects only the first matching variant (rule order in ability def = priority). This mirrors how hit rules work — only the matching condition fires. Falls back to the first rule if none match (UI grays it out via `isActionAvailable`).
 
 ### `isActionAvailable(unit, actionRuleId)`
 Checks if an action rule's conditions are currently met (e.g. resource gates like `resource lightning:>=1`). Used by UI to gray out unavailable action buttons.
@@ -505,6 +507,58 @@ Empties the entire queue. Called on deselect or activation end.
 
 ### `fireChainRules(eff)`
 Fires deferred `aroundTarget` rules that were chained to a push/pull effect. These rules need to wait until the push/pull resolves to know the target's final position.
+
+---
+
+## 10b. Beam System
+
+Beams are persistent board effects that apply conditions to units in their path. Managed in `game-battle.js`.
+
+### Data Model
+```js
+state.beams = [{
+  unit,            // owning unit (beam removed on death)
+  player,          // player number
+  targetQ, targetR, // direction target hex (not endpoint)
+  conditions: [],  // condition IDs applied to occupants (e.g. ["vulnerable"])
+  penetrate,       // boolean — can beam pass through targets?
+  maxPenetrations, // int — 0 = unlimited, N = stop after N targets
+  range,           // max hex distance from unit
+  targetFilter,    // "enemy", "ally", "all"
+  damage, damageOnce, // optional direct damage
+  blockedBy,       // terrain surfaces that block the beam
+  color,           // optional render color
+}]
+```
+
+### Key Functions (game-battle.js)
+- **`placeBeam(unit, config)`** — Creates beam, calls `updateBeamConditions()`.
+- **`removeBeam(unit)`** — Removes beam owned by unit.
+- **`getActiveBeamHexes(beam)`** — Pixel-ray with tight perpendicular tolerance (`hexSize * 0.25`) for clean every-other-column lines. Count-based penetration: stops after `maxPenetrations` targets (0 = unlimited).
+- **`updateBeamConditions()`** — Reconciliation: strips all `beam`-duration conditions from all units, recomputes active hexes, reapplies matching conditions. Cached in `state._beamHexCache`.
+
+### Creation via `applyPlaceBeam(value, ctx, rule)`
+- **Value column**: Comma-separated tokens — condition names + optional target filter keyword.
+  - `vulnerable` → conditions: [vulnerable], targetFilter: enemy (default)
+  - `strengthened,ally` → conditions: [strengthened], targetFilter: ally
+  - `vulnerable,all` → conditions: [vulnerable], targetFilter: all
+- **Target filter**: `ally`, `enemy`, or `all` keyword in value sets who the beam affects. Default: `enemy`.
+- **Piercing**: Checks if same rule has a `piercing` effect. Value = max targets (0/blank = unlimited).
+- **Range**: Parsed from rule's `range` column (strips letter prefix, e.g. `D9` → 9)
+
+### Two-Rule Pattern for Beams
+Use opposite resource conditions to control piercing:
+- Uncharged rule: `placebeam vulnerable` (no piercing effect)
+- Charged rule: `placebeam vulnerable` + `piercing` effect (beam penetrates)
+
+`getActions()` selects the matching variant based on current resource state.
+
+### Lifecycle
+1. Action rule fires → `applyPlaceBeam()` creates beam
+2. `updateBeamConditions()` applies conditions to occupants
+3. Any position change (move/push/death) → `updateBeamConditions()` re-reconciles
+4. Owner dies in `damageUnit()` → beam removed
+5. Undo restores `prevBeams` snapshot
 
 ---
 
@@ -831,3 +885,43 @@ Abilities.getConditionDefault(id)             → string | null
 9.            → Check resourcemod effects (e.g. +1 per mana)
 10.     → Return total
 ```
+
+---
+
+## 19. Two-Rule Pattern
+
+A core design pattern where an ability has **two rules with opposite conditions** so that only one fires depending on unit state. The condition column gates which variant applies.
+
+### How It Works
+Both rules are listed in the ability's `ruleIds`. During execution, `executeRules()` evaluates each rule's condition — only the matching variant fires.
+
+### For Hit Rules (automatic)
+`executeRules()` already evaluates conditions per-rule, so two hit rules with opposite conditions just work:
+- `hit.Ability.Basic`: condition=`resource`, value=`lightning:<1` → fires when uncharged
+- `hit.Ability.Charged`: condition=`resource`, value=`lightning:>=1` → fires when charged
+
+### For Action Rules (via getActions dedup)
+`getActions()` evaluates conditions across multiple action rules for the same ability and selects only the first matching variant. This produces ONE button, not two:
+- `action.Ability`: condition=`resource`, value=`lightbeam,lightning:<1` → uncharged variant
+- `action.Ability.Charged`: condition=`resource`, value=`lightbeam,lightning:>=1` → charged variant
+
+Rule order in the ability def determines priority (first match wins).
+
+### Multi-Resource Conditions
+The `resource` condition evaluator supports comma-separated checks with AND logic:
+- `lightbeam,lightning:>=1` → unit must have lightbeam >= 1 AND lightning >= 1
+- `lightbeam,lightning:<1` → unit must have lightbeam >= 1 AND lightning < 1
+
+### Example: Light Beam (Tidehaven)
+```
+Abilities tab:
+  Light Beam → ruleIds: [action.LightBeam, action.LightBeam.Charged]
+
+Rules tab:
+  action.LightBeam:         condition=resource, value=lightbeam,lightning:<1
+                             effects: consume lightbeam, placebeam vulnerable
+  action.LightBeam.Charged: condition=resource, value=lightbeam,lightning:>=1
+                             effects: consume lightbeam, placebeam vulnerable, piercing (unlimited)
+```
+- Without lightning: uncharged rule fires, beam stops at first enemy
+- With lightning: charged rule fires, beam has piercing (penetrates through all enemies)

@@ -23,6 +23,48 @@ const Abilities = (() => {
   let effectQueue = [];   // [{ type, unit, refQ, refR, remaining }]
   let isQueuing = false;  // true during dispatch
 
+  // ── Ability Notification Queue (toast system) ──────────────────
+  // Toasts pushed here during dispatch; UI drains via drainNotifications().
+  let notificationQueue = [];
+
+  /** Replace {unit}, {target}, {killer}, {deadAlly}, {attacker} with ctx values. */
+  function resolveTemplate(template, ctx) {
+    return template.replace(/\{(\w+)\}/g, (match, key) => {
+      switch (key) {
+        case 'unit':     return ctx.unit?.name || '?';
+        case 'target':   return ctx.target?.name || ctx._resolvedTarget?.name || '?';
+        case 'killer':   return ctx.killer?.name || '?';
+        case 'deadAlly': return ctx.deadAlly?.name || '?';
+        case 'attacker': return ctx.attacker?.name || '?';
+        default:         return match;
+      }
+    });
+  }
+
+  /** Push a toast notification if the ability has display text. */
+  function emitNotification(ab, unit, trigger, ctx) {
+    if (!ab.text) return;
+    const text = resolveTemplate(ab.text, ctx);
+    notificationQueue.push({
+      abilityName: ab.name, text,
+      unitName: unit.name, player: unit.player,
+      trigger, unitRef: unit,
+    });
+  }
+
+  function drainNotifications() {
+    const batch = notificationQueue;
+    notificationQueue = [];
+    return batch;
+  }
+
+  function pushNotification(abilityName, text, unit) {
+    notificationQueue.push({
+      abilityName, text, unitName: unit.name,
+      player: unit.player, trigger: 'effect', unitRef: unit,
+    });
+  }
+
   // ── Condition Default Durations ──────────────────────────────
 
   const CONDITION_DEFAULTS = {
@@ -67,6 +109,7 @@ const Abilities = (() => {
     deploy:        'afterDeploy',
     hymn:          'hymn',
     onTurnEnd:     'turnEnd',
+    roundStart:    'roundStart',
   };
 
   // Reverse map: trigger string -> ability type
@@ -202,9 +245,34 @@ const Abilities = (() => {
     }
     if (tokens.has('damaged'))
       return ctx.damagedUnits || (ctx.target ? [ctx.target] : []);
-    // lineToTarget as sole spec → return units on line (e.g. Piercing)
-    if (tokens.has('line') && tokens.has('target') && !tokens.has('around') && !tokens.has('empty') && !tokens.has('spaces'))
-      return resolveLineToTarget(ctx);
+    // lineToTarget (with optional enemy/ally/closest filter) → return units on line
+    if (tokens.has('line') && tokens.has('target') && !tokens.has('around') && !tokens.has('empty') && !tokens.has('spaces')) {
+      const hasFilter = tokens.has('enemy') || tokens.has('ally');
+      let result;
+      if (hasFilter && ctx.unit && ctx.target) {
+        // Full line from attacker through target and beyond (for enemy/ally filtering)
+        // Try strict hex-line first; fall back to pixel-space ray for asymmetric grids
+        const dir = Board.straightLineDir(ctx.unit.q, ctx.unit.r, ctx.target.q, ctx.target.r);
+        let fullLine;
+        if (dir >= 0) {
+          fullLine = Board.getLineHexes(ctx.unit.q, ctx.unit.r, dir, 20);
+        } else {
+          // Pixel ray: visually straight line through the clicked hex and beyond
+          fullLine = Board.pixelRayHexes(ctx.unit.q, ctx.unit.r, ctx.target.q, ctx.target.r, 20);
+        }
+        result = fullLine.map(h => Game.state.units.find(u => u.q === h.q && u.r === h.r && u.health > 0)).filter(Boolean);
+      } else {
+        // No filter (e.g. Piercing): intermediates only
+        result = resolveLineToTarget(ctx);
+      }
+      if (tokens.has('enemy') && ctx.unit) result = result.filter(u => u.player !== ctx.unit.player);
+      if (tokens.has('ally') && ctx.unit) result = result.filter(u => u.player === ctx.unit.player);
+      if (tokens.has('closest') && ctx.unit && result.length > 1) {
+        result.sort((a, b) => Board.hexDistance(ctx.unit.q, ctx.unit.r, a.q, a.r) - Board.hexDistance(ctx.unit.q, ctx.unit.r, b.q, b.r));
+        result.length = 1;
+      }
+      return result;
+    }
     // pathToTarget as sole spec → return units on shortest path
     if (joined === 'pathtotarget')
       return resolvePathToTarget(ctx);
@@ -255,13 +323,15 @@ const Abilities = (() => {
       }
     }
 
-    // "line" collects hex positions between ctx.unit and anchor (exclusive of both endpoints)
+    // "line" collects hex positions along full line from unit through anchor to board edge
     if (hasLine && ctx.unit && anchor) {
-      const intermediates = [];
-      Board.straightLineDir(ctx.unit.q, ctx.unit.r, anchor.q, anchor.r, intermediates);
-      for (const h of intermediates) {
-        const k = `${h.q},${h.r}`;
-        if (!seen.has(k)) { seen.add(k); hexes.push({ q: h.q, r: h.r }); }
+      const dir = Board.straightLineDir(ctx.unit.q, ctx.unit.r, anchor.q, anchor.r);
+      if (dir >= 0) {
+        const lineHexes = Board.getLineHexes(ctx.unit.q, ctx.unit.r, dir, 20);
+        for (const h of lineHexes) {
+          const k = `${h.q},${h.r}`;
+          if (!seen.has(k)) { seen.add(k); hexes.push({ q: h.q, r: h.r }); }
+        }
       }
     }
 
@@ -285,7 +355,7 @@ const Abilities = (() => {
     // ── Identify terrain rule tokens (any unknown token checked against terrain rules) ──
     const KEYWORDS = new Set([
       'self', 'target', 'atktarget', 'attacker', 'occupant',
-      'around', 'adjacent', 'own', 'line', 'path',
+      'around', 'adjacent', 'own', 'line', 'path', 'closest', 'to',
       'units', 'unit', 'spaces', 'empty', 'enemy', 'ally', 'terrain',
       'alldamaged', 'linetotarget', 'pathtotarget', 'allallies', 'allenemies'
     ]);
@@ -297,8 +367,22 @@ const Abilities = (() => {
                       tokens.has('enemy') || tokens.has('ally');
     const wantSpaces = tokens.has('spaces') || tokens.has('empty');
 
-    // ── Return hex positions ──
+    // ── Return hex positions or units at hex positions ──
     if (wantSpaces) {
+      // When both spaces and unit-type tokens present, return units at those positions
+      if (wantUnits) {
+        const result = [];
+        for (const h of hexes) {
+          if (!Board.getHex(h.q, h.r)) continue;
+          const u = Game.state.units.find(u => u.q === h.q && u.r === h.r && u.health > 0);
+          if (!u) continue;
+          if (tokens.has('enemy') && ctx.unit && u.player === ctx.unit.player) continue;
+          if (tokens.has('ally') && ctx.unit && u.player !== ctx.unit.player) continue;
+          result.push(u);
+        }
+        return result;
+      }
+      // Pure spaces: return hex positions
       const result = [];
       for (const h of hexes) {
         if (!Board.getHex(h.q, h.r)) continue;
@@ -346,6 +430,13 @@ const Abilities = (() => {
       if (tokens.has('enemy') && ctx.unit && u.player === ctx.unit.player) continue;
       if (tokens.has('ally') && ctx.unit && u.player !== ctx.unit.player) continue;
       result.push(u);
+    }
+    // "closest" modifier: keep only the nearest unit to ctx.unit
+    if (tokens.has('closest') && ctx.unit && result.length > 1) {
+      result.sort((a, b) =>
+        Board.hexDistance(ctx.unit.q, ctx.unit.r, a.q, a.r) -
+        Board.hexDistance(ctx.unit.q, ctx.unit.r, b.q, b.r));
+      result.length = 1;
     }
     return result;
   }
@@ -442,10 +533,10 @@ const Abilities = (() => {
 
   // No-op effects that are resolved at scan time, not runtime
   const PASSIVE_ONLY_EFFECTS = new Set([
-    'tag', 'maxresource', 'resetresource', 'refillresource', 'resourcemod', 'terrainresource', 'damageresource',
+    'tag', 'maxresource', 'resetresource', 'resourcemod', 'terrainresource', 'damageresource',
   ]);
 
-  function applyEffect(targets, effect, value, ctx) {
+  function applyEffect(targets, effect, value, ctx, rule) {
     if (!effect) return;
     const lower = effect.toLowerCase();
 
@@ -482,6 +573,7 @@ const Abilities = (() => {
       case 'destroyterrain': return applyDestroyTerrain(targets, ctx);
       case 'placeterrain':   return applyPlaceTerrain(targets, value, ctx);
       case 'placemarker':    return applyPlaceMarker(targets, value, ctx);
+      case 'placebeam':      return applyPlaceBeam(value, ctx, rule);
 
       // ── Resources ──
       case 'consume':      return applyConsume(value, ctx);
@@ -496,7 +588,6 @@ const Abilities = (() => {
       case 'replace':          return applyReplace(value, ctx);
       case 'empower':          return applyEmpower(targets, value, ctx);
       case 'chainlightning':   return applyChainLightning(targets, value, ctx);
-      case 'lightbeam':        return applyLightBeam(value, ctx);
       case 'rapacious':        return applyRapacious(targets, value, ctx);
 
       default:
@@ -797,55 +888,6 @@ const Abilities = (() => {
     }
   }
 
-  // ── Light Beam ──
-
-  function applyLightBeam(value, ctx) {
-    const unit = ctx.unit;
-    const target = ctx.target; // the hex the player clicked (determines direction)
-    if (!unit || !target) return;
-
-    // Determine direction from unit to clicked hex
-    const inter = [];
-    const dir = Board.straightLineDir(unit.q, unit.r, target.q, target.r, inter);
-    if (dir < 0) return; // not on a straight line
-
-    // Walk the full line from unit in that direction to board edge
-    const lineHexes = Board.getLineHexes(unit.q, unit.r, dir, 20); // 20 = more than board size
-
-    // Check if unit has lightning resource
-    const hasLightning = unit.resources && (unit.resources.lightning || 0) >= 1;
-    let appliedToFirst = false;
-    let chargeGranted = false;
-
-    for (const h of lineHexes) {
-      const u = Game.state.units.find(u => u.q === h.q && u.r === h.r && u.health > 0);
-      if (!u) continue;
-
-      if (u.player !== unit.player) {
-        // Enemy: apply vulnerable
-        if (!hasLightning && appliedToFirst) continue; // without charge, only first enemy
-        Game.addCondition(u, 'vulnerable', 'endOfRound');
-        Game.log(`Light Beam: ${u.name} becomes vulnerable`, unit.player);
-        appliedToFirst = true;
-      } else if (hasLightning && !chargeGranted) {
-        // Ally: grant lightning (only first ally, only when charged)
-        const max = getMaxResource(u, 'lightning');
-        const cur = (u.resources && u.resources.lightning) || 0;
-        if (max > 0 && cur < max) {
-          u.resources.lightning = Math.min(cur + 1, max);
-          Game.log(`Light Beam energizes ${u.name} (⚡${u.resources.lightning})`, unit.player);
-          chargeGranted = true;
-        }
-      }
-    }
-
-    // Consume lightning if it was used for enhanced effect
-    if (hasLightning) {
-      unit.resources.lightning = Math.max(0, (unit.resources.lightning || 0) - 1);
-      Game.log(`${unit.name} discharges lightning for enhanced Light Beam`, unit.player);
-    }
-  }
-
   // ── Rapacious ──
 
   function applyRapacious(targets, value, ctx) {
@@ -919,6 +961,36 @@ const Abilities = (() => {
     }
   }
 
+  /** Place a persistent beam. Config built from rule columns:
+   *  - value: comma-separated tokens — condition names + optional target filter keyword
+   *    e.g. "vulnerable" (enemy default), "strengthened,ally", "vulnerable,all"
+   *  - piercing effect: if present, beam can penetrate. Value = max targets (0/blank = unlimited).
+   *  - range: from rule.range column (e.g. "D9" → 9) */
+  function applyPlaceBeam(value, ctx, rule) {
+    if (!ctx.unit || !ctx.target) return;
+    const piercingEff = rule && rule.effects.find(
+      e => e.effect && e.effect.toLowerCase() === 'piercing'
+    );
+    // Parse value tokens — separate filter keyword (ally/enemy/all) from condition names
+    const tokens = value ? value.split(',').map(s => s.trim()) : [];
+    const FILTERS = ['enemy', 'ally', 'all'];
+    const filterToken = tokens.find(t => FILTERS.includes(t.toLowerCase()));
+    const conditions = tokens.filter(t => !FILTERS.includes(t.toLowerCase()));
+
+    const config = {
+      conditions,
+      penetrate: !!piercingEff,
+      maxPenetrations: piercingEff ? (parseInt(piercingEff.value) || 0) : 0,
+      range: rule ? (parseInt(String(rule.range).replace(/\D/g, ''), 10) || 9) : 9,
+      targetFilter: filterToken ? filterToken.toLowerCase() : 'enemy',
+      damage: 0,
+      damageOnce: true,
+      targetQ: ctx.target.q,
+      targetR: ctx.target.r,
+    };
+    Game.placeBeam(ctx.unit, config);
+  }
+
   function applyPlaceTerrain(targets, value, ctx) {
     // value format: "surface" or "surface:count"
     const parts = (value || '').split(':');
@@ -968,9 +1040,10 @@ const Abilities = (() => {
       if (!t.resources) t.resources = {};
       const parts = (value || '').split(':').map(s => s.trim());
       const resType = parts[0].toLowerCase();
-      const amount = parts.length >= 2 ? (parseInt(parts[1], 10) || 1) : 1;
+      const rawAmt = parts.length >= 2 ? parts[1].toLowerCase() : '1';
       if (!(resType in t.resources)) t.resources[resType] = 0;
       const max = getMaxResource(t, resType);
+      const amount = rawAmt === 'max' ? max : (parseInt(rawAmt, 10) || 1);
       const prev = t.resources[resType];
       t.resources[resType] = Math.min(prev + amount, max);
       const gained = t.resources[resType] - prev;
@@ -1267,16 +1340,37 @@ const Abilities = (() => {
       }
 
       case 'resource': {
-        // condValue: "type" (defaults >=1) or "type:>=N"
+        // condValue: "type" (defaults >=1), "type:>=N", or comma-separated for AND logic
+        // e.g. "lightbeam,lightning:>=1" → both must pass
         if (!ctx.unit || !ctx.unit.resources) return false;
+        const checks = val.split(',').map(s => s.trim());
+        for (const check of checks) {
+          const parts = check.split(':').map(s => s.trim());
+          const resType = parts[0].toLowerCase();
+          const current = ctx.unit.resources[resType] || 0;
+          if (parts.length >= 2) {
+            const { op, num } = parseComparison(parts[1]);
+            if (!compare(current, op, num)) return false;
+          } else {
+            if (current < 1) return false;
+          }
+        }
+        return true;
+      }
+
+      case 'teamresource': {
+        // Check MAX value of a resource across all living units of ctx.unit's player
+        // condValue: "type:op" e.g. "lightningCharge:<1"
+        if (!ctx.unit) return false;
         const parts = val.split(':').map(s => s.trim());
         const resType = parts[0].toLowerCase();
-        const current = ctx.unit.resources[resType] || 0;
+        const alive = Game.state.units.filter(u => u.health > 0 && u.player === ctx.unit.player);
+        const maxVal = Math.max(0, ...alive.map(u => (u.resources && u.resources[resType]) || 0));
         if (parts.length >= 2) {
           const { op, num } = parseComparison(parts[1]);
-          return compare(current, op, num);
+          return compare(maxVal, op, num);
         }
-        return current >= 1;
+        return maxVal >= 1;
       }
 
       case 'onsurface': {
@@ -1344,7 +1438,7 @@ const Abilities = (() => {
     const rule = atomicRules[ruleId];
     if (!rule) return;
     if (!ctx) ctx = { unit };
-    const targets = resolveTargets(rule.target, ctx, rule);
+    const targets = resolveTargets(rule.validTargets, ctx, rule);
     for (const eff of rule.effects) {
       if (!eff.effect) continue;
       if (INTERACTIVE_EFFECTS.has(eff.effect.toLowerCase())) continue;
@@ -1359,10 +1453,11 @@ const Abilities = (() => {
     for (const ruleId of ruleIds) {
       const rule = atomicRules[ruleId];
       if (!rule || rule.type !== triggerType) continue;
-      if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, ctx)) continue;
+      const condResult = rule.condition ? evaluateCondition(rule.condition, rule.conditionValue, ctx) : true;
+      if (!condResult) continue;
 
       // Defer aroundTarget rules when a push/pull for ctx.target is pending
-      const tgt = (rule.target || '').toLowerCase();
+      const tgt = (rule.validTargets || '').toLowerCase();
       if (isQueuing && tgt.includes('aroundtarget') && ctx.target && effectQueue.length > 0) {
         const pendingPush = effectQueue.find(e =>
           e.unit === ctx.target && (e.type === 'push' || e.type === 'pull')
@@ -1374,7 +1469,10 @@ const Abilities = (() => {
         }
       }
 
-      let targets = resolveTargets(rule.target, ctx, rule);
+      let targets = resolveTargets(rule.validTargets, ctx, rule);
+      // Track resolved target for template substitution in toast notifications
+      const unitTarget = targets.find(t => t && t.name);
+      if (unitTarget) ctx._resolvedTarget = unitTarget;
       // Filter out invalidTargets (e.g. atkTarget to exclude primary attack target from AoE)
       if (rule.invalidTargets && targets.length > 0) {
         const invalidTags = rule.invalidTargets.toLowerCase().split(',').map(s => s.trim());
@@ -1388,7 +1486,7 @@ const Abilities = (() => {
         });
       }
       for (const eff of rule.effects) {
-        if (eff.effect) applyEffect(targets, eff.effect, eff.value, ctx);
+        if (eff.effect) applyEffect(targets, eff.effect, eff.value, ctx, rule);
       }
     }
   }
@@ -1421,6 +1519,22 @@ const Abilities = (() => {
       // Skip hit rules from abilities that have action rules — those fire via executeAction only
       if (triggerType === 'hit' && ab.ruleIds.some(id => atomicRules[id]?.type === 'action')) continue;
 
+      // Skip interactive roundStart rules — those are handled by scanRoundStartRules + UI
+      // Only self-targeting (or no-target) roundStart rules fire via per-unit dispatch
+      if (triggerType === 'roundStart') {
+        const autoOnly = relevant.filter(id => {
+          const vt = (atomicRules[id]?.validTargets || '').toLowerCase().replace(/[\s,]+/g, '');
+          return !vt || vt === 'self';
+        });
+        if (autoOnly.length === 0) continue;
+        if (autoOnly.length < relevant.length) {
+          // Mixed ability: only fire the auto subset
+          executeRules(autoOnly, triggerType, ctx);
+          emitNotification(ab, unit, trigger, ctx);
+          continue;
+        }
+      }
+
       // Once-per-game / once-per-round check
       if (ab.oncePerGame && unit.usedAbilities.has(ab.name)) continue;
       if (ab.oncePerRound && unit.usedAbilitiesThisRound && unit.usedAbilitiesThisRound.has(ab.name)) continue;
@@ -1441,6 +1555,7 @@ const Abilities = (() => {
       }
 
       executeRules(ab.ruleIds, triggerType, ctx);
+      emitNotification(ab, unit, trigger, ctx);
 
       if (ab.oncePerGame) unit.usedAbilities.add(ab.name);
       if (ab.oncePerRound) { if (!unit.usedAbilitiesThisRound) unit.usedAbilitiesThisRound = new Set(); unit.usedAbilitiesThisRound.add(ab.name); }
@@ -1471,6 +1586,7 @@ const Abilities = (() => {
 
         const ctx = { unit: ally, deadAlly: deadUnit, killer, target: killer };
         executeRules(ab.ruleIds, 'allyDeath', ctx);
+        emitNotification(ab, ally, 'allyDeath', ctx);
 
         if (ab.oncePerGame) ally.usedAbilities.add(ab.name);
         if (ab.oncePerRound) {
@@ -1615,7 +1731,7 @@ const Abilities = (() => {
         if (!rule || rule.type !== 'movement') continue;
         if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, ctx)) continue;
 
-        const targets = resolveTargets(rule.target, ctx, rule);
+        const targets = resolveTargets(rule.validTargets, ctx, rule);
         for (const eff of rule.effects) {
           if (eff.effect) applyMovementEffect(targets, eff.effect, eff.value, unit, refQ, refR);
         }
@@ -1818,7 +1934,7 @@ const Abilities = (() => {
           const rule = atomicRules[ruleId];
           if (!rule || rule.type !== 'passive') continue;
           if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit: u })) continue;
-          const tgt = (rule.target || '').toLowerCase();
+          const tgt = (rule.validTargets || '').toLowerCase();
           if (!tgt.includes('around') || !tgt.includes('space')) continue;
           for (const eff of rule.effects) {
             if (!eff.effect) continue;
@@ -1853,12 +1969,12 @@ const Abilities = (() => {
       for (const ab of u.abilities) {
         for (const ruleId of ab.ruleIds) {
           const rule = atomicRules[ruleId];
-          if (!rule || rule.type !== 'passive' || !rule.target) continue;
-          const lower = rule.target.toLowerCase();
+          if (!rule || rule.type !== 'passive' || !rule.validTargets) continue;
+          const lower = rule.validTargets.toLowerCase();
           if (!lower.includes('around') && !lower.includes('adjacent')) continue;
           // Check rule condition (e.g. resource gate)
           if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, { unit: u })) continue;
-          const targets = resolveTargets(rule.target, { unit: u }, rule);
+          const targets = resolveTargets(rule.validTargets, { unit: u }, rule);
           for (const eff of rule.effects) {
             if (!eff.effect) continue;
             const effId = eff.effect.toLowerCase();
@@ -2122,7 +2238,7 @@ const Abilities = (() => {
   function getTossSourceHexes(unit) {
     const sources = new Map();
     forEachRule(unit, { type: 'onAttack' }, (rule) => {
-      const targets = resolveTargets(rule.target, { unit }, rule);
+      const targets = resolveTargets(rule.validTargets, { unit }, rule);
       for (const t of targets) {
         sources.set(`${t.q},${t.r}`, t);
       }
@@ -2222,7 +2338,20 @@ const Abilities = (() => {
         if (rule && rule.type === 'action') abRules.push(rule);
       }
       if (abRules.length === 0) continue;
-      for (const actionRule of abRules) {
+
+      // Two-rule pattern: multiple action rules with conditions → pick matching variant.
+      // Evaluates conditions and selects the first matching rule (rule order = priority).
+      // Falls back to first rule if none match (UI grays it out via isActionAvailable).
+      let selectedRules = abRules;
+      if (abRules.length > 1 && abRules.some(r => r.condition)) {
+        const ctx = { unit };
+        const matching = abRules.filter(r =>
+          !r.condition || evaluateCondition(r.condition, r.conditionValue, ctx)
+        );
+        selectedRules = matching.length > 0 ? [matching[0]] : [abRules[0]];
+      }
+
+      for (const actionRule of selectedRules) {
         const cost = (actionRule.action || '').toLowerCase();
         if (cost.includes(',')) {
           const costs = cost.split(',').map(c => c.trim());
@@ -2230,7 +2359,7 @@ const Abilities = (() => {
             actions.push({ ...ab, actionCost: c, displayName: `${ab.name} (${c})`, actionRuleId: actionRule.ruleName });
           }
         } else {
-          const needsLabel = abRules.length > 1 && cost;
+          const needsLabel = selectedRules.length > 1 && cost;
           actions.push({
             ...ab, actionCost: cost || null, actionRuleId: actionRule.ruleName,
             displayName: needsLabel ? `${ab.name} (${cost})` : undefined,
@@ -2281,9 +2410,11 @@ const Abilities = (() => {
             invalidTargets: rule.invalidTargets || null,
           };
         }
-        // Legacy path: range-based enemy targeting
+
         const parsed = parseRangeColumn(rule.range);
         if (!parsed.range) return null;  // Non-targeted action (e.g. Glider)
+
+        // Legacy path: range-based enemy targeting
         // Extract raw damage from the action rule's effects
         let rawDamage = 0;
         for (const eff of rule.effects) {
@@ -2358,7 +2489,7 @@ const Abilities = (() => {
       const key = `${hex.q},${hex.r}`;
 
       // Collect tags for this hex
-      const hexTags = [];
+      const hexTags = ['spaces']; // wildcard: every hex is a "space"
       const livingUnit = Game.state.units.find(u => u.q === hex.q && u.r === hex.r && u.health > 0);
       const terrain = Game.state.terrain.get(key);
       const trap = Game.state.traps ? Game.state.traps.get(key) : null;
@@ -2423,9 +2554,22 @@ const Abilities = (() => {
       // Exclude: any invalidTag matches?
       if (invalidTags.length > 0 && invalidTags.some(it => hexTags.includes(it))) continue;
 
-      // For enemy units with attack-type targeting, validate via canAttack()
-      if (atkType && targetType === 'unit' && livingUnit && livingUnit.player !== unit.player) {
-        if (!Game.canAttack(unit, livingUnit, { atkType, range: maxRange })) continue;
+      // Geometric validation based on attack type (L/P/D)
+      if (atkType) {
+        // For enemy units, use full canAttack() which includes LoE + hidden checks
+        // UNLESS validTargets includes 'spaces' (wildcard direction-picking, e.g. Light Beam)
+        if (targetType === 'unit' && livingUnit && livingUnit.player !== unit.player && !validTags.includes('spaces')) {
+          if (!Game.canAttack(unit, livingUnit, { atkType, range: maxRange })) continue;
+        } else {
+          // For non-enemy targets (empty, ally, terrain, trap), validate geometry only
+          // Also used for 'spaces' wildcard targeting where enemies are just hexes to pick direction
+          if (atkType === 'L') {
+            if (Board.straightLineDir(unit.q, unit.r, hex.q, hex.r) === -1) continue;
+          } else if (atkType === 'P') {
+            if (!Game.hasFreePath(unit.q, unit.r, hex.q, hex.r, maxRange)) continue;
+          }
+          // D: no extra geometric check needed (range + LoS already handled above)
+        }
       }
 
       const entry = { type: targetType, key, q: hex.q, r: hex.r };
@@ -2441,7 +2585,7 @@ const Abilities = (() => {
   /** Execute a targeted action ability. Fires action rules, then sibling hit rules. */
   function executeAction(abilityName, ctx, actionRuleId) {
     const def = abilityDefs[abilityName];
-    if (!def) return;
+    if (!def) { console.warn('[executeAction] No def for:', abilityName); return; }
 
     effectQueue = [];
     isQueuing = true;
@@ -2453,6 +2597,7 @@ const Abilities = (() => {
       executeRules(def.ruleIds, 'action', ctx);
     }
     executeRules(def.ruleIds, 'hit', ctx);
+    emitNotification(def, ctx.unit, 'action', ctx);
 
     isQueuing = false;
 
@@ -2525,7 +2670,7 @@ const Abilities = (() => {
     for (const chain of eff.chainRules) {
       const rule = atomicRules[chain.ruleId];
       if (!rule) continue;
-      const targets = resolveTargets(rule.target, chain.ctx, rule);
+      const targets = resolveTargets(rule.validTargets, chain.ctx, rule);
       for (const e of rule.effects) {
         if (e.effect) applyEffect(targets, e.effect, e.value, chain.ctx);
       }
@@ -2633,10 +2778,58 @@ const Abilities = (() => {
     effectQueue = [];
   }
 
+  // ── Single Rule Executor ─────────────────────────────────────
+
+  /** Execute a single rule's effects on an explicit set of targets. */
+  function executeRuleOnTargets(ruleId, targets, ctx) {
+    const rule = atomicRules[ruleId];
+    if (!rule) return;
+    for (const eff of rule.effects) {
+      if (eff.effect) applyEffect(targets, eff.effect, eff.value, ctx);
+    }
+  }
+
+  // ── Round Start Rule Scanner ─────────────────────────────────
+
+  /**
+   * Scan all players' faction abilities for interactive roundStart rules.
+   * Returns an array of steps, each with { player, ruleId, ruleName, label, targets, rule }.
+   * Self-targeting roundStart rules (validTargets=self) are auto and fire via dispatch — skipped here.
+   */
+  function scanRoundStartRules() {
+    const steps = [];
+    for (const p of [1, 2]) {
+      const faction = Game.state.players[p]?.faction;
+      if (!faction || !abilityDefs[faction]) continue;
+      const alive = Game.state.units.filter(u => u.player === p && u.health > 0);
+      if (alive.length === 0) continue;
+
+      const abDef = abilityDefs[faction];
+      for (const ruleId of abDef.ruleIds) {
+        const rule = atomicRules[ruleId];
+        if (!rule || rule.type !== 'roundStart') continue;
+        // Skip self-targeting (auto, handled by dispatch)
+        const joined = (rule.validTargets || '').toLowerCase().replace(/[\s,]+/g, '');
+        if (!joined || joined === 'self') continue;
+
+        // Use first alive unit as ctx for condition check
+        const ctx = { unit: alive[0] };
+        if (rule.condition && !evaluateCondition(rule.condition, rule.conditionValue, ctx)) continue;
+
+        const targets = resolveTargets(rule.validTargets, ctx, rule);
+        if (targets.length === 0) continue;
+
+        steps.push({ player: p, ruleId, ruleName: rule.ruleName || ruleId, label: abDef.name || faction, targets, rule });
+      }
+    }
+    return steps;
+  }
+
   // ── Data Setters ─────────────────────────────────────────────
 
   function setAtomicRules(data) {
     Object.assign(atomicRules, data);
+
     console.log(`[Abilities] Loaded ${Object.keys(data).length} atomic rules`);
   }
 
@@ -2716,7 +2909,15 @@ const Abilities = (() => {
     skipEffect,
     clearEffectQueue,
 
+    // Round start
+    scanRoundStartRules,
+    executeRuleOnTargets,
+
     // Condition lookup
     getConditionDefault: function(id) { return CONDITION_DEFAULTS[id] || null; },
+
+    // Toast notifications
+    drainNotifications,
+    pushNotification,
   };
 })();
