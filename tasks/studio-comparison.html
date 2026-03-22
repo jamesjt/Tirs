@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Game Studios vs Tirs of Traea — Architecture Comparison</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #bc8cff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --pink: #f778ba;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 32px;
+  }
+
+  .container { max-width: 1400px; margin: 0 auto; }
+
+  h1 {
+    font-size: 2em;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle { color: var(--text-dim); margin-bottom: 32px; font-size: 0.95em; }
+
+  /* ── Section ─────────────────────────────────── */
+  section { margin-bottom: 40px; }
+  h2 {
+    font-size: 1.3em;
+    color: var(--accent);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+    margin-bottom: 16px;
+  }
+  h3 { font-size: 1.05em; color: var(--accent2); margin: 16px 0 8px; }
+
+  /* ── Side-by-side comparison ─────────────────── */
+  .compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  .compare-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    position: relative;
+  }
+  .compare-card.studio { border-top: 3px solid var(--accent); }
+  .compare-card.tirs { border-top: 3px solid var(--accent2); }
+  .card-label {
+    font-size: 0.75em;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+  }
+  .studio .card-label { color: var(--accent); }
+  .tirs .card-label { color: var(--accent2); }
+
+  /* ── Stats banner ────────────────────────────── */
+  .stats-row {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 20px;
+    flex: 1;
+    min-width: 130px;
+    text-align: center;
+  }
+  .stat-card .num {
+    font-size: 1.8em;
+    font-weight: 700;
+    display: block;
+  }
+  .stat-card .label { font-size: 0.8em; color: var(--text-dim); }
+  .stat-card.s .num { color: var(--accent); }
+  .stat-card.t .num { color: var(--accent2); }
+
+  /* ── Table ───────────────────────────────────── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9em;
+  }
+  th {
+    text-align: left;
+    padding: 10px 14px;
+    background: var(--surface2);
+    color: var(--text-dim);
+    font-weight: 600;
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:hover td { background: rgba(88,166,255,0.04); }
+
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.75em;
+    font-weight: 600;
+  }
+  .tag-blue { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .tag-purple { background: rgba(188,140,255,0.15); color: var(--accent2); }
+  .tag-green { background: rgba(63,185,80,0.15); color: var(--green); }
+  .tag-orange { background: rgba(210,153,34,0.15); color: var(--orange); }
+  .tag-red { background: rgba(248,81,73,0.15); color: var(--red); }
+
+  /* ── Tree view ───────────────────────────────── */
+  .tree {
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.85em;
+    line-height: 1.8;
+    background: var(--surface2);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+  }
+  .tree .dir { color: var(--accent); font-weight: 600; }
+  .tree .file { color: var(--text-dim); }
+  .tree .comment { color: #484f58; font-style: italic; }
+  .tree .highlight { color: var(--green); }
+
+  /* ── Verdict/Insight boxes ───────────────────── */
+  .insight {
+    background: rgba(88,166,255,0.06);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    padding: 14px 18px;
+    margin: 16px 0;
+    font-size: 0.9em;
+  }
+  .insight.positive { border-left-color: var(--green); background: rgba(63,185,80,0.06); }
+  .insight.warning { border-left-color: var(--orange); background: rgba(210,153,34,0.06); }
+
+  /* ── Lists ───────────────────────────────────── */
+  ul { padding-left: 20px; margin: 8px 0; }
+  li { margin: 4px 0; font-size: 0.9em; }
+  li strong { color: var(--text); }
+
+  code {
+    background: var(--surface2);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.85em;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+  }
+
+  /* ── Responsive ──────────────────────────────── */
+  @media (max-width: 900px) {
+    .compare-grid { grid-template-columns: 1fr; }
+    body { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Claude Code Game Studios vs Tirs of Traea</h1>
+<p class="subtitle">Architecture comparison — a general-purpose game dev template vs a purpose-built tactics game</p>
+
+<!-- ═══════════════════════════════════════════════════
+     AT A GLANCE
+     ═══════════════════════════════════════════════════ -->
+<section>
+<h2>At a Glance</h2>
+<div class="stats-row">
+  <div class="stat-card s"><span class="num">48</span><span class="label">Studio Agents</span></div>
+  <div class="stat-card t"><span class="num">10</span><span class="label">Tirs Agents</span></div>
+  <div class="stat-card s"><span class="num">37</span><span class="label">Studio Slash Commands</span></div>
+  <div class="stat-card t"><span class="num">12</span><span class="label">Tirs Slash Commands</span></div>
+  <div class="stat-card s"><span class="num">8</span><span class="label">Studio Hooks</span></div>
+  <div class="stat-card t"><span class="num">0</span><span class="label">Tirs Hooks</span></div>
+  <div class="stat-card s"><span class="num">11</span><span class="label">Studio Path Rules</span></div>
+  <div class="stat-card t"><span class="num">0</span><span class="label">Tirs Path Rules</span></div>
+  <div class="stat-card s"><span class="num">0</span><span class="label">Studio Game Code</span></div>
+  <div class="stat-card t"><span class="num">7</span><span class="label">Tirs Game Modules</span></div>
+</div>
+
+<div class="insight">
+  <strong>Fundamental difference:</strong> Claude Code Game Studios is a <em>template/framework</em> — it ships zero game code. It's an orchestration layer for Claude Code to build games in Godot/Unity/Unreal. Tirs is a <em>complete, playable game</em> with a bespoke Claude Code setup tuned to its specific architecture.
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════
+     PROJECT IDENTITY
+     ═══════════════════════════════════════════════════ -->
+<section>
+<h2>Project Identity</h2>
+<div class="compare-grid">
+  <div class="compare-card studio">
+    <div class="card-label">Claude Code Game Studios</div>
+    <ul>
+      <li><strong>Type:</strong> Engine-agnostic game dev template</li>
+      <li><strong>Purpose:</strong> Turn one Claude Code session into a full game studio</li>
+      <li><strong>Tech:</strong> Shell scripts + Markdown config (no runtime code)</li>
+      <li><strong>Engines:</strong> Godot 4, Unity, Unreal Engine 5</li>
+      <li><strong>Stars:</strong> ~1,900 &nbsp;<span class="tag tag-green">Popular</span></li>
+      <li><strong>License:</strong> MIT</li>
+      <li><strong>Philosophy:</strong> "Agents ask questions; users make decisions"</li>
+    </ul>
+  </div>
+  <div class="compare-card tirs">
+    <div class="card-label">Tirs of Traea</div>
+    <ul>
+      <li><strong>Type:</strong> Playable 2-player hex tactics game</li>
+      <li><strong>Purpose:</strong> Competitive strategy with 9 factions, 4 rounds, ability system</li>
+      <li><strong>Tech:</strong> Vanilla JS, HTML5 Canvas, Google Sheets as data backend</li>
+      <li><strong>Engine:</strong> Custom (board.js hex grid engine)</li>
+      <li><strong>Status:</strong> Active development, hotseat mode</li>
+      <li><strong>Philosophy:</strong> "Data-driven, simplicity first, minimal impact"</li>
+    </ul>
+  </div>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════
+     DIRECTORY STRUCTURE
+     ═══════════════════════════════════════════════════ -->
+<section>
+<h2>Directory Structure</h2>
+<div class="compare-grid">
+
+<div class="compare-card studio">
+<div class="card-label">Claude Code Game Studios</div>
+<div class="tree">
+<span class="dir">.claude/</span>
+  <span class="dir">agents/</span> <span class="comment">── 48 agent .md files (3 tiers)</span>
+    <span class="file">creative-director.md</span> <span class="comment">── 16.7KB, Opus tier</span>
+    <span class="file">technical-director.md</span> <span class="comment">── 6.4KB, Opus tier</span>
+    <span class="file">producer.md</span> <span class="comment">── 6.3KB, Opus tier</span>
+    <span class="file">game-designer.md … 45 more</span> <span class="comment">── Sonnet/Haiku</span>
+  <span class="dir">docs/</span> <span class="comment">── internal reference docs</span>
+    <span class="file">agent-coordination-map.md</span> <span class="comment">── 12.5KB</span>
+    <span class="file">context-management.md</span>
+    <span class="dir">templates/</span> <span class="comment">── 29 document templates</span>
+  <span class="dir">hooks/</span> <span class="comment">── 8 lifecycle hooks</span>
+    <span class="file">session-start.sh</span>
+    <span class="file">session-stop.sh</span>
+    <span class="file">pre-compact.sh</span>
+    <span class="file">validate-commit.sh</span>
+    <span class="file">validate-push.sh</span>
+    <span class="file">validate-assets.sh</span>
+    <span class="file">detect-gaps.sh</span>
+    <span class="file">log-agent.sh</span>
+  <span class="dir">rules/</span> <span class="comment">── 11 path-scoped rules</span>
+    <span class="file">gameplay-code.md</span> <span class="comment">── src/gameplay/**</span>
+    <span class="file">engine-code.md</span> <span class="comment">── src/core/**</span>
+    <span class="file">test-standards.md … 8 more</span>
+  <span class="dir">skills/</span> <span class="comment">── 37 slash commands</span>
+    <span class="file">brainstorm/, design-system/, sprint-plan/ …</span>
+  <span class="file">settings.json</span> <span class="comment">── permissions, hooks, statusline</span>
+  <span class="file">statusline.sh</span>
+<span class="dir">docs/</span> <span class="comment">── public docs</span>
+  <span class="file">COLLABORATIVE-DESIGN-PRINCIPLE.md</span> <span class="comment">── 22.4KB</span>
+  <span class="file">WORKFLOW-GUIDE.md</span> <span class="comment">── 61.7KB(!)</span>
+  <span class="dir">engine-reference/</span> <span class="comment">── Godot/Unity/Unreal API refs</span>
+  <span class="dir">examples/</span> <span class="comment">── 3 example session transcripts</span>
+<span class="dir">production/session-state/</span> <span class="comment">── ephemeral session tracking</span>
+<span class="file">CLAUDE.md</span> <span class="comment">── lean entry point (~1.6KB)</span>
+<span class="file">README.md</span> <span class="comment">── 12.7KB</span>
+</div>
+</div>
+
+<div class="compare-card tirs">
+<div class="card-label">Tirs of Traea</div>
+<div class="tree">
+<span class="dir">WebApp/</span> <span class="comment">── the actual game</span>
+  <span class="highlight">board.js</span> <span class="comment">── hex grid geometry, canvas rendering</span>
+  <span class="highlight">units.js</span> <span class="comment">── Google Sheets CSV fetch, data normalization</span>
+  <span class="highlight">game-core.js</span> <span class="comment">── state, conditions, PHASE constants</span>
+  <span class="highlight">game-battle.js</span> <span class="comment">── activation, attack, LoS/LoE, terrain</span>
+  <span class="highlight">game-phases.js</span> <span class="comment">── pre-battle phases, turn/round management</span>
+  <span class="highlight">abilities.js</span> <span class="comment">── 3-layer data-driven ability system</span>
+  <span class="highlight">ui.js</span> <span class="comment">── DOM events, bridges Board + Game</span>
+  <span class="file">net.js</span> <span class="comment">── multiplayer stub</span>
+  <span class="file">styles.css, index.html, ABILITIES.md</span>
+<span class="dir">.claude/</span>
+  <span class="dir">commands/</span> <span class="comment">── ~12 slash commands</span>
+    <span class="file">designer.md, engineer.md, data.md, pm.md …</span>
+  <span class="dir">skills/</span> <span class="comment">── sheets-cli integration</span>
+<span class="dir">tasks/</span> <span class="comment">── project management</span>
+  <span class="file">dashboard.html</span> <span class="comment">── single-source-of-truth planner</span>
+  <span class="file">agent-log.md</span> <span class="comment">── agent handoff log</span>
+  <span class="file">lessons.md</span> <span class="comment">── self-improvement patterns</span>
+<span class="dir">nandeck/</span> <span class="comment">── unit card images</span>
+<span class="file">CLAUDE.md</span> <span class="comment">── detailed game architecture (~5KB)</span>
+<span class="file">agents.md</span> <span class="comment">── routing table, handoff protocol</span>
+<span class="file">memory/MEMORY.md</span> <span class="comment">── persistent project memory</span>
+</div>
+</div>
+
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════
+     AGENT SYSTEMS
+     ═══════════════════════════════════════════════════ -->
+<section>
+<h2>Agent Systems</h2>
+
+<table>
+<thead>
+  <tr><th>Dimension</th><th>Claude Code Game Studios</th><th>Tirs of Traea</th></tr>
+</thead>
+<tbody>
+  <tr>
+    <td><strong>Agent Count</strong></td>
+    <td>48 agents in 3 tiers</td>
+    <td>~10 agents (PM, Designer, Engineer, Data, QA, UX, Art, Mobile, Perf, Multiplayer)</td>
+  </tr>
+  <tr>
+    <td><strong>Hierarchy</strong></td>
+    <td>
+      <span class="tag tag-red">Directors</span> (Opus) →
+      <span class="tag tag-orange">Leads</span> (Sonnet) →
+      <span class="tag tag-green">Specialists</span> (Sonnet/Haiku)<br>
+      + engine-specific specialists per engine
+    </td>
+    <td>
+      Flat structure. All agents are domain specialists invoked via slash commands. PM coordinates via dashboard.
+    </td>
+  </tr>
+  <tr>
+    <td><strong>Model Tiers</strong></td>
+    <td>Opus for directors, Sonnet for leads/specialists, Haiku for quick tasks</td>
+    <td>Not specified per-agent (inherits session model)</td>
+  </tr>
+  <tr>
+    <td><strong>Tool Restrictions</strong></td>
+    <td>Per-agent (Creative Director: no Bash; QA Tester: no Write)</td>
+    <td>Not restricted per-agent</td>
+  </tr>
+  <tr>
+    <td><strong>Coordination</strong></td>
+    <td>Formal delegation protocol, escalation paths, anti-pattern list, 10+ workflow templates</td>
+    <td>Routing table in agents.md, PM updates dashboard after tasks, agent-log.md for handoffs</td>
+  </tr>
+  <tr>
+    <td><strong>Specialization</strong></td>
+    <td>Engine-specific agents (e.g., Godot GDScript specialist, Unity DOTS specialist, UE Blueprint specialist)</td>
+    <td>Game-domain agents (ability system, hex grid, Google Sheets data layer)</td>
+  </tr>
+</tbody>
+</table>
+
+<div class="insight warning">
+  <strong>Trade-off:</strong> Studio's 48 agents provide broad coverage for any game type but add cognitive overhead. Tirs' 10 agents are tightly scoped to its actual codebase — each one knows the hex grid, ability system, and Google Sheets data layer intimately.
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════
+     CLAUDE CODE FEATURES
+     ═══════════════════════════════════════════════════ -->
+<section>
+<h2>Claude Code Feature Usage</h2>
+
+<table>
+<thead>
+  <tr><th>Feature</th><th>Game Studios</th><th>Tirs</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+  <tr>
+    <td><strong>CLAUDE.md</strong></td>
+    <td>Lean entry point (~1.6KB), references docs</td>
+    <td>Detailed architecture guide (~5KB) with module map, hex system, ability system, workflow rules</td>
+    <td><span class="tag tag-purple">Tirs: richer context</span></td>
+  </tr>
+  <tr>
+    <td><strong>Hooks</strong></td>
+    <td>8 hooks: session start/stop, pre-compact state save, commit/push validation, asset naming, gap detection, subagent logging</td>
+    <td>None configured</td>
+    <td><span class="tag tag-blue">Studio: big advantage</span></td>
+  </tr>
+  <tr>
+    <td><strong>Path Rules</strong></td>
+    <td>11 rules scoped to src/gameplay, src/core, src/ai, src/ui, assets, tests, prototypes, etc.</td>
+    <td>None — all guidance lives in CLAUDE.md</td>
+    <td><span class="tag tag-blue">Studio: better separation</span></td>
+  </tr>
+  <tr>
+    <td><strong>Status Line</strong></td>
+    <td>Custom script: <code>ctx: X% | model | stage [| Epic > Task]</code></td>
+    <td>Not configured</td>
+    <td><span class="tag tag-blue">Studio: nice-to-have</span></td>
+  </tr>
+  <tr>
+    <td><strong>Memory System</strong></td>
+    <td>File-based session state (<code>active.md</code>), pre-compact hook dumps state</td>
+    <td>MEMORY.md index + typed memory files (user, feedback, project, reference), auto-loaded</td>
+    <td><span class="tag tag-purple">Tirs: more structured</span></td>
+  </tr>
+  <tr>
+    <td><strong>Slash Commands</strong></td>
+    <td>37 skills covering brainstorm, design, sprint, review, release, team coordination, engine setup</td>
+    <td>~12 commands focused on game roles (engineer, designer, data, pm, qa, status) + sheets-cli</td>
+    <td><span class="tag tag-blue">Studio: broader</span></td>
+  </tr>
+  <tr>
+    <td><strong>Settings Permissions</strong></td>
+    <td>Explicit allow/deny lists (blocks <code>rm -rf</code>, <code>git push --force</code>, <code>sudo</code>, <code>.env</code> access)</td>
+    <td>Default Claude Code permissions</td>
+    <td><span class="tag tag-blue">Studio: more locked down</span></td>
+  </tr>
+  <tr>
+    <td><strong>External Data</strong></td>
+    <td>None (template only)</td>
+    <td>Live Google Sheets integration with sheets-cli for read/write, PapaParse for CSV fetch</td>
+    <td><span class="tag tag-purple">Tirs: real integration</span></td>
+  </tr>
+  <tr>
+    <td><strong>Self-Improvement</strong></td>
+    <td>Not explicit</td>
+    <td><code>tasks/lessons.md</code> — agents log mistakes and write prevention rules after corrections</td>
+    <td><span class="tag tag-purple">Tirs: unique feature</span></td>
+  </tr>
+</tbody>
+</table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════
+     WHAT TIRS COULD ADOPT
+     ═══════════════════════════════════════════════════ -->
+<section>
+<h2>What Tirs Could Adopt</h2>
+
+<div class="compare-grid">
+<div class="compare-card" style="border-top: 3px solid var(--green);">
+  <div class="card-label" style="color: var(--green);">High Value — Easy to Add</div>
+  <ul>
+    <li><strong>Hooks — Session Start/Stop:</strong> Auto-load recent agent-log, check for stale tasks, dump session summary on exit. Currently Tirs relies on CLAUDE.md instructions for this, but a hook would enforce it.</li>
+    <li><strong>Hooks — Pre-Compact:</strong> Save working state before context compression. Prevents losing context mid-session.</li>
+    <li><strong>Status Line:</strong> Show current phase, active faction, round number, or context usage %. Quick orientation.</li>
+    <li><strong>Settings Permissions:</strong> Lock down destructive git commands and sensitive file access in <code>settings.json</code>.</li>
+  </ul>
+</div>
+<div class="compare-card" style="border-top: 3px solid var(--orange);">
+  <div class="card-label" style="color: var(--orange);">Medium Value — Worth Considering</div>
+  <ul>
+    <li><strong>Path-Scoped Rules:</strong> E.g., <code>WebApp/game-*.js</code> → "never touch Board rendering", <code>WebApp/abilities.js</code> → "data-driven, no hardcoded targeting". Currently this lives in CLAUDE.md which is always loaded anyway.</li>
+    <li><strong>Agent Tool Restrictions:</strong> QA agent shouldn't Write files. Designer shouldn't run Bash. Prevents agents from drifting outside their lane.</li>
+    <li><strong>Commit Validation Hook:</strong> Check for console.log debris, hardcoded hex coordinates, missing undo snapshots before commits.</li>
+    <li><strong>Document Templates:</strong> Standardize ability spec format, faction design docs, bug report structure.</li>
+  </ul>
+</div>
+</div>
+
+<div class="insight positive" style="margin-top: 20px;">
+  <strong>What Tirs already does better:</strong> The self-improvement loop (<code>lessons.md</code>), structured typed memory system, live external data integration (Google Sheets), and the data-driven ability architecture are features that Game Studios doesn't have. Tirs' CLAUDE.md is also significantly more useful — it contains actual architecture knowledge rather than just pointing to docs.
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════
+     PHILOSOPHY COMPARISON
+     ═══════════════════════════════════════════════════ -->
+<section>
+<h2>Design Philosophy</h2>
+<div class="compare-grid">
+  <div class="compare-card studio">
+    <div class="card-label">Game Studios</div>
+    <h3>"Question → Options → Decision → Draft → Approval"</h3>
+    <ul>
+      <li>Agents never auto-execute; always present options</li>
+      <li>"May I write this to [filepath]?" before every modification</li>
+      <li>User is the decision-maker at every step</li>
+      <li>Collaborative Design Principle: 22.4KB document codifying this</li>
+      <li>"The file is the memory, not the conversation"</li>
+      <li>Context budgets: light ~3k, medium ~8k, heavy ~15k tokens</li>
+    </ul>
+    <div class="insight">Optimized for <strong>exploration and safety</strong> — you're building something new and don't want surprises.</div>
+  </div>
+  <div class="compare-card tirs">
+    <div class="card-label">Tirs of Traea</div>
+    <h3>"Plan → Execute → Verify → Learn"</h3>
+    <ul>
+      <li>Plan mode for non-trivial tasks, then autonomous execution</li>
+      <li>Subagents for parallel research, keep main context clean</li>
+      <li>Self-improvement: log mistakes in lessons.md, write prevention rules</li>
+      <li>Demand elegance: "is there a more elegant way?" before presenting</li>
+      <li>Autonomous bug fixing: "just fix it, don't ask for hand-holding"</li>
+      <li>Agent routing table: classify task → route to correct agent(s)</li>
+    </ul>
+    <div class="insight">Optimized for <strong>velocity and domain expertise</strong> — the architecture is known, ship features fast.</div>
+  </div>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════
+     ARCHITECTURE PATTERNS
+     ═══════════════════════════════════════════════════ -->
+<section>
+<h2>Architecture Patterns</h2>
+
+<table>
+<thead>
+  <tr><th>Pattern</th><th>Game Studios</th><th>Tirs</th></tr>
+</thead>
+<tbody>
+  <tr>
+    <td><strong>Code Organization</strong></td>
+    <td>Prescribes <code>src/gameplay</code>, <code>src/core</code>, <code>src/ai</code>, <code>src/ui</code>, <code>src/networking</code> — but doesn't implement them</td>
+    <td>IIFE modules with explicit load order. No build tools, no bundler. Works.</td>
+  </tr>
+  <tr>
+    <td><strong>State Management</strong></td>
+    <td>No opinion (depends on engine)</td>
+    <td>Single <code>Game.state</code> closure with undo snapshots (<code>prevX</code> pattern)</td>
+  </tr>
+  <tr>
+    <td><strong>Data Pipeline</strong></td>
+    <td>Templates for data files + JSON validation hook</td>
+    <td>Live Google Sheets → PapaParse CSV → runtime objects. Sheets-cli for writes.</td>
+  </tr>
+  <tr>
+    <td><strong>Ability/Effects</strong></td>
+    <td>N/A</td>
+    <td>3-layer system: faction tabs → ability defs → atomic rules. <code>dispatch(trigger, ctx)</code> pattern. 20+ implemented abilities.</td>
+  </tr>
+  <tr>
+    <td><strong>Testing</strong></td>
+    <td>Path-scoped test rules, pytest allowed in permissions</td>
+    <td>Manual QA via /qa agent, no automated tests</td>
+  </tr>
+  <tr>
+    <td><strong>Multiplayer</strong></td>
+    <td>Network code rules (server-authoritative, versioned messages)</td>
+    <td>Hotseat implemented, online planned (net.js stub)</td>
+  </tr>
+</tbody>
+</table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════
+     SUMMARY
+     ═══════════════════════════════════════════════════ -->
+<section>
+<h2>Bottom Line</h2>
+
+<div class="compare-grid">
+  <div class="compare-card studio">
+    <div class="card-label">Game Studios excels at…</div>
+    <ul>
+      <li>Infrastructure: hooks, rules, permissions, status line</li>
+      <li>Process: structured workflows, gate checks, release pipelines</li>
+      <li>Breadth: 48 agents covering every game dev discipline</li>
+      <li>Safety: explicit allow/deny, validation hooks, anti-patterns</li>
+      <li>Onboarding: <code>/start</code> command with 4 branching paths</li>
+      <li>Documentation: 60+ pages of workflow guides and examples</li>
+    </ul>
+  </div>
+  <div class="compare-card tirs">
+    <div class="card-label">Tirs excels at…</div>
+    <ul>
+      <li>Domain depth: agents understand hex grids, LoS, ability systems</li>
+      <li>Real integration: live Google Sheets data, actual game code</li>
+      <li>Learning: self-improvement loop catches and prevents mistakes</li>
+      <li>Velocity: autonomous execution with plan-mode guardrails</li>
+      <li>Architecture docs: CLAUDE.md teaches the actual codebase</li>
+      <li>Structured memory: typed files with frontmatter, indexed</li>
+    </ul>
+  </div>
+</div>
+
+<div class="insight" style="margin-top: 20px;">
+  <strong>They solve different problems.</strong> Game Studios is a <em>process framework</em> — it's brilliant for starting from zero and maintaining discipline across a large, engine-backed project. Tirs is a <em>domain-expert configuration</em> — it's brilliant for moving fast on a specific, well-understood codebase. The best version of Tirs' setup would cherry-pick Studio's hooks, path rules, and permission lockdowns while keeping its own domain-specific agents, memory system, and self-improvement loop.
+</div>
+</section>
+
+<p style="text-align: center; color: var(--text-dim); font-size: 0.8em; margin-top: 40px;">
+  Generated 2026-03-22 — Claude Code comparative analysis
+</p>
+
+</div>
+</body>
+</html>

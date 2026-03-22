@@ -52,7 +52,13 @@
       "Bash(SHEETS_CLI_DEFAULT_SPREADSHEET_ID=\"17lSSg1vt-m9sM9kfVxL0Noxy-mGClb8RfzedWf5aDlk\" /tmp/sheets-cli/dist/sheets-cli.exe set:*)",
       "Bash(set +H:*)",
       "Bash(sheets-cli header:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(gh repo:*)",
+      "Bash(gh api:*)",
+      "Bash(python -c \"import json,sys; data=json.load\\(sys.stdin\\); [print\\(t[''''path'''']\\) for t in data.get\\(''''tree'''',[]\\)]\")",
+      "Bash(python -c \"import base64,sys; print\\(base64.b64decode\\(sys.stdin.read\\(\\)\\).decode\\(\\)\\)\")",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }
