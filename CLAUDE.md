@@ -83,6 +83,8 @@ The `validTargets` column on atomic rules is the single source for both purposes
 
 There is no separate "target" column — `validTargets` serves both roles.
 
+**Never hardcode targeting logic in effect handlers.** The `validTargets` column is the single source of truth for who receives an effect. If a Parting Gift targets `closestAlly`, that filtering happens in `resolveTargets()` — the `applyGrantAbility()` handler should never re-check "is this an ally?". Adding redundant code guards for things the data layer already controls creates maintenance burden, masks data bugs, and violates the data-driven architecture. If targeting is wrong, fix the spreadsheet — don't patch it in code.
+
 ## External Data
 
 Google Sheets ID: `17lSSg1vt-m9sM9kfVxL0Noxy-mGClb8RfzedWf5aDlk`
@@ -98,7 +100,12 @@ Unit images load from `../nandeck/images/unitImages/` (sibling folder).
 
 Key topics covered: 3-layer architecture, rule types & triggers, condition evaluators, all effects with value formats, condition defaults & stat modifiers, targeting dual-purpose system, resource system, beam/trap/marker systems, two-rule pattern, action cost system, passive flags, effect queue, and the full public API.
 
+**Before claiming something "needs new code"**: Read the actual implementation in `abilities.js` (specifically `resolveTargets()`, `evaluateCondition()`, `applyEffect()` and their helpers). Documentation can be stale or ambiguous — the code is the source of truth for what the system can already do. Never say "needs new code" based on documentation alone.
+
 ## Workflow Orchestration
+
+### 0. Session Startup
+Read MEMORY.md (auto-loaded). For ability/faction work, also read the relevant topic file from `memory/` (systems.md, abilities-reference.md, tag-targeting.md) before starting. Check `tasks/agent-log.md` tail for recent handoffs if continuing previous work.
 
 ### 1. Plan Mode Default
 
@@ -145,19 +152,26 @@ Go fix failing CI tests without being told how
 ### 7. Agent System
 
 Read `agents.md` for the agent roster, routing table, and handoff protocol.
-When a prompt matches a single domain, launch that agent via `/project:<agent>` or Task tool.
-For multi-domain tasks, decompose and route per the sequence templates in agents.md.
+
+**Before starting ANY task**, consult the routing table in agents.md:
+- Classify the request by intent and check which agent(s) should own it
+- If the task touches ability data/targeting/effects, route through Designer + Data Architect first — don't jump straight to code
+- For multi-domain tasks, decompose and route per the sequence templates in agents.md
+- Direct slash commands (`/project:engineer`, etc.) bypass routing for targeted work
+
+**After completing ANY task**, invoke PM (`/project:pm`) to update `tasks/dashboard.html` with:
+- What was done (recent activity entry)
+- Any status changes (faction readiness, goals progress, bugs resolved/found)
+- New blocked items or decisions surfaced
+
 PM dashboard: `tasks/dashboard.html`. Agent communication: `tasks/agent-log.md`.
-Direct slash commands (`/project:engineer`, etc.) bypass routing for targeted work.
 
 ## Task Management
 
-Plan First: Write plan to tasks/todo.md with checkable items
-Verify Plan: Check in before starting implementation
-Track Progress: Mark items complete as you go
-Explain Changes: High-level summary at each step
-Document Results: Add review sections to tasks/todo.md
+Project Planner: `tasks/dashboard.html` — single source of truth for all tasks. Roadmap, backlog, sprint, faction readiness, blocked items, decisions, recently completed. PM agent owns updates to `PLANNER_DATA`.
+Ability Reference: `WebApp/abilities.md` — full ability system documentation (effects, conditions, targeting, passive flags, integration points).
 Capture Lessons: Update tasks/lessons.md after corrections
+Close the Loop: After ANY session — scrub planner sprint/backlog and plan files for stale/completed/invalidated items. Delete finished plan files. Record "won't do" decisions with reasons. A phantom task is worse than a missing task.
 
 ## Core Principles
 

@@ -2355,6 +2355,40 @@ body .unit-card.enlarged .card-conditions-bar { display: none; }
   100% { opacity: 1; transform: translateX(0); }
 }
 
+/* ── Death summary toast ───────────────────────────────────── */
+
+.toast-death-summary .toast-ability-name {
+  color: #ff6b6b;
+}
+
+.toast-death-list {
+  margin: 6px 0 0 0;
+  padding-left: 16px;
+  list-style: disc;
+}
+
+.toast-death-list li {
+  font-size: 12px;
+  color: #ddd;
+  line-height: 1.5;
+  margin-bottom: 2px;
+}
+
+.toast-death-list strong {
+  color: #fff;
+  font-size: 12px;
+}
+
+.toast-death-recipient {
+  color: #aaa;
+  font-style: italic;
+}
+
+.toast-death-desc {
+  color: #999;
+  font-size: 11px;
+}
+
 /* ── Token ability pulse ─────────────────────────────────────── */
 
 @keyframes abilityPulse {
@@ -2529,6 +2563,15 @@ body .unit-card.enlarged .card-conditions-bar { display: none; }
   .btn-cancel-touch {
     display: inline-block;
   }
+
+  /* ── Tablet refinements ──────────────────────────────────────── */
+  .surface-icon { width: 36px; height: 36px; }
+  .unit-card.roster-card { width: 160px; height: 224px; }
+  .game-log { width: 280px; }
+  .game-log-body { max-height: 20vh; }
+  .game-log-header { font-size: 12px; padding: 6px 10px; }
+  .debug-menu { display: none !important; }
+  .phase-panel { -webkit-overflow-scrolling: touch; }
 }
 
 /* Cancel button hidden on desktop */
@@ -2542,5 +2585,231 @@ body .unit-card.enlarged .card-conditions-bar { display: none; }
   border-radius: 4px;
   cursor: pointer;
   min-height: 32px;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Phone breakpoint (≤480px) — bottom-drawer panels, compact HUD
+   ══════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 480px) {
+
+  /* ── Top nav ───────────────────────────────────────────────────── */
+  #top-nav { height: 28px; padding: 0 6px; }
+  .nav-title { font-size: 10px; }
+
+  /* ── HUD ────────────────────────────────────────────────────────── */
+  .hud-wrapper { top: 30px; }
+
+  #battle-hud {
+    min-width: 0;
+    width: calc(100vw - 8px);
+    max-width: none;
+    border-radius: 6px;
+    font-size: 10px;
+  }
+
+  .hud-score { padding: 3px 8px; min-width: 50px; }
+  .hud-pts { font-size: 16px; }
+  .hud-label { font-size: 8px; letter-spacing: 0.5px; }
+  .hud-hymn { font-size: 9px; }
+
+  #hud-center { padding: 3px 8px; }
+  #hud-round { font-size: 9px; }
+  #hud-turn { font-size: 11px; }
+
+  .btn-hud-end { font-size: 10px; padding: 3px 10px; }
+
+  /* Activation row — compact on tiny screens */
+  .hud-activation {
+    font-size: 9px;
+    gap: 3px;
+    padding: 2px 4px;
+  }
+  .hud-unit-name { font-size: 10px; }
+  .hud-activation .btn-ability,
+  .hud-activation .btn-action {
+    font-size: 9px;
+    padding: 4px 6px;
+    min-height: 28px;
+  }
+
+  /* ── Side panels — bottom drawer ───────────────────────────────── */
+  .side-panel {
+    top: auto !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    transform: none !important;
+    width: 100% !important;
+    max-width: none !important;
+    max-height: 40vh;
+    border-radius: 12px 12px 0 0;
+    padding: 10px 12px;
+  }
+
+  .side-panel.side-left,
+  .side-panel.side-right {
+    width: 100% !important;
+    max-width: none !important;
+    left: 0 !important;
+    right: 0 !important;
+    transform: none !important;
+  }
+
+  .phase-panel { padding: 8px 10px; }
+  .roster-points-bar {
+    margin: -8px -10px 8px;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+
+  /* ── Center panels — nearly full width ─────────────────────────── */
+  .center-panel {
+    width: calc(100vw - 16px);
+    max-width: none;
+    max-height: 85vh;
+  }
+
+  /* ── Round panel ───────────────────────────────────────────────── */
+  #panel-round {
+    min-width: 0;
+    width: calc(100vw - 8px);
+    max-width: none;
+  }
+
+  /* ── Roster cards — much smaller ───────────────────────────────── */
+  .unit-card.roster-card {
+    width: 120px;
+    height: 168px;
+  }
+
+  /* ── Unit card inspect — full screen modal ─────────────────────── */
+  body .unit-card.enlarged {
+    width: calc(100vw - 16px);
+    max-width: none;
+    max-height: 90vh;
+  }
+  body .unit-card.enlarged .card-name { font-size: 16px; }
+  body .unit-card.enlarged .card-rules { font-size: 12px; }
+  body .unit-card.enlarged .rule-name { font-size: 12px; }
+  body .unit-card.enlarged .rule-desc { font-size: 11px; }
+  body .unit-card.enlarged .card-stats svg { width: 36px; height: 36px; }
+
+  /* ── Unit list buttons — compact ───────────────────────────────── */
+  .btn-unit { padding: 6px 8px; font-size: 11px; }
+  .unit-thumb { width: 20px; height: 20px; }
+  .unit-stats { font-size: 10px; }
+  .unit-cost { font-size: 10px; }
+
+  /* ── Faction buttons — compact ─────────────────────────────────── */
+  .btn-faction { padding: 5px 6px; font-size: 11px; }
+  .faction-logo { width: 24px; height: 24px; }
+
+  /* ── Surface buttons — bigger tap targets ──────────────────────── */
+  .surface-icon { width: 40px; height: 40px; }
+  .btn-surface { border-width: 2px; }
+
+  /* ── Game log ──────────────────────────────────────────────────── */
+  .game-log { width: calc(100vw - 16px); max-width: none; }
+  .game-log-body { max-height: 15vh; font-size: 11px; }
+
+  /* ── Status bar ────────────────────────────────────────────────── */
+  #status-bar {
+    font-size: 10px;
+    padding: 3px 10px;
+    bottom: 4px;
+    max-width: calc(100vw - 16px);
+    border-radius: 12px;
+  }
+
+  /* ── Toasts ────────────────────────────────────────────────────── */
+  #toast-container { bottom: 48px; right: 4px; left: 4px; }
+  .ability-toast { font-size: 11px; }
+  .toast-header { font-size: 11px; }
+  .toast-text { font-size: 10px; }
+
+  /* ── Buttons — bigger touch targets ────────────────────────────── */
+  .btn { min-height: 40px; padding: 8px 10px; font-size: 12px; }
+  .btn-confirm { padding: 12px; font-size: 13px; }
+  .btn-back { padding: 8px; font-size: 11px; }
+
+  /* ── Cancel button — more prominent ────────────────────────────── */
+  .btn-cancel-touch {
+    min-height: 36px;
+    padding: 6px 14px;
+    font-size: 12px;
+  }
+
+  /* ── Lobby ──────────────────────────────────────────────────────── */
+  .lobby-panel {
+    width: calc(100vw - 16px);
+    max-width: none;
+    padding: 16px 12px;
+  }
+  .lobby-panel h2 { font-size: 16px; }
+
+  /* ── Typography tightening ─────────────────────────────────────── */
+  h2 { font-size: 15px; margin-bottom: 8px; }
+  h3 { font-size: 12px; }
+  p { font-size: 12px; }
+  .hint { font-size: 11px; }
+
+  /* ── Condition badges — smaller ────────────────────────────────── */
+  .cond-badge { font-size: 10px; }
+  .token-hp { font-size: 9px; }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Landscape phones/tablets — minimize vertical chrome
+   ══════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 768px) and (orientation: landscape) {
+
+  .side-panel { max-height: 35vh; }
+
+  /* HUD — tighter since vertical space is scarce */
+  .hud-wrapper { top: 4px; }
+  #top-nav { height: 24px; }
+  .nav-title { font-size: 10px; }
+
+  #battle-hud { border-radius: 4px; }
+  .hud-score { padding: 2px 8px; }
+  .hud-pts { font-size: 16px; }
+  #hud-center { padding: 2px 10px; }
+  #hud-round, #hud-turn { font-size: 10px; }
+  .btn-hud-end { padding: 2px 10px; font-size: 10px; }
+
+  .hud-activation .btn-ability,
+  .hud-activation .btn-action {
+    min-height: 26px;
+    padding: 2px 6px;
+  }
+
+  #status-bar { bottom: 2px; font-size: 10px; }
+
+  body .unit-card.enlarged {
+    max-height: 95vh;
+    max-width: 280px;
+  }
+
+  .unit-card.roster-card {
+    width: 120px;
+    height: 168px;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Very small landscape (≤480px height) — minimal chrome
+   ══════════════════════════════════════════════════════════════════ */
+
+@media (max-height: 480px) and (orientation: landscape) {
+  #top-nav { height: 20px; }
+  .nav-title { font-size: 9px; }
+  .hud-wrapper { top: 22px; }
+
+  .side-panel { max-height: 30vh; }
+  .center-panel { max-height: 90vh; }
+
+  .game-log-body { max-height: 10vh; }
 }
 

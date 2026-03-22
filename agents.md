@@ -8,9 +8,9 @@ This document defines the agent team, routing rules, and coordination protocols.
 
 | # | Agent | Command | Domain | Owns |
 |---|-------|---------|--------|------|
-| 1 | Systems Designer | `/project:designer` | Ability design, balance, faction identity, rule specs | abilities.md, faction spreadsheet specs |
+| 1 | Systems Designer | `/project:designer` | Ability design, balance, faction identity, rule specs, data-driven targeting authority | abilities.md, faction spreadsheet specs |
 | 2 | Engineer | `/project:engineer` | JS implementation, bug fixes, architecture, code health | WebApp/*.js |
-| 3 | Producer/PM | `/project:pm` | Task tracking, dashboard, coordination, CD liaison | tasks/dashboard.html, tasks/todo.md |
+| 3 | Producer/PM | `/project:pm` | Task tracking, planner, coordination, CD liaison | tasks/dashboard.html (Project Planner) |
 | 4 | UX/UI Designer | `/project:ux` | Layout, CSS, player experience, info hierarchy | styles.css, index.html, ui.js (DOM only) |
 | 5 | QA Tester | `/project:qa` | Testing, edge cases, bug repro, verification | tasks/lessons.md (bug patterns) |
 | 6 | Data Architect | `/project:data` | Google Sheets schema, spreadsheet entries, data validation | Sheet structure, units.js parsing |
@@ -34,7 +34,7 @@ When the Creative Director sends a prompt, classify it and route to the right ag
 | Intent Pattern | Route To |
 |---------------|----------|
 | "design X" / "how should X work" / "balance X" / "what if X" | Systems Designer |
-| "implement X" / "build X" / "add X to code" / "fix X" | Engineer |
+| "implement X" / "build X" / "add X to code" / "fix X" | Engineer (but route through Designer first if it touches ability targeting/filtering) |
 | "status" / "what's left" / "prioritize" / "update dashboard" | PM |
 | "UI for X" / "layout" / "CSS" / "visual feedback" / "panel" | UX/UI Designer |
 | "test X" / "verify X" / "is X working" / "bug: X" / "broken" | QA Tester |
@@ -43,6 +43,7 @@ When the Creative Director sends a prompt, classify it and route to the right ag
 | "mobile" / "touch" / "responsive" / "pinch" / "portrait" | Mobile Specialist |
 | "slow" / "optimize" / "performance" / "memory" / "profil" | Performance Engineer |
 | "art" / "animation" / "SFX" / "VFX" / "visual effect" / "sound" | Art Director |
+| "targeting" / "who receives" / "filter targets" / "ally only" / "validTargets" | Designer → Data Architect (check sheet) — never Engineer alone |
 | Multi-domain task | Decompose into subtasks, route each |
 | Ambiguous | Ask the Creative Director before routing |
 
@@ -90,11 +91,11 @@ Each agent should read ONLY what it needs to stay focused and efficient.
 
 | Agent | Must Read | May Read | Skip |
 |-------|-----------|----------|------|
-| Systems Designer | abilities.md, MEMORY.md, faction specs in tasks/ | todo.md | All .js source code |
-| Engineer | CLAUDE.md, abilities.md (if ability work), relevant .js | tasks/lessons.md, todo.md | Spreadsheet specs, dashboard |
-| PM | tasks/todo.md, tasks/dashboard.html, tasks/agent-log.md | CLAUDE.md (architecture only) | All .js, abilities.md |
+| Systems Designer | abilities.md, MEMORY.md, memory/systems.md, faction specs in tasks/ | abilities.js (resolveTargets, evaluateCondition, applyEffect — READ ONLY for "can the code do X?" checks) | game-*.js, ui.js, board.js |
+| Engineer | CLAUDE.md, abilities.md (if ability work), relevant .js | tasks/lessons.md | Spreadsheet specs, planner |
+| PM | tasks/dashboard.html (PLANNER_DATA), tasks/agent-log.md | CLAUDE.md (architecture) | All .js, abilities.md |
 | UX/UI Designer | index.html, styles.css, ui.js | board.js (rendering) | game-*.js, abilities.js |
-| QA Tester | CLAUDE.md, tasks/lessons.md, relevant .js for the bug | todo.md | Spreadsheet specs |
+| QA Tester | CLAUDE.md, tasks/lessons.md, relevant .js for the bug | — | Spreadsheet specs |
 | Data Architect | units.js, abilities.md, MEMORY.md | game-core.js (createUnit) | ui.js, board.js |
 | Multiplayer Engineer | net.js, game-core.js, CLAUDE.md (state shape) | game-phases.js (turn flow) | abilities.js, board.js |
 | Mobile Specialist | index.html, styles.css, ui.js (event handling) | board.js (canvas/touch) | game-*.js, abilities.js |
@@ -114,6 +115,7 @@ Surface to Creative Director (don't proceed unilaterally) when:
 5. Any change to CLAUDE.md or agents.md itself
 6. Scope creep — the task is growing beyond what was asked
 7. Art/audio decisions that affect game feel or player experience
+8. **Engineer proposes hardcoding logic that the spreadsheet may already handle** — route to Designer + Data Architect to verify before writing code. Targeting, filtering, conditions, stat modifiers, and effect resolution are all data-driven via `validTargets`, `condition`, and `effects` columns. Code should only handle *mechanics*, never duplicate data-layer decisions.
 
 ---
 
@@ -125,4 +127,5 @@ Surface to Creative Director (don't proceed unilaterally) when:
 - After multi-agent workflows, invoke PM to update the dashboard.
 - Any agent can append to `tasks/lessons.md` when discovering a reusable pattern or pitfall.
 - The Art Director only catalogs — never modifies code or creates assets.
+- **Access policy**: Never claim lack of access or capability before trying. Attempt the command/API/tool first, then report actual errors.
 - **Data completion gate**: When a feature reads from spreadsheet columns, the orchestrator must verify the data exists before marking the feature complete. If the column is empty or missing entries, invoke Data Architect or sheets-cli to populate it. A feature without its data is not shipped.

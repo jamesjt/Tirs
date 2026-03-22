@@ -225,6 +225,8 @@ Checked on the joined lowercase target string before any tokenization:
 |---------|---------|
 | `deadally` | `ctx.deadAlly` (the ally that just died) |
 | `closestally` | Nearest living ally by hex distance |
+| `lowestcostally` | Living ally with lowest cost |
+| `attackedenemy` | Enemies damaged during this activation (`activationState.damagedEnemies`), last-attacked first |
 | `allallies` | All living units of same player |
 | `allenemies` | All living units of opposing player |
 | `damaged` | `ctx.damagedUnits[]` or fallback to `ctx.target` |
@@ -363,6 +365,8 @@ Routes effects by name. The optional `rule` parameter is passed through from `ex
 | `has` / `ifhas` | Unit HAS the named condition | condition ID |
 | `targetarmor` / `iftargetarmor` | Target's effective armor vs comparison | `">=1"`, `"<2"` |
 | `targetbasehealth` / `iftargetbasehealth` | Target's maxHealth vs comparison | `"<=3"` |
+| `round` / `ifround` | Current game round vs value. Supports: specific rounds (`"4"`), comma-list (`"2,3"`), comparison (`"<=2"`), keywords (`"odd"`, `"even"`) | `"1,4"`, `"<=2"`, `"odd"` |
+| `targetcost` / `iftargetcost` | Target's cost vs comparison | `"<=4"`, `">3"` |
 | `distfromstart` | Target's distance from activation start hex | `">=3"` |
 | `aliveallies` | Count of living allies vs comparison | `">=2"` |
 | `hidden` | Unit is hidden (concealing terrain, passive, etc.) | — |
@@ -395,7 +399,14 @@ Sums all passive stat modifiers for a unit. Scans passive rules for effects matc
 ### `hasFlag(unit, flag)`
 Checks if a unit has a passive flag. Searches **both** the unit's conditions array (temporary flags like Glider's `moveintoenemies`) **and** passive rule effects (permanent flags like Impactful's `moveintoenemies`).
 
-**Common flags:** `mobile`, `moveintoenemies`, `precise`/`ignoreBaseArmor`, `immuneforcedmove`, `woundup`, `falcongust`, `hotsuit`, `delayedattack`, `moveorfire`, `calculated`, `forestcharged`, `piercing`, `deploytrap`
+**Common flags:** `mobile`, `moveintoenemies`, `precise`/`ignoreBaseArmor`, `immuneforcedmove`, `woundup`, `falcongust`, `hotsuit`, `delayedattack`, `moveorfire`, `calculated`, `forestcharged`, `piercing`, `deploytrap`, `plaguedmemories`, `sanguineechoes`, `dutifulreflection`, `dancer`
+
+**Pre-damage hooks in `attackUnit()`:** Three Dusters legendary passives intercept damage in `attackUnit()` before normal damage is applied:
+- `plaguedmemories` — deal 1 damage to all allies within range 3, reduce incoming damage. Once per round.
+- `sanguineechoes` — closest ally within 3 takes excess damage above target's health. Once per round.
+- `dutifulreflection` — pre-attack target redirect; pulls closest ally within 3 to intercept, swaps attack target. Once per round.
+
+**Dancer system (Syli — Falling Leaf):** Round-start non-auto step. Each Dancer picks 1 of 4 poise effects per round (each usable once across the game): +1 Damage (strengthened), +2 Move (movebonus), Dodgy, Tumbler (moveintoenemies + 1 dmg per enemy). Tracked via `dancerUsed: Set` on unit.
 
 ### `hasFlagPassive(unit, flag)`
 Like `hasFlag()` but checks **only** passive ability effects, **not** conditions. Used to distinguish innate flags from condition-granted ones (e.g. Impactful has innate `moveintoenemies`, while Glider gets it from a condition).

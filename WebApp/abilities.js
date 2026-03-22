@@ -45,10 +45,15 @@ const Abilities = (() => {
   function emitNotification(ab, unit, trigger, ctx) {
     if (!ab.text) return;
     const text = resolveTemplate(ab.text, ctx);
+    // Tag death-related notifications with the dead unit for grouping
+    let deadUnitRef = null;
+    if (trigger === 'afterDeath') deadUnitRef = ctx.unit;
+    else if (trigger === 'allyDeath') deadUnitRef = ctx.deadAlly;
     notificationQueue.push({
       abilityName: ab.name, text,
       unitName: unit.name, player: unit.player,
       trigger, unitRef: unit,
+      deadUnitRef,
     });
   }
 
@@ -232,6 +237,22 @@ const Abilities = (() => {
         if (d < minDist) { minDist = d; closest = u; }
       }
       return closest ? [closest] : [];
+    }
+    if (joined === 'lowestcostally') {
+      const src = ctx.unit;
+      if (!src) return [];
+      let best = null, minCost = Infinity;
+      for (const u of Game.state.units) {
+        if (u === src || u.health <= 0 || u.player !== src.player) continue;
+        const cost = u.cost || 0;
+        if (cost < minCost) { minCost = cost; best = u; }
+      }
+      return best ? [best] : [];
+    }
+    if (joined === 'attackedenemy') {
+      const act = Game.state.activationState;
+      if (!act || !act.damagedEnemies || act.damagedEnemies.length === 0) return [];
+      return act.damagedEnemies.filter(u => u.health > 0).reverse();
     }
     if (joined === 'allallies') {
       const src = ctx.unit;
@@ -1243,6 +1264,26 @@ const Abilities = (() => {
       case 'iftargetbasehealth': {
         const { op, num } = parseComparison(val);
         return ctx.target && compare(ctx.target.maxHealth, op, num);
+      }
+
+      case 'targetcost':
+      case 'iftargetcost': {
+        const { op, num } = parseComparison(val);
+        return ctx.target && compare(ctx.target.cost || 0, op, num);
+      }
+
+      case 'round':
+      case 'ifround': {
+        const r = Game.state.round;
+        if (!r) return false;
+        const v = val.toLowerCase().trim();
+        if (v === 'odd') return r % 2 === 1;
+        if (v === 'even') return r % 2 === 0;
+        // Comma-separated list: "1,4" or "2,3"
+        if (v.includes(',')) return v.split(',').map(s => parseInt(s.trim(), 10)).includes(r);
+        // Comparison: "<=2" or ">3" or just "4"
+        const { op, num } = parseComparison(val);
+        return compare(r, op, num);
       }
 
       case 'distfromstart': {

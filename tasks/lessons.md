@@ -59,6 +59,48 @@ Clock Traps are NOT terrain — they share a space with surfaces and are consume
 - **Multi-resource units** (e.g., Runesmith with 3 rune types): each resource type is independent, each ability gates on its own `resource` condition.
 - **`isActionAvailable(unit, ruleId)`** checks the action rule's condition before showing the button — so depleted resources hide the button.
 
+## Targeting Is Data-Driven — Don't Duplicate in Code
+- **Pattern**: Effect handlers (e.g. `applyGrantAbility`, `applyHeal`) receive pre-filtered targets from `resolveTargets()`. The `validTargets` column in the Rules spreadsheet controls who receives each effect.
+- **Mistake**: Adding a hardcoded `if (t.player !== ctx.unit.player) continue` guard in `applyGrantAbility()` to ensure only allies receive Parting Gifts — when the spreadsheet already specifies `validTargets: "closestAlly"`, which `resolveTargets()` resolves to same-player units only.
+- **Why it's wrong**: Redundant with data. Masks spreadsheet bugs instead of surfacing them. Creates a second place to maintain targeting rules. Breaks if a future ability legitimately needs to grant an ability to an enemy.
+- **Rule**: If targeting seems wrong, inspect the spreadsheet `validTargets` value and `resolveTargets()` keyword handler FIRST. Fix the data or the resolver — never patch individual effect handlers.
+- **Before adding any filter to an effect handler**, ask: "Is `resolveTargets()` already responsible for this filtering?" If yes, stop.
+
+## Close the Loop: Plans, Decisions, and Task Hygiene
+- **When a CLAUDE.md rule or lessons.md entry invalidates a planned approach**: immediately update/remove the corresponding items in the Project Planner (`tasks/dashboard.html` PLANNER_DATA), sprint focus, and any active plan files. A decision NOT to do something is still a decision — record it.
+- **When work is completed**: delete the plan file (or the completed items from it). Plan files should not survive past implementation. If a plan is approved→implemented→verified, it's done — kill the file.
+- **Stale items cost more than missing items**: A phantom task that "looks like work to do" causes agents to re-investigate, re-plan, or re-implement code that's already shipped. Closing items promptly saves future context.
+- **Process**: After any code/data change session:
+  1. Check: does this change obsolete any planner backlog/sprint items? Move to recentlyCompleted or remove.
+  2. Check: does this change conflict with any active plan files? Update or delete.
+  3. Check: does this session's work resolve any blocked items? Unblock them.
+- **Recording "won't do" decisions**: When a planned item is intentionally skipped (e.g. "ally guard in applyGrantAbility — skipped per data-driven targeting rule"), note the reason in the planner or agent-log. Don't just silently not do it.
+
+## Verify Code Before Claiming "Needs New Code" (2026-03-03)
+- **Pattern**: When analyzing whether an ability needs new code or is pure data, reading documentation summaries instead of actual code leads to false "needs new code" conclusions.
+- **Specific case**: `resolveTargets()` `around` keyword already reads `rule.range` for variable radius (line 314: `const radius = rule ? (parseInt(rule.range, 10) || 1) : 1`). Documentation described it as "hex neighbors of anchor" which sounded like radius-1 only. Analysis concluded "Ho, ho! my lads!" (allies within 2) needed a new `allieswithin` keyword — but `self around ally` with `range: 2` already works.
+- **Impact**: False "needs code" claims waste engineer time, delay faction implementation, and erode trust in build-vs-data assessments.
+- **Fix**: Designer agent now has READ access to abilities.js for verification. CLAUDE.md and designer.md both require reading actual code (`resolveTargets`, `evaluateCondition`, `applyEffect`) before claiming something needs new mechanics.
+- **Rule**: Never say "needs new code" based on documentation alone. Read the function. Cite what you checked.
+
+## Google Sheets API: ALWAYS Use `append`, NEVER `batchUpdate` for Adding Rows (2026-03-04)
+- **Pattern**: When adding new rows to a Google Sheet, the `spreadsheets.values.batchUpdate` (or `update`) API writes to the SPECIFIED RANGE starting from row 1. If you pass `range: 'Rules!A:S'` with row data, it overwrites from A1 downward — destroying the header row and existing data.
+- **Specific case**: Used `sheets.spreadsheets.values.batchUpdate()` with `data: [{ range: 'Rules!A:S', values: rulesRows }]` to add 13 Down Town rules. This wrote to rows 1-13, overwriting the header and first 12 data rows. Same error on the Abilities tab. Required manual restore from Google Sheets version history.
+- **Impact**: Lost 12 rules + 11 ability defs + both headers. ~30 minutes of recovery work. Required user to manually restore from version history.
+- **Fix**: ALWAYS use `sheets.spreadsheets.values.append()` with `insertDataOption: 'INSERT_ROWS'` when adding new rows. This finds the last row with data and appends below it.
+- **Correct pattern**:
+  ```javascript
+  sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: 'TabName!A:Z',
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: rows }
+  });
+  ```
+- **NEVER use**: `batchUpdate` or `update` with a column-only range (e.g. `A:S`) for new data — it writes from row 1.
+- **Rule**: Before ANY Google Sheets write, confirm: "Am I appending or updating existing rows?" Append → `append()`. Update specific cells → `update()` with an explicit row range (e.g. `Rules!A257:S257`).
+
 ## No Runtime Patches for Spreadsheet Data
 - **NEVER inject rules or ability defs via runtime patches in code** (e.g. `Abilities.setAtomicRules(...)` in units.js). The spreadsheet is the single source of truth for ability data and is trivially editable. Runtime patches are junk code that obscures the real data source, creates maintenance burden, and confuses future debugging.
 - If an ability needs a new rule or changed ruleIds, **tell the user to update the spreadsheet**. Don't add "temporary" code patches — they always outlive their welcome.

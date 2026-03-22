@@ -1623,7 +1623,29 @@ const UI = (() => {
     const container = document.getElementById('toast-container');
     if (!container) return;
 
+    // Partition: death-related notifications grouped by dead unit, rest are regular
+    const deathGroups = new Map();  // deadUnitRef -> [notifications]
+    const regular = [];
     for (const note of notifications) {
+      if (note.deadUnitRef) {
+        if (!deathGroups.has(note.deadUnitRef)) deathGroups.set(note.deadUnitRef, []);
+        deathGroups.get(note.deadUnitRef).push(note);
+      } else {
+        regular.push(note);
+      }
+    }
+
+    // Spawn batched death summary toasts (processed first — they describe what just happened)
+    for (const [deadUnit, notes] of deathGroups) {
+      if (notes.length === 1) {
+        spawnToast(notes[0], container);
+      } else {
+        spawnDeathSummaryToast(deadUnit, notes, container);
+      }
+    }
+
+    // Spawn regular toasts individually
+    for (const note of regular) {
       spawnToast(note, container);
     }
   }
@@ -1670,6 +1692,73 @@ const UI = (() => {
         activeToasts = activeToasts.filter(t => t.el !== el);
       }, TOAST_FADE);
     }, TOAST_DURATION);
+
+    activeToasts.push({ el, timer });
+  }
+
+  function spawnDeathSummaryToast(deadUnit, notes, container) {
+    // Evict oldest if at capacity
+    while (activeToasts.length >= TOAST_MAX_VISIBLE) {
+      dismissToast(activeToasts[0]);
+    }
+
+    const player = deadUnit.player;
+    const el = document.createElement('div');
+    el.className = `ability-toast toast-p${player} toast-death-summary`;
+
+    // Header: dead unit name
+    const header = document.createElement('div');
+    header.className = 'toast-header';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'toast-ability-name';
+    nameSpan.textContent = `\u2620 ${deadUnit.name} falls`;  // ☠
+    header.appendChild(nameSpan);
+    el.appendChild(header);
+
+    // Bullet list of effects
+    const list = document.createElement('ul');
+    list.className = 'toast-death-list';
+    for (const note of notes) {
+      const li = document.createElement('li');
+      const strong = document.createElement('strong');
+      strong.textContent = note.abilityName;
+      li.appendChild(strong);
+      // Show recipient when it differs from the dead unit (i.e. allyDeath effects)
+      if (note.unitName !== deadUnit.name) {
+        const recipient = document.createElement('span');
+        recipient.className = 'toast-death-recipient';
+        recipient.textContent = ` \u2192 ${note.unitName}`;  // →
+        li.appendChild(recipient);
+      }
+      if (note.text) {
+        const desc = document.createElement('span');
+        desc.className = 'toast-death-desc';
+        desc.textContent = ` \u2014 ${note.text}`;  // —
+        li.appendChild(desc);
+      }
+      list.appendChild(li);
+    }
+    el.appendChild(list);
+    container.appendChild(el);
+
+    // Pulse all source unit tokens (deduplicated)
+    const pulsed = new Set();
+    for (const note of notes) {
+      if (note.unitRef && !pulsed.has(note.unitRef)) {
+        pulseToken(note.unitRef);
+        pulsed.add(note.unitRef);
+      }
+    }
+
+    // Auto-dismiss — scale with number of effects, capped at 4500ms
+    const duration = TOAST_DURATION + Math.min(notes.length * 500, 2000);
+    const timer = setTimeout(() => {
+      el.classList.add('toast-exit');
+      setTimeout(() => {
+        el.remove();
+        activeToasts = activeToasts.filter(t => t.el !== el);
+      }, TOAST_FADE);
+    }, duration);
 
     activeToasts.push({ el, timer });
   }

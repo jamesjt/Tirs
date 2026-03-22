@@ -1,4 +1,4 @@
-Read `tasks/dashboard.html` (the DASHBOARD_DATA object) and `tasks/todo.md`. Provide a concise status summary:
+Read `tasks/dashboard.html` (the `PLANNER_DATA` object). Provide a concise status summary:
 
 1. **Recently completed**: What was finished in the last few sessions
 2. **In progress**: What's actively being worked on
@@ -6,6 +6,6 @@ Read `tasks/dashboard.html` (the DASHBOARD_DATA object) and `tasks/todo.md`. Pro
 4. **CD decisions needed**: Questions waiting for the Creative Director
 5. **Suggested next priorities**: Top 3-5 items ranked by impact
 
-If the dashboard data is stale, cross-reference with `tasks/todo.md` and `tasks/agent-log.md` for the latest state.
+If the planner data is stale, cross-reference with `tasks/agent-log.md` for the latest state.
 
 $ARGUMENTS

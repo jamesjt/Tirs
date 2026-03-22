@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Tirs of Traea — Project Dashboard</title>
+<title>Tirs of Traea — Project Planner</title>
 <style>
   :root {
     --bg: #1a1a2e;
@@ -28,30 +28,17 @@
     max-width: 1200px;
     margin: 0 auto;
   }
-  h1 {
-    font-size: 1.6em;
-    margin-bottom: 4px;
-    color: var(--accent);
-  }
-  .subtitle {
-    color: var(--text-dim);
-    font-size: 0.85em;
-    margin-bottom: 24px;
-  }
+  h1 { font-size: 1.6em; margin-bottom: 4px; color: var(--accent); }
+  .subtitle { color: var(--text-dim); font-size: 0.85em; margin-bottom: 24px; }
 
   /* Health Banner */
-  .health-banner {
-    display: flex;
-    gap: 16px;
-    margin-bottom: 24px;
-    flex-wrap: wrap;
-  }
+  .health-banner { display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
   .health-card {
     background: var(--surface);
     border-radius: 10px;
     padding: 16px 20px;
     flex: 1;
-    min-width: 160px;
+    min-width: 140px;
     border-left: 4px solid var(--accent2);
   }
   .health-card.green { border-left-color: var(--green); }
@@ -62,61 +49,30 @@
   .health-card .detail { font-size: 0.8em; color: var(--text-dim); }
 
   /* Progress Bar */
-  .progress-bar {
-    background: var(--bg);
-    border-radius: 6px;
-    height: 8px;
-    margin-top: 8px;
-    overflow: hidden;
-  }
-  .progress-fill {
-    height: 100%;
-    border-radius: 6px;
-    transition: width 0.3s ease;
-  }
+  .progress-bar { background: var(--bg); border-radius: 6px; height: 8px; margin-top: 8px; overflow: hidden; }
+  .progress-fill { height: 100%; border-radius: 6px; transition: width 0.3s ease; }
   .progress-fill.green { background: var(--green); }
   .progress-fill.yellow { background: var(--yellow); }
   .progress-fill.red { background: var(--red); }
   .progress-fill.blue { background: var(--blue); }
+  .progress-fill.orange { background: var(--orange); }
 
   /* Sections */
-  .section {
-    background: var(--surface);
-    border-radius: 10px;
-    margin-bottom: 16px;
-    overflow: hidden;
-  }
+  .section { background: var(--surface); border-radius: 10px; margin-bottom: 16px; overflow: hidden; }
   .section-header {
-    padding: 14px 20px;
-    cursor: pointer;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    user-select: none;
-    background: var(--surface2);
-    font-weight: 600;
-    font-size: 0.95em;
+    padding: 14px 20px; cursor: pointer;
+    display: flex; justify-content: space-between; align-items: center;
+    user-select: none; background: var(--surface2);
+    font-weight: 600; font-size: 0.95em;
   }
   .section-header:hover { background: #1a4a7a; }
-  .section-header .arrow {
-    transition: transform 0.2s;
-    font-size: 0.8em;
-    color: var(--text-dim);
-  }
+  .section-header .arrow { transition: transform 0.2s; font-size: 0.8em; color: var(--text-dim); }
   .section-header .arrow.collapsed { transform: rotate(-90deg); }
   .section-header .badge {
-    background: var(--accent);
-    color: white;
-    border-radius: 10px;
-    padding: 2px 8px;
-    font-size: 0.75em;
-    margin-left: 8px;
-    font-weight: 400;
+    background: var(--accent); color: white; border-radius: 10px;
+    padding: 2px 8px; font-size: 0.75em; margin-left: 8px; font-weight: 400;
   }
-  .section-body {
-    padding: 16px 20px;
-    transition: max-height 0.3s ease;
-  }
+  .section-body { padding: 16px 20px; transition: max-height 0.3s ease; }
   .section-body.collapsed { display: none; }
 
   /* Tables */
@@ -126,182 +82,348 @@
   tr:hover td { background: rgba(255,255,255,0.03); }
 
   /* Status Pills */
-  .pill {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 12px;
-    font-size: 0.8em;
-    font-weight: 500;
-  }
-  .pill.playable { background: rgba(78,204,163,0.2); color: var(--green); }
-  .pill.partial { background: rgba(240,192,64,0.2); color: var(--yellow); }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.8em; font-weight: 500; }
+  .pill.playable, .pill.done { background: rgba(78,204,163,0.2); color: var(--green); }
+  .pill.partial, .pill.in-progress { background: rgba(78,168,222,0.2); color: var(--blue); }
   .pill.not-started { background: rgba(233,69,96,0.15); color: var(--red); }
   .pill.blocked { background: rgba(233,69,96,0.2); color: var(--red); }
-  .pill.in-progress { background: rgba(78,168,222,0.2); color: var(--blue); }
-  .pill.done { background: rgba(78,204,163,0.2); color: var(--green); }
+  .pill.pending { background: rgba(240,192,64,0.2); color: var(--yellow); }
 
   /* Decision Cards */
-  .decision-card {
-    background: var(--bg);
-    border: 1px solid var(--yellow);
-    border-radius: 8px;
-    padding: 12px 16px;
-    margin-bottom: 10px;
-  }
+  .decision-card { background: var(--bg); border: 1px solid var(--yellow); border-radius: 8px; padding: 12px 16px; margin-bottom: 10px; }
   .decision-card .q { font-weight: 600; margin-bottom: 4px; }
   .decision-card .context { font-size: 0.8em; color: var(--text-dim); }
 
-  /* Sprint Items */
-  .sprint-item {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 8px 0;
-    border-bottom: 1px solid #1a1a3e;
-  }
+  /* Sprint / list Items */
+  .sprint-item { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid #1a1a3e; }
   .sprint-item:last-child { border-bottom: none; }
   .sprint-rank {
-    width: 28px; height: 28px;
-    background: var(--surface2);
-    border-radius: 50%;
+    width: 28px; height: 28px; background: var(--surface2); border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
-    font-weight: 700; font-size: 0.85em; color: var(--accent);
-    flex-shrink: 0;
+    font-weight: 700; font-size: 0.85em; color: var(--accent); flex-shrink: 0;
   }
-  .sprint-agent {
-    font-size: 0.75em;
-    color: var(--accent2);
-    background: rgba(83,52,131,0.2);
-    padding: 1px 8px;
-    border-radius: 8px;
-  }
+  .sprint-agent { font-size: 0.75em; color: var(--accent2); background: rgba(83,52,131,0.2); padding: 1px 8px; border-radius: 8px; white-space: nowrap; }
 
   /* Filter bar */
-  .filter-bar {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 12px;
-    flex-wrap: wrap;
-  }
+  .filter-bar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   .filter-btn {
-    background: var(--bg);
-    border: 1px solid #2a2a4e;
-    color: var(--text-dim);
-    padding: 4px 12px;
-    border-radius: 16px;
-    cursor: pointer;
-    font-size: 0.8em;
-    transition: all 0.15s;
+    background: var(--bg); border: 1px solid #2a2a4e; color: var(--text-dim);
+    padding: 4px 12px; border-radius: 16px; cursor: pointer; font-size: 0.8em; transition: all 0.15s;
   }
-  .filter-btn:hover, .filter-btn.active {
-    border-color: var(--accent);
-    color: var(--text);
-    background: rgba(233,69,96,0.1);
-  }
+  .filter-btn:hover, .filter-btn.active { border-color: var(--accent); color: var(--text); background: rgba(233,69,96,0.1); }
 
   /* Timestamps */
   .timestamp { font-size: 0.75em; color: var(--text-dim); }
+
+  /* ── Roadmap ────────────────────────────────────────────────── */
+  .roadmap { display: flex; flex-direction: column; gap: 12px; }
+  .milestone-card {
+    background: var(--bg);
+    border: 1px solid #2a2a4e;
+    border-radius: 8px;
+    padding: 14px 18px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    transition: border-color 0.2s;
+  }
+  .milestone-card.current { border-color: var(--accent); border-width: 2px; }
+  .milestone-card.completed { border-color: var(--green); opacity: 0.7; }
+  .milestone-num {
+    width: 36px; height: 36px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 1em; flex-shrink: 0;
+    background: var(--surface2); color: var(--text-dim);
+  }
+  .milestone-card.current .milestone-num { background: var(--accent); color: #fff; }
+  .milestone-card.completed .milestone-num { background: var(--green); color: #fff; }
+  .milestone-info { flex: 1; min-width: 0; }
+  .milestone-name { font-weight: 700; font-size: 0.95em; }
+  .milestone-sub { font-size: 0.8em; color: var(--text-dim); margin-top: 2px; }
+  .milestone-items { font-size: 0.75em; color: var(--text-dim); margin-top: 4px; }
+  .milestone-right { text-align: right; flex-shrink: 0; min-width: 80px; }
+  .milestone-pct { font-size: 1.2em; font-weight: 700; }
+  .milestone-target { font-size: 0.7em; color: var(--text-dim); }
+
+  /* ── Backlog ────────────────────────────────────────────────── */
+  .backlog-group { margin-bottom: 16px; }
+  .backlog-group-header {
+    font-weight: 600; font-size: 0.9em; padding: 8px 0 6px; margin-bottom: 4px;
+    border-bottom: 1px solid rgba(255,255,255,0.1); color: var(--blue);
+  }
+  .backlog-task {
+    display: flex; align-items: center; gap: 10px; padding: 5px 0;
+    font-size: 0.85em; border-bottom: 1px solid #1a1a3e;
+  }
+  .backlog-task:last-child { border-bottom: none; }
+  .backlog-task .pill { font-size: 0.7em; min-width: 70px; text-align: center; }
+  .backlog-task-name { flex: 1; }
 
   /* Responsive */
   @media (max-width: 600px) {
     body { padding: 12px; }
     .health-banner { flex-direction: column; }
     .health-card { min-width: unset; }
+    .milestone-card { flex-wrap: wrap; }
+    .milestone-right { text-align: left; min-width: unset; }
   }
 </style>
 </head>
 <body>
 
 <h1>Tirs of Traea</h1>
-<p class="subtitle">Project Dashboard &mdash; Last updated: <span id="lastUpdated"></span></p>
+<p class="subtitle">Project Planner &mdash; Last updated: <span id="lastUpdated"></span></p>
 
 <div class="health-banner" id="healthBanner"></div>
-
 <div id="sections"></div>
 
 <script>
 // ============================================================
-// DASHBOARD_DATA — PM agent updates this object
+// PLANNER_DATA — PM agent updates this object
 // ============================================================
-const DASHBOARD_DATA = {
-  lastUpdated: "2026-03-02",
+const PLANNER_DATA = {
+  lastUpdated: "2026-03-09",
+
   health: {
     overall: "On Track",
-    abilitiesComplete: { done: 42, total: 65, label: "Abilities Tested" },
-    factionsPlayable: { done: 5, total: 9, label: "Factions" },
-    knownBugs: { blockers: 2, total: 5, label: "Known Bugs" }
+    factionsPlayable: { done: 5, total: 9, label: "Factions Playable" },
+    milestoneProgress: { done: 1, total: 6, label: "Milestones", detail: "M1 in progress" },
+    knownBugs: { blockers: 2, total: 8, label: "Known Bugs" }
   },
-  sprintFocus: [
-    { task: "Smoke test all 24 Dusters abilities (spreadsheet wired)", agent: "QA + CD" },
-    { task: "Fix River Rush validTargets + wire Syli missing defs", agent: "Data Architect" },
-    { task: "Fix PM bugs: River Rush validTargets, consumeall effect", agent: "Data Architect + Engineer" },
-    { task: "Wire remaining Syli defs (Foul Hemolymph, Harbringer, Honeydew)", agent: "Data Architect" }
+
+  // ── ROADMAP ─────────────────────────────────────────────────
+  roadmap: [
+    {
+      id: "m1", name: "All 9 Factions Playable", subtitle: "Alpha",
+      status: "in-progress", progress: 55, targetDate: "Q2 2026",
+      items: ["Complete existing 5 faction gaps", "Implement Seri, Soli, Tidehaven, Down Town", "Resource system migration", "Bug fixes & balance pass"]
+    },
+    {
+      id: "m2", name: "Visual Polish", subtitle: "Beta Look",
+      status: "not-started", progress: 0, targetDate: "Q3 2026",
+      items: ["Attack/move animations", "Particle effects & transitions", "Sound effects", "Card art & board polish"]
+    },
+    {
+      id: "m3", name: "AI Opponent", subtitle: "Single Player",
+      status: "not-started", progress: 0, targetDate: "Q3 2026",
+      items: ["AI decision engine", "Difficulty levels (Easy/Med/Hard)", "Single-player mode UI"]
+    },
+    {
+      id: "m4", name: "Tutorial & Onboarding", subtitle: "New Players",
+      status: "not-started", progress: 0, targetDate: "Q3 2026",
+      items: ["Interactive tutorial scenario", "In-game help tooltips", "Rules reference screen"]
+    },
+    {
+      id: "m5", name: "Online Multiplayer", subtitle: "Play with Friends",
+      status: "not-started", progress: 5, targetDate: "Q4 2026",
+      items: ["Backend (Firebase/Supabase/custom)", "Game state persistence", "Async turn notifications", "Room system & friend codes"]
+    },
+    {
+      id: "m6", name: "App Store Release", subtitle: "Ship It",
+      status: "not-started", progress: 0, targetDate: "Q1 2027",
+      items: ["Native wrapper (Capacitor/PWA)", "Device testing (iOS + Android)", "App store submission", "Beta test & launch"]
+    }
   ],
-  decisions: [
-    { question: "Backend choice for multiplayer: Firebase vs Supabase vs custom?", context: "Async turn-based, needs push notifications, game state persistence. See tasks/todo.md 'Explore Native App Options'." },
-    { question: "Prioritize remaining factions: which 2 next after Dusters?", context: "Seri (partial), Soli, Tidehaven, Down Town all not started. Primordial Mists mostly done but has bugs." }
+
+  // ── CURRENT SPRINT (toward M1) ──────────────────────────────
+  currentSprint: {
+    milestone: "m1",
+    goal: "Complete existing 5 factions: test all wired abilities, fix code bugs",
+    tasks: [
+      { task: "Smoke test 21 remaining Dusters abilities", agent: "QA", status: "pending" },
+      { task: "Finish Red Ridge: Tinkerer + 5 UI-interactive abilities", agent: "QA", status: "pending" },
+      { task: "Implement consumeall effect (unblocks Sharp Thorn)", agent: "Engineer", status: "pending" },
+      { task: "Implement placedterrain validTargets (unblocks Primordial Prelude)", agent: "Engineer", status: "pending" },
+      { task: "Wire Syli missing defs (Foul Hemolymph, Harbringer, Honeydew)", agent: "Data Architect", status: "done" },
+      { task: "Wire Primordial Mists gaps (Water/Chaos Spirit mana, Flighty Storm)", agent: "Data Architect", status: "pending" }
+    ]
+  },
+
+  // ── BACKLOG (grouped by milestone) ──────────────────────────
+  backlog: [
+    {
+      milestone: "m1", name: "All 9 Factions Playable",
+      tasks: [
+        { task: "Stonehart: Complete (12/12 tested)", status: "done", agent: "—" },
+        { task: "Syli: Wire 3 missing ability defs", status: "done", agent: "Data Architect" },
+        { task: "Syli: Test remaining 2 abilities (Foul Hemolymph, Harbringer, Honeydew)", status: "pending", agent: "QA" },
+        { task: "Red Ridge: Test Tinkerer + 5 UI-interactive abilities", status: "pending", agent: "QA" },
+        { task: "Dusters: Smoke test 21 remaining abilities", status: "pending", agent: "QA" },
+        { task: "Primordial Mists: Wire Water/Chaos Spirit mana + Flighty Storm", status: "pending", agent: "Data Architect" },
+        { task: "Primordial Mists: Implement consumeall effect", status: "pending", agent: "Engineer" },
+        { task: "Primordial Mists: Fix Primordial Prelude (placedterrain)", status: "pending", agent: "Engineer" },
+        { task: "Primordial Mists: Chaos Telemental terrain picker", status: "blocked", agent: "Engineer" },
+        { task: "Resource System Phase 2: Spreadsheet migration", status: "pending", agent: "Data Architect + CD" },
+        { task: "Resource System Phase 3: Remove legacy code", status: "pending", agent: "Engineer" },
+        { task: "Seri: Wire 4 pure-data abilities (Fae Walkers fix, Serpent's Bite, Chained Ends, Shear)", status: "done", agent: "Data Architect" },
+        { task: "Seri: Wire round-gated abilities (Revealed Beauty, Dawning Fate, Sweet Scent, Tug)", status: "done", agent: "Data Architect + Engineer" },
+        { task: "Seri: Implement attackedEnemy target keyword (unlocks Sweet Scent + Tug)", status: "done", agent: "Engineer" },
+        { task: "Seri: Implement concealed condition (unlocks Twi-light)", status: "pending", agent: "Engineer" },
+        { task: "Seri: Wire Fae Mist abilities (Ignis Fatuus, Hinkypunk, Dusk's Light, Vengeful, Indict)", status: "done", agent: "Data Architect" },
+        { task: "Seri: Implement remaining medium-code abilities (Warning of Doom, Crossed Roads, Mourning Place)", status: "pending", agent: "Engineer" },
+        { task: "Seri: Implement significant-code abilities (Endless Rage, Judge, Sentence, Fleeting Transformation, Soul Escort)", status: "pending", agent: "Engineer" },
+        { task: "Seri: Implement major-code abilities (Delirium, Black/White Key, Dusk's Fright)", status: "pending", agent: "Engineer" },
+        { task: "Seri: Smoke test all abilities", status: "not-started", agent: "QA" },
+        { task: "Soli: Design & wire all abilities", status: "not-started", agent: "Designer + Data Architect" },
+        { task: "Soli: Implement new code mechanics", status: "not-started", agent: "Engineer" },
+        { task: "Soli: Smoke test all abilities", status: "not-started", agent: "QA" },
+        { task: "Tidehaven: Design & wire all abilities", status: "not-started", agent: "Designer + Data Architect" },
+        { task: "Tidehaven: Implement new code mechanics", status: "not-started", agent: "Engineer" },
+        { task: "Tidehaven: Smoke test all abilities", status: "not-started", agent: "QA" },
+        { task: "Down Town: Wire 12 pure-data abilities", status: "done", agent: "Data Architect" },
+        { task: "Down Town: Implement lowestcostally + targetcost (Below my lad + Madcaps)", status: "done", agent: "Engineer" },
+        { task: "Down Town: Fix name mismatches (Work Work vs Down Town, Flanker: Brutal)", status: "pending", agent: "Data Architect" },
+        { task: "Down Town: Implement Dare not shirk (forced activation mechanic)", status: "pending", agent: "Engineer" },
+        { task: "Down Town: Implement Hopping Mad (free passthrough movement)", status: "pending", agent: "Engineer" },
+        { task: "Down Town: Implement pushsplash effect (Ram + Waaarg!)", status: "pending", agent: "Engineer" },
+        { task: "Down Town: Smoke test all abilities", status: "not-started", agent: "QA" },
+        { task: "Fix empower bonusdamage log (ignores Protective Gear)", status: "pending", agent: "Engineer" },
+        { task: "Fix null terrain entries on 0-terrain deploy", status: "pending", agent: "Engineer" },
+        { task: "Fix Piercing + Delayed Effect: attackPath not stored for P-type targeting", status: "pending", agent: "Engineer" },
+        { task: "Investigate Falcon Guide: no visible effect (may need specific conditions)", status: "pending", agent: "QA" },
+        { task: "Playtest balance pass (all 9 factions)", status: "not-started", agent: "QA + CD" }
+      ]
+    },
+    {
+      milestone: "m2", name: "Visual Polish",
+      tasks: [
+        { task: "Attack animations (projectiles, melee swings)", status: "not-started", agent: "Engineer + Art" },
+        { task: "Movement animations (smooth unit sliding)", status: "not-started", agent: "Engineer" },
+        { task: "Ability effect particles (fire, ice, lightning)", status: "not-started", agent: "Engineer + Art" },
+        { task: "UI transitions (panel slides, fades)", status: "not-started", agent: "UX" },
+        { task: "Sound effects (attacks, abilities, UI clicks)", status: "not-started", agent: "Art" },
+        { task: "Card art polish & consistency pass", status: "not-started", agent: "Art" },
+        { task: "Board visual polish (hex textures, terrain clarity)", status: "not-started", agent: "Art" }
+      ]
+    },
+    {
+      milestone: "m3", name: "AI Opponent",
+      tasks: [
+        { task: "Design AI decision framework", status: "not-started", agent: "Designer + Engineer" },
+        { task: "Implement basic AI (weighted random)", status: "not-started", agent: "Engineer" },
+        { task: "Implement advanced AI (positional eval, threats)", status: "not-started", agent: "Engineer" },
+        { task: "AI difficulty levels (Easy/Medium/Hard)", status: "not-started", agent: "Engineer" },
+        { task: "Single-player mode UI", status: "not-started", agent: "UX" },
+        { task: "AI testing & tuning", status: "not-started", agent: "QA + Designer" }
+      ]
+    },
+    {
+      milestone: "m4", name: "Tutorial & Onboarding",
+      tasks: [
+        { task: "Design tutorial scenario (scripted first game)", status: "not-started", agent: "Designer" },
+        { task: "Implement tutorial engine (step guidance)", status: "not-started", agent: "Engineer" },
+        { task: "In-game tooltips (hover/long-press help)", status: "not-started", agent: "UX + Engineer" },
+        { task: "Rules reference screen", status: "not-started", agent: "UX + Engineer" },
+        { task: "Tutorial playtesting", status: "not-started", agent: "QA" }
+      ]
+    },
+    {
+      milestone: "m5", name: "Online Multiplayer",
+      tasks: [
+        { task: "Choose backend (Firebase vs Supabase vs custom)", status: "blocked", agent: "CD" },
+        { task: "Implement game state sync", status: "not-started", agent: "Multiplayer" },
+        { task: "Room creation & joining (friend codes)", status: "not-started", agent: "Multiplayer" },
+        { task: "Async turn notifications (push)", status: "not-started", agent: "Multiplayer" },
+        { task: "Reconnection handling", status: "not-started", agent: "Multiplayer" },
+        { task: "Matchmaking (optional)", status: "not-started", agent: "Multiplayer" },
+        { task: "Multiplayer stress testing", status: "not-started", agent: "QA" }
+      ]
+    },
+    {
+      milestone: "m6", name: "App Store Release",
+      tasks: [
+        { task: "Choose native wrapper (Capacitor/Tauri/PWA)", status: "not-started", agent: "CD + Engineer" },
+        { task: "Device testing (iOS Safari + Android Chrome)", status: "pending", agent: "Mobile + QA" },
+        { task: "PWA setup (service workers, offline)", status: "not-started", agent: "Engineer" },
+        { task: "App store assets (icons, screenshots)", status: "not-started", agent: "Art" },
+        { task: "App store submission", status: "not-started", agent: "Engineer" },
+        { task: "Beta testing program", status: "not-started", agent: "QA + CD" },
+        { task: "Launch", status: "not-started", agent: "All" }
+      ]
+    }
   ],
+
+  // ── FACTION READINESS ───────────────────────────────────────
   factions: [
-    { name: "Syli", units: "12/12", abilities: "18/20", tested: "18/20", status: "playable" },
-    { name: "Red Ridge", units: "12/12", abilities: "10/12", tested: "10/12", status: "playable" },
+    { name: "Syli", units: "12/12", abilities: "20/20", tested: "18/20", status: "playable" },
+    { name: "Red Ridge", units: "20/20", abilities: "20/20", tested: "26/30", status: "playable" },
     { name: "Stonehart", units: "12/12", abilities: "12/12", tested: "12/12", status: "playable" },
     { name: "Dusters", units: "12/12", abilities: "28/28", tested: "7/28", status: "partial" },
     { name: "Primordial Mists", units: "10/10", abilities: "22/30", tested: "20/30", status: "partial" },
-    { name: "Seri", units: "?/?", abilities: "2/?", tested: "2/?", status: "partial" },
+    { name: "Seri", units: "20/20", abilities: "22/39", tested: "0/39", status: "partial" },
     { name: "Soli", units: "?/?", abilities: "0/?", tested: "0/?", status: "not-started" },
     { name: "Tidehaven", units: "?/?", abilities: "0/?", tested: "0/?", status: "not-started" },
-    { name: "Down Town", units: "?/?", abilities: "0/?", tested: "0/?", status: "not-started" }
+    { name: "Down Town", units: "26/26", abilities: "22/29", tested: "0/29", status: "partial" }
   ],
-  overarchingGoals: [
-    { name: "Unified Resource System", phase: "Phase 2: Spreadsheet Migration", progress: 40, status: "in-progress" },
-    { name: "Mobile Friendly", phase: "Not started", progress: 0, status: "not-started" },
-    { name: "Finish All Abilities", phase: "In progress", progress: 70, status: "in-progress" },
-    { name: "Native App / Multiplayer", phase: "Research phase", progress: 5, status: "not-started" }
-  ],
+
+  // ── BLOCKED ─────────────────────────────────────────────────
   blocked: [
-    { task: "consumeall effect", blockedBy: "Needs code implementation in abilities.js", needsCD: false },
-    { task: "Chaos Telemental deploy-any-terrain", blockedBy: "Needs interactive terrain-type picker UI", needsCD: false },
-    { task: "Primordial Prelude", blockedBy: "placedterrain validTargets not implemented", needsCD: false }
+    { task: "consumeall effect", blockedBy: "Needs code implementation in abilities.js", milestone: "M1" },
+    { task: "Chaos Telemental deploy-any-terrain", blockedBy: "Needs interactive terrain-type picker UI", milestone: "M1" },
+    { task: "Primordial Prelude", blockedBy: "placedterrain validTargets not implemented", milestone: "M1" },
+    { task: "Backend choice for multiplayer", blockedBy: "CD decision needed", milestone: "M5" }
   ],
-  recentActivity: [
-    { date: "2026-03-02", item: "Dusters: 18 ability defs + 19 rules written to spreadsheet via sheets-cli", agent: "Data Architect" },
-    { date: "2026-03-02", item: "Set up sheets-cli with OAuth write access to Google Sheet", agent: "Data Architect" },
-    { date: "2026-03-01", item: "Improved undo for onactivation abilities", agent: "Engineer" },
-    { date: "2026-03-01", item: "Improved UI for trap movement", agent: "UX" },
-    { date: "2026-02-28", item: "Updating abilities, Claude sheet control", agent: "Engineer" }
+
+  // ── DECISIONS ───────────────────────────────────────────────
+  decisions: [
+    { question: "Backend for multiplayer: Firebase vs Supabase vs custom?", context: "Async turn-based, needs push notifications, game state persistence." },
+    { question: "Which factions to implement next after existing 5?", context: "Seri (partial), Soli, Tidehaven, Down Town. Mostly designed in spreadsheet." },
+    { question: "Native app wrapper: Capacitor vs Tauri vs PWA-only?", context: "Needs to target iOS + Android app stores." }
+  ],
+
+  // ── RECENTLY COMPLETED ──────────────────────────────────────
+  recentlyCompleted: [
+    { date: "2026-03-09", item: "Syli: All 3 missing abilities wired (20/20). Fixed Foul Hemolymph + Harbringer spelling mismatches in Abilities tab. Added Honeydew: Manna terrain (healing), allyDeath rule, ability def. No code changes needed.", agent: "Data Architect" },
+    { date: "2026-03-05", item: "Seri: 12 abilities wired (batch 1: Serpent's Bite, Shear, Chained Ends, Revealed Beauty, Dawning Fate, Sweet Scent, Tug; batch 2: Ignis Fatuus, Hinkypunk, Dusk's Light, Vengeful, Indict) — 22/39 total", agent: "Data Architect" },
+    { date: "2026-03-05", item: "Seri: Fae Walkers passive added to Seri faction rule (was missing, only had Light's Shadow)", agent: "Data Architect" },
+    { date: "2026-03-05", item: "Implemented attackedEnemy target keyword in resolveTargets() — reads activationState.damagedEnemies", agent: "Engineer" },
+    { date: "2026-03-05", item: "Seri faction inventory: 20 units, 10/39 abilities wired. 4 pure data, 5+ round-gated, 8 medium, 5 significant, 4 major new systems", agent: "PM" },
+    { date: "2026-03-05", item: "Added round condition evaluator (supports numbers, comma-lists, odd, even)", agent: "Engineer" },
+    { date: "2026-03-05", item: "Fae Light → Fae Mist rename: fixed last 2 refs in Terrain tab, 0 remaining", agent: "Data Architect" },
+    { date: "2026-03-05", item: "Down Town: 12 pure-data abilities wired + lowestcostally + targetcost code", agent: "Data Architect + Engineer" },
+    { date: "2026-03-05", item: "Google Sheets API safety lesson: append vs batchUpdate (recovered from overwrite)", agent: "PM" },
+    { date: "2026-03-03", item: "Down Town faction analysis: 26 units, 10 already defined, 12 pure data, 2 small code, 4 significant code", agent: "Designer" },
+    { date: "2026-03-03", item: "Consolidated todo.md into Project Planner (deleted todo.md)", agent: "PM" },
+    { date: "2026-03-03", item: "Process fix: Verify Code Before Claiming Needs New Code (Designer gets abilities.js read access)", agent: "PM" },
+    { date: "2026-03-03", item: "Mobile responsive styling (480px phone + 768px tablet + landscape)", agent: "UX + Engineer" },
+    { date: "2026-03-03", item: "Task hygiene: Close the Loop rule, stale plan cleanup", agent: "PM" },
+    { date: "2026-03-03", item: "Red Ridge smoke test COMPLETE (26/30 abilities across 3 games)", agent: "QA" },
+    { date: "2026-03-03", item: "Death toast batching (consolidated death notifications)", agent: "UX + Engineer" },
+    { date: "2026-03-02", item: "Dusters: all 28 abilities wired to spreadsheet via sheets-cli", agent: "Data Architect" },
+    { date: "2026-03-02", item: "sheets-cli tool with OAuth write access to Google Sheet", agent: "Data Architect" },
+    { date: "2026-03-01", item: "Undo for onactivation abilities (woundup, falcongust)", agent: "Engineer" },
+    { date: "2026-03-01", item: "Trap movement UI polish", agent: "UX" }
   ]
 };
 
 // ============================================================
-// Render Logic — do not modify unless changing dashboard layout
+// Render Logic
 // ============================================================
 
 function render() {
-  const D = DASHBOARD_DATA;
+  const D = PLANNER_DATA;
   document.getElementById('lastUpdated').textContent = D.lastUpdated;
 
   // Health Banner
   const hb = document.getElementById('healthBanner');
   const overallColor = D.health.overall === 'On Track' ? 'green' : D.health.overall === 'At Risk' ? 'yellow' : 'red';
-  const ab = D.health.abilitiesComplete;
   const fa = D.health.factionsPlayable;
+  const ms = D.health.milestoneProgress;
   const bugs = D.health.knownBugs;
   hb.innerHTML = `
     <div class="health-card ${overallColor}">
       <div class="label">Overall</div>
       <div class="value">${D.health.overall}</div>
     </div>
-    <div class="health-card green">
-      <div class="label">${ab.label}</div>
-      <div class="value">${ab.done}/${ab.total}</div>
-      <div class="detail">${Math.round(ab.done/ab.total*100)}% complete</div>
-      <div class="progress-bar"><div class="progress-fill green" style="width:${ab.done/ab.total*100}%"></div></div>
-    </div>
     <div class="health-card ${fa.done >= 7 ? 'green' : fa.done >= 4 ? 'yellow' : 'red'}">
       <div class="label">${fa.label}</div>
       <div class="value">${fa.done}/${fa.total}</div>
-      <div class="detail">${Math.round(fa.done/fa.total*100)}% playable</div>
       <div class="progress-bar"><div class="progress-fill ${fa.done >= 7 ? 'green' : fa.done >= 4 ? 'yellow' : 'red'}" style="width:${fa.done/fa.total*100}%"></div></div>
+    </div>
+    <div class="health-card yellow">
+      <div class="label">${ms.label}</div>
+      <div class="value">${ms.done}/${ms.total}</div>
+      <div class="detail">${ms.detail}</div>
     </div>
     <div class="health-card ${bugs.blockers === 0 ? 'green' : 'red'}">
       <div class="label">${bugs.label}</div>
@@ -310,22 +432,46 @@ function render() {
     </div>
   `;
 
-  // Build sections
   const container = document.getElementById('sections');
   container.innerHTML = '';
 
-  // Sprint Focus
-  container.appendChild(buildSection('Sprint Focus', '', () => {
-    return D.sprintFocus.map((s, i) => `
-      <div class="sprint-item">
-        <div class="sprint-rank">${i + 1}</div>
-        <div style="flex:1">${s.task}</div>
-        <span class="sprint-agent">${s.agent}</span>
-      </div>
-    `).join('');
+  // ── Roadmap ──
+  container.appendChild(buildSection('Roadmap', '', () => {
+    return `<div class="roadmap">${D.roadmap.map((m, i) => {
+      const cls = m.status === 'in-progress' ? 'current' : m.progress >= 100 ? 'completed' : '';
+      const pctColor = m.progress >= 80 ? 'green' : m.progress >= 30 ? 'yellow' : m.progress > 0 ? 'orange' : 'red';
+      return `
+        <div class="milestone-card ${cls}">
+          <div class="milestone-num">${i + 1}</div>
+          <div class="milestone-info">
+            <div class="milestone-name">${m.name} <span style="color:var(--text-dim);font-weight:400;font-size:0.85em">— ${m.subtitle}</span></div>
+            <div class="milestone-items">${m.items.join(' · ')}</div>
+            <div class="progress-bar" style="margin-top:6px"><div class="progress-fill ${pctColor}" style="width:${m.progress}%"></div></div>
+          </div>
+          <div class="milestone-right">
+            <div class="milestone-pct" style="color:var(--${pctColor})">${m.progress}%</div>
+            <div class="milestone-target">${m.targetDate}</div>
+          </div>
+        </div>`;
+    }).join('')}</div>`;
   }));
 
-  // Decisions Pending
+  // ── Current Sprint ──
+  const sp = D.currentSprint;
+  const spMilestone = D.roadmap.find(m => m.id === sp.milestone);
+  container.appendChild(buildSection(`Current Sprint — ${spMilestone ? spMilestone.name : sp.milestone}`, '', () => {
+    return `<p style="color:var(--text-dim);font-size:0.85em;margin-bottom:12px"><strong>Goal:</strong> ${sp.goal}</p>` +
+      sp.tasks.map((t, i) => `
+        <div class="sprint-item">
+          <div class="sprint-rank">${i + 1}</div>
+          <div style="flex:1">${t.task}</div>
+          <span class="pill ${t.status}">${t.status.replace('-', ' ')}</span>
+          <span class="sprint-agent">${t.agent}</span>
+        </div>
+      `).join('');
+  }));
+
+  // ── Decisions Pending ──
   if (D.decisions.length > 0) {
     container.appendChild(buildSection('Decisions Pending', `<span class="badge">${D.decisions.length}</span>`, () => {
       return D.decisions.map(d => `
@@ -337,27 +483,42 @@ function render() {
     }));
   }
 
-  // Overarching Goals
-  container.appendChild(buildSection('Overarching Goals', '', () => {
-    return `<table>
-      <tr><th>Goal</th><th>Phase</th><th>Progress</th><th>Status</th></tr>
-      ${D.overarchingGoals.map(g => `
-        <tr>
-          <td>${g.name}</td>
-          <td style="color:var(--text-dim)">${g.phase}</td>
-          <td>
-            <div style="display:flex;align-items:center;gap:8px">
-              <div class="progress-bar" style="flex:1;min-width:80px"><div class="progress-fill ${g.progress >= 80 ? 'green' : g.progress >= 30 ? 'yellow' : 'red'}" style="width:${g.progress}%"></div></div>
-              <span style="font-size:0.8em;color:var(--text-dim)">${g.progress}%</span>
+  // ── Backlog ──
+  container.appendChild(buildSection('Backlog', `<span class="badge">${D.backlog.reduce((s, g) => s + g.tasks.length, 0)} tasks</span>`, () => {
+    return `
+      <div class="filter-bar">
+        <button class="filter-btn active" data-bfilter="all">All</button>
+        <button class="filter-btn" data-bfilter="pending">Pending</button>
+        <button class="filter-btn" data-bfilter="blocked">Blocked</button>
+        <button class="filter-btn" data-bfilter="not-started">Not Started</button>
+        <button class="filter-btn" data-bfilter="done">Done</button>
+      </div>` +
+      D.backlog.map(g => `
+        <div class="backlog-group">
+          <div class="backlog-group-header">${g.name} <span style="color:var(--text-dim);font-weight:400">(${g.tasks.filter(t=>t.status==='done').length}/${g.tasks.length})</span></div>
+          ${g.tasks.map(t => `
+            <div class="backlog-task" data-bstatus="${t.status}">
+              <span class="pill ${t.status}">${t.status === 'not-started' ? 'todo' : t.status}</span>
+              <span class="backlog-task-name${t.status === 'done' ? '" style="text-decoration:line-through;color:var(--text-dim)' : ''}">${t.task}</span>
+              <span class="sprint-agent">${t.agent}</span>
             </div>
-          </td>
-          <td><span class="pill ${g.status}">${g.status.replace('-', ' ')}</span></td>
-        </tr>
-      `).join('')}
-    </table>`;
+          `).join('')}
+        </div>
+      `).join('');
+  }, () => {
+    document.querySelectorAll('[data-bfilter]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('[data-bfilter]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const f = btn.dataset.bfilter;
+        document.querySelectorAll('.backlog-task').forEach(row => {
+          row.style.display = (f === 'all' || row.dataset.bstatus === f) ? '' : 'none';
+        });
+      });
+    });
   }));
 
-  // Faction Readiness
+  // ── Faction Readiness ──
   container.appendChild(buildSection('Faction Readiness', '', () => {
     const filterHtml = `
       <div class="filter-bar">
@@ -365,8 +526,7 @@ function render() {
         <button class="filter-btn" data-filter="playable">Playable</button>
         <button class="filter-btn" data-filter="partial">Partial</button>
         <button class="filter-btn" data-filter="not-started">Not Started</button>
-      </div>
-    `;
+      </div>`;
     const tableHtml = `<table id="factionTable">
       <tr><th>Faction</th><th>Units</th><th>Abilities</th><th>Tested</th><th>Status</th></tr>
       ${D.factions.map(f => `
@@ -381,38 +541,39 @@ function render() {
     </table>`;
     return filterHtml + tableHtml;
   }, () => {
-    // Post-render: attach filter listeners
-    document.querySelectorAll('.filter-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        const filter = btn.dataset.filter;
-        document.querySelectorAll('#factionTable tr[data-status]').forEach(row => {
-          row.style.display = (filter === 'all' || row.dataset.status === filter) ? '' : 'none';
+    document.querySelectorAll('#factionTable').forEach(() => {
+      document.querySelectorAll('.filter-bar .filter-btn[data-filter]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          btn.parentElement.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          const filter = btn.dataset.filter;
+          document.querySelectorAll('#factionTable tr[data-status]').forEach(row => {
+            row.style.display = (filter === 'all' || row.dataset.status === filter) ? '' : 'none';
+          });
         });
       });
     });
   }));
 
-  // Blocked
+  // ── Blocked ──
   if (D.blocked.length > 0) {
     container.appendChild(buildSection('Blocked Items', `<span class="badge" style="background:var(--red)">${D.blocked.length}</span>`, () => {
       return `<table>
-        <tr><th>Task</th><th>Blocked By</th><th>CD?</th></tr>
+        <tr><th>Task</th><th>Blocked By</th><th>Milestone</th></tr>
         ${D.blocked.map(b => `
           <tr>
             <td>${b.task}</td>
             <td style="color:var(--text-dim)">${b.blockedBy}</td>
-            <td>${b.needsCD ? '<span class="pill blocked">Yes</span>' : 'No'}</td>
+            <td><span class="pill in-progress">${b.milestone}</span></td>
           </tr>
         `).join('')}
       </table>`;
     }));
   }
 
-  // Recent Activity
-  container.appendChild(buildSection('Recent Activity', '', () => {
-    return D.recentActivity.map(a => `
+  // ── Recently Completed ──
+  container.appendChild(buildSection('Recently Completed', '', () => {
+    return D.recentlyCompleted.map(a => `
       <div class="sprint-item">
         <span class="timestamp" style="min-width:80px">${a.date}</span>
         <div style="flex:1">${a.item}</div>
@@ -425,28 +586,19 @@ function render() {
 function buildSection(title, headerExtra, contentFn, postRenderFn) {
   const section = document.createElement('div');
   section.className = 'section';
-
   const header = document.createElement('div');
   header.className = 'section-header';
   header.innerHTML = `<span>${title}${headerExtra || ''}</span><span class="arrow">&#9660;</span>`;
-
   const body = document.createElement('div');
   body.className = 'section-body';
   body.innerHTML = contentFn();
-
   header.addEventListener('click', () => {
     body.classList.toggle('collapsed');
     header.querySelector('.arrow').classList.toggle('collapsed');
   });
-
   section.appendChild(header);
   section.appendChild(body);
-
-  if (postRenderFn) {
-    // Defer to after DOM insertion
-    requestAnimationFrame(() => postRenderFn());
-  }
-
+  if (postRenderFn) requestAnimationFrame(() => postRenderFn());
   return section;
 }
 

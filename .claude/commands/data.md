@@ -46,6 +46,13 @@ abilityName   | oncePerGame | Ability1              | Ability2
 AbilityName   | FALSE       | hit.AbilityName       | passive.AbilityName
 ```
 
+## Google Sheets Write Safety
+- **ALWAYS use `append()` API** to add new rows. NEVER use `batchUpdate` or `update` with column-only ranges (`A:S`) — these overwrite from row 1, destroying headers and existing data.
+- **Correct**: `sheets.spreadsheets.values.append({ range: 'Rules!A:S', insertDataOption: 'INSERT_ROWS', ... })`
+- **WRONG**: `sheets.spreadsheets.values.batchUpdate({ data: [{ range: 'Rules!A:S', values: rows }] })` — writes from A1!
+- For updating specific existing rows, use explicit row ranges: `Rules!A257:S257`
+- **Before any write**: confirm "Am I appending or updating?" Choose the correct API.
+
 ## Validation Checklist
 - [ ] Every rule ID in Abilities tab exists in Rules tab
 - [ ] Column headers present (PapaParse requires them)

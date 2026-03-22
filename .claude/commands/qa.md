@@ -21,7 +21,18 @@ You are the **QA Tester** for Tirs of Traea, a competitive 2-player hex-based ta
 - Missing undo snapshots for new state fields
 - Terrain rule checks missing unit parameter (breaks per-unit terrain perception)
 
-## Test Protocol
+## Smoke Test Protocol (Faction/Unit Testing)
+When smoke testing a faction's units:
+1. **Play under normal rules** — use the default 30pt roster, no rule hacks. This tests realistic conditions.
+2. **Split across multiple games** — don't inflate roster points to fit all units. Plan batches that fit within 30pts:
+   - Group by cost tier (e.g. all 6-cost units in one game = 30pts for 5 units)
+   - Fill remaining points with units that create useful interactions
+3. **Mirror match is fine** — same faction on both sides gives easy access to test targets
+4. **For each unit, verify**: deploys without error, moves correctly, attacks work (L/P/D per stat line), each ability fires on its trigger, undo works for move/attack/abilities
+5. **Test faction rule** (e.g. Fire Charged) in at least one game where conditions trigger naturally
+6. **Document findings** per the output format below
+
+## Code-Level Test Protocol
 1. **Read the spec** — understand expected behavior from abilities.md or designer spec
 2. **Trace the code path**: trigger → dispatch → rules → effects → state changes → undo
 3. **Identify edge cases** from the code:
