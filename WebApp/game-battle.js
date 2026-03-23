@@ -675,7 +675,7 @@
     updateBeamConditions();
 
     G.state.actionHistory.push({ type: 'move', unit: act.unit, fromQ, fromR, toQ: act.unit.q, toR: act.unit.r, prevObjControl, prevMoveDistance, prevHealth: unitSnap.health, prevConditions: unitSnap.conditions, otherUnitPositions, prevTraps, prevResources: unitSnap.resources });
-    G.log(`${act.unit.name} moved (${fromQ},${fromR}) \u2192 (${act.unit.q},${act.unit.r})`, act.unit.player);
+    G.log(`${act.unit.name} moved (${fromQ},${fromR}) \u2192 (${act.unit.q},${act.unit.r})`, act.unit.player, { q: act.unit.q, r: act.unit.r });
 
     // If both actions used, end activation (unless confirmEndTurn, pending effects,
     // or afterMove abilities like Level still need to resolve)
@@ -913,10 +913,12 @@
         prevResources: prevAttackerResources,
         prevTargetResources,
       });
-      G.log(`${act.unit.name} attacks ${target.name} \u2014 MISS! (${missResult.abilityName})`, act.unit.player);
+      G.log(`${act.unit.name} attacks ${target.name} \u2014 MISS! (${missResult.abilityName})`, act.unit.player, { q: target.q, r: target.r });
       if (burningCount > 0 && !act.pendingBurningRedirect && prevAttackerHealth !== act.unit.health) {
         G.log(`${act.unit.name} takes ${burningCount} burning self-damage (${act.unit.health}/${act.unit.maxHealth} HP)`, act.unit.player);
       }
+
+      act.lastAttackResult = { target, damage: 0, killed: false, dodged: true };
 
       // Impactful sequencing
       const isImpactAttacker = typeof Abilities !== 'undefined'
@@ -1096,8 +1098,10 @@
       prevTargetResources,
       prevHymnRepetition,
     });
-    const killText = target.health <= 0 ? ' \u2620 KILLED' : ` (${target.health}/${target.maxHealth} HP)`;
-    G.log(`${act.unit.name} attacks ${target.name} for ${dmg} dmg${killText}`, act.unit.player);
+    const killed = target.health <= 0;
+    const killText = killed ? ' \u2620 KILLED' : ` (${target.health}/${target.maxHealth} HP)`;
+    G.log(`${act.unit.name} attacks ${target.name} for ${dmg} dmg${killText}`, act.unit.player, { q: target.q, r: target.r });
+    act.lastAttackResult = { target, damage: dmg, killed, dodged: false };
     if (burningCount2 > 0 && !act.pendingBurningRedirect && prevAttackerHealth !== act.unit.health) {
       G.log(`${act.unit.name} takes ${burningCount2} burning self-damage (${act.unit.health}/${act.unit.maxHealth} HP)`, act.unit.player);
     } else if (act.pendingBurningRedirect && burningCount2 > 1) {

@@ -1136,6 +1136,33 @@ const Board = (() => {
       }
     }
 
+    // 3b. Terrain preview ghost
+    if (state.terrainPreview) {
+      const tp = state.terrainPreview;
+      const hex = getHex(tp.q, tp.r);
+      if (hex) {
+        const { x, y } = px(hex);
+        const s = sz();
+        ctx.save();
+        ctx.globalAlpha = 0.4;
+        const icon = surfaceIcons[tp.surface];
+        if (icon && icon.complete && icon.naturalWidth > 0) {
+          hexPath(ctx, x, y, s);
+          ctx.clip();
+          const w = s * 1.8;
+          const h = w * 0.9;
+          ctx.drawImage(icon, x - w / 2, y - h / 2, w, h);
+        } else if (SURFACE_DRAW[tp.surface]) {
+          hexPath(ctx, x, y, s);
+          ctx.clip();
+          SURFACE_DRAW[tp.surface](ctx, x, y, s);
+        } else {
+          drawCircle(hex, 0.7, SURFACE_COLORS[tp.surface] || '#999', '#fff', 2);
+        }
+        ctx.restore();
+      }
+    }
+
     // 4. Objectives
     for (const obj of OBJECTIVES) {
       const hex = getHex(obj.q, obj.r);

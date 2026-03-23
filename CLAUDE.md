@@ -17,6 +17,20 @@ npx serve WebApp
 
 No build step required - pure HTML/JS/CSS.
 
+## File Map
+
+| File | Purpose | Read When |
+|---|---|---|
+| `CLAUDE.md` | Architecture, workflow, principles | Session start |
+| `agents.md` | Agent roster, routing, context budgets | Routing tasks, invoking agents |
+| `WebApp/abilities.md` | Ability system reference | Abilities, effects, conditions, targeting |
+| `tasks/todo.md` | Master task tracker | Session start, planning |
+| `tasks/lessons.md` | Debugging patterns, pitfalls | Before implementing or debugging |
+| `tasks/scribe.md` | Interaction ledger (per-prompt) | Reviewing past decisions |
+| `tasks/sessions/*.md` | Daily work logs | Session start (read most recent) |
+| `tasks/agent-log.md` | Agent-to-agent handoffs | PM updates, checking handoff state |
+| `tasks/playbooks.md` | Step-by-step workflows | Before multi-step tasks |
+
 ## Architecture
 
 Five modules using IIFE pattern with clear separation:
@@ -130,10 +144,25 @@ Review lessons at session start for relevant project
 
 ### 4. Verification Before Done
 
-Never mark a task complete without proving it works
-Diff behavior between main and your changes when relevant
-Ask yourself: "Would a staff engineer approve this?"
-Run tests, check logs, demonstrate correctness
+Never mark a task complete without proving it works.
+
+**Ability Implementation:**
+- [ ] Effect fires on correct trigger
+- [ ] Targeting highlights correct hexes
+- [ ] Effect resolves on correct targets
+- [ ] Undo restores all state (health, conditions, position, resources)
+- [ ] Spreadsheet data exists (rule IDs match Rules ↔ Abilities tabs)
+- [ ] `node --check` passes on modified files
+
+**Bug Fix:**
+- [ ] Root cause identified, not symptom patched
+- [ ] No regressions in related paths
+- [ ] Lesson added to `tasks/lessons.md` if pattern reusable
+
+**UI Change:**
+- [ ] Visual feedback matches game state
+- [ ] Undo clears/restores UI state
+- [ ] No stale highlights after action completes
 
 ### 5. Demand Elegance (Balanced)
 
@@ -172,6 +201,20 @@ Project Planner: `tasks/dashboard.html` — single source of truth for all tasks
 Ability Reference: `WebApp/abilities.md` — full ability system documentation (effects, conditions, targeting, passive flags, integration points).
 Capture Lessons: Update tasks/lessons.md after corrections
 Close the Loop: After ANY session — scrub planner sprint/backlog and plan files for stale/completed/invalidated items. Delete finished plan files. Record "won't do" decisions with reasons. A phantom task is worse than a missing task.
+
+## Scribe (Interaction Ledger)
+
+After completing each substantive user request, append an entry to `tasks/scribe.md`.
+Format defined in the scribe file header — read once per session.
+Get real timestamps: `date "+%H:%M %Z %d-%m-%y" && date -u "+%H:%M UTC"`
+Plan and execution are separate entries. Design decisions get a `- Decision:` line.
+Monthly archive: if the month changed, rename to `tasks/scribe-YYYY-MM.md` and start fresh.
+
+## Session Notes
+
+At session start, create `tasks/sessions/YYYY-MM-DD.md` from template (or update if exists).
+Read the most recent session note on startup for continuity.
+Update during the session with work done, decisions, bugs found.
 
 ## Core Principles
 

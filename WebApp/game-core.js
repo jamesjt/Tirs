@@ -84,8 +84,8 @@ const Game = (() => {
     };
   }
 
-  function log(text, player) {
-    state.combatLog.push({ text, player: player || 0, round: state.round });
+  function log(text, player, pos) {
+    state.combatLog.push({ text, player: player || 0, round: state.round, pos: pos || null });
   }
 
   function reset() {

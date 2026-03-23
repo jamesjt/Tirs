@@ -42,6 +42,31 @@ const Units = (() => {
     'move anim speed':                  { key: 'animSpeed',        type: 'number' },
   };
 
+  // ── Sheet cache (sessionStorage) ────────────────────────────
+
+  const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+  function cacheKey(sheetName) { return `sheet_${SHEET_ID}_${sheetName}`; }
+
+  function getCached(sheetName) {
+    try {
+      const raw = sessionStorage.getItem(cacheKey(sheetName));
+      if (!raw) return null;
+      const { data, ts } = JSON.parse(raw);
+      if (Date.now() - ts > CACHE_TTL_MS) {
+        sessionStorage.removeItem(cacheKey(sheetName));
+        return null;
+      }
+      return data;
+    } catch { return null; }
+  }
+
+  function setCache(sheetName, data) {
+    try {
+      sessionStorage.setItem(cacheKey(sheetName), JSON.stringify({ data, ts: Date.now() }));
+    } catch { /* storage full — skip */ }
+  }
+
   // ── PapaParse sheet fetcher ─────────────────────────────────
 
   function delay(ms) {
@@ -50,6 +75,18 @@ const Units = (() => {
 
   /** Fetch a single sheet by exact name (with retries for transient errors). */
   async function fetchSheetExact(sheetName, useHeader, retries = 0) {
+    // Check cache first
+    const cached = getCached(sheetName);
+    if (cached) {
+      console.log(`  sheet "${sheetName}": ${cached.length} rows (cached)`);
+      // Re-parse with header option if needed (cache stores raw arrays)
+      if (useHeader && cached.length > 0 && Array.isArray(cached[0])) {
+        // Cached as arrays but caller wants objects — re-fetch
+      } else {
+        return cached;
+      }
+    }
+
     const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent(sheetName)}`;
 
     return new Promise((resolve, reject) => {
@@ -57,7 +94,10 @@ const Units = (() => {
         download: true,
         header: !!useHeader,
         skipEmptyLines: true,
-        complete: results => resolve(results.data),
+        complete: results => {
+          setCache(sheetName, results.data);
+          resolve(results.data);
+        },
         error: async err => {
           if (retries < MAX_RETRIES) {
             console.log(`Retrying ${sheetName} (attempt ${retries + 2}/${MAX_RETRIES + 1})...`);
@@ -73,11 +113,17 @@ const Units = (() => {
 
   /** Case-insensitive sheet fetch — tries exact name, then case variants. */
   async function fetchSheet(sheetName, useHeader) {
+    const t0 = performance.now();
     // Try the given name first (with retries for network issues)
     try {
       const data = await fetchSheetExact(sheetName, useHeader);
-      if (data && data.length > 0) return data;
+      if (data && data.length > 0) {
+        console.log(`  sheet "${sheetName}": ${data.length} rows in ${(performance.now() - t0).toFixed(0)}ms`);
+        return data;
+      }
     } catch (e) { /* fall through to case variants */ }
+
+    console.warn(`  sheet "${sheetName}": exact name failed/empty after ${(performance.now() - t0).toFixed(0)}ms, trying variants...`);
 
     // Build case variants to try
     const variants = [...new Set([
@@ -89,14 +135,15 @@ const Units = (() => {
 
     for (const variant of variants) {
       try {
-        const data = await fetchSheetExact(variant, useHeader, MAX_RETRIES); // single attempt
+        const data = await fetchSheetExact(variant, useHeader, MAX_RETRIES);
         if (data && data.length > 0) {
-          console.log(`Sheet "${sheetName}" found as "${variant}"`);
+          console.log(`  sheet "${sheetName}" found as "${variant}" in ${(performance.now() - t0).toFixed(0)}ms`);
           return data;
         }
       } catch (e) { /* try next variant */ }
     }
 
+    console.warn(`  sheet "${sheetName}": all variants failed after ${(performance.now() - t0).toFixed(0)}ms`);
     throw new Error(`Sheet "${sheetName}" not found`);
   }
 
@@ -119,7 +166,7 @@ const Units = (() => {
 
   async function fetchActiveFactions() {
     try {
-      const rows = await fetchSheet('Active Faction List');
+      const rows = await fetchSheetExact('Active Faction List');
       activeFactions = rows.slice(1)
         .map(row => (row[0] || '').trim())
         .filter(Boolean);
@@ -134,7 +181,7 @@ const Units = (() => {
 
   async function fetchTerrainMap() {
     try {
-      const rows = await fetchSheet('terrain map');
+      const rows = await fetchSheetExact('terrain map');
 
       let section = null;
       for (const row of rows) {
@@ -186,28 +233,13 @@ const Units = (() => {
   // ── Fetch ability tabs ──────────────────────────────────────
 
   async function fetchAbilityTabs() {
-    const results = {};
-    // Unified atomic rules tab
-    try {
-      results.rules = await fetchSheet('rules', true);
-    } catch (e) {
-      console.warn('Rules tab not found');
-      results.rules = [];
-    }
-    // Layer 2 composition mapping tab
-    try {
-      results.abilities = await fetchSheet('abilities', true);
-    } catch (e) {
-      console.warn('Abilities mapping tab not found');
-      results.abilities = [];
-    }
-    // Faction rules
-    try {
-      results.factionRule = await fetchSheet('factionRule', true);
-    } catch (e) {
-      results.factionRule = [];
-    }
-    return results;
+    // Use fetchSheetExact — we know the exact tab names, skip case-variant fallback
+    const [rules, abilities, factionRule] = await Promise.all([
+      fetchSheetExact('rules', true).catch(() => []),
+      fetchSheetExact('abilities', true).catch(() => []),
+      fetchSheetExact('factionRule', true).catch(() => []),
+    ]);
+    return { rules, abilities, factionRule };
   }
 
   // ── Parse atomic rules (Layer 3) ──────────────────────────────
@@ -305,7 +337,7 @@ const Units = (() => {
 
   async function fetchGameRules() {
     try {
-      const rows = await fetchSheet('GameRules', true);
+      const rows = await fetchSheetExact('GameRules', true);
       for (const row of rows) {
         const label = col(row, ['game rule']).toLowerCase();
         const rawVal = col(row, ['default']);
@@ -330,7 +362,7 @@ const Units = (() => {
 
   async function fetchIconMap() {
     try {
-      const rows = await fetchSheet('Icon Map', true);
+      const rows = await fetchSheetExact('Icon Map', true);
       for (const row of rows) {
         const placeholder = col(row, ['placeholder']);
         const path = col(row, ['path']);
@@ -352,39 +384,65 @@ const Units = (() => {
     if (onStateChange) onStateChange(loadingState, loadingError);
   }
 
-  async function fetchAll() {
+  // Promise that resolves when the rest of the data is loaded (after fetchFactionList)
+  let _restPromise = null;
+
+  /** Phase 1: Fetch just the faction list — enough to show faction select UI. */
+  async function fetchFactionList() {
+    console.time('fetchAll');
     setLoadingState('loading');
+    await fetchActiveFactions();
+    if (activeFactions.length === 0) {
+      throw new Error('No active factions found. Check your internet connection.');
+    }
+    console.log(`Faction list ready (${activeFactions.length} factions) — starting background load`);
+
+    // Kick off everything else immediately in the background
+    _restPromise = fetchRest();
+  }
+
+  /** Phase 2: Fetch faction sheets, abilities, terrain, etc. in parallel. */
+  async function fetchRest() {
     try {
-      await Promise.all([fetchActiveFactions(), fetchTerrainMap(), fetchGameRules(), fetchIconMap()]);
-      if (activeFactions.length === 0) {
-        throw new Error('No active factions found. Check your internet connection.');
-      }
-      await Promise.all([
+      console.time('  background load');
+      const [, abilityTabs] = await Promise.all([
         Promise.all(activeFactions.map(f => fetchFaction(f))),
-        fetchAbilityTabs().then(abilityTabs => {
-          // Parse Layer 3: atomic rules from unified rules tab
-          const allAtomicRules = parseAtomicRules(abilityTabs.rules);
-
-          // Parse Layer 2: ability definitions
-          const allAbilityDefs = parseAbilityDefs(abilityTabs.abilities);
-
-          // Parse faction rules
-          parseFactionRules(abilityTabs.factionRule);
-
-          // Pass to Abilities module
-          if (typeof Abilities !== 'undefined') {
-            Abilities.setAtomicRules(allAtomicRules);
-            Abilities.setAbilityDefs(allAbilityDefs);
-          }
-        }),
+        fetchAbilityTabs(),
+        fetchTerrainMap(),
+        fetchGameRules(),
+        fetchIconMap(),
       ]);
+
+      // Parse (synchronous)
+      const allAtomicRules = parseAtomicRules(abilityTabs.rules);
+      const allAbilityDefs = parseAbilityDefs(abilityTabs.abilities);
+      parseFactionRules(abilityTabs.factionRule);
+      if (typeof Abilities !== 'undefined') {
+        Abilities.setAtomicRules(allAtomicRules);
+        Abilities.setAbilityDefs(allAbilityDefs);
+      }
+
       console.log('All faction data loaded:', Object.keys(catalog).map(k => `${k}: ${catalog[k].length} units`));
+      console.timeEnd('  background load');
+      console.timeEnd('fetchAll');
       setLoadingState('success');
     } catch (err) {
       console.error('Failed to load game data:', err);
+      console.timeEnd('fetchAll');
       setLoadingState('error', err.message || 'Failed to load game data');
       throw err;
     }
+  }
+
+  /** Wait for all data (Phase 2) to be ready. Call before entering roster build. */
+  function waitForData() {
+    return _restPromise || Promise.resolve();
+  }
+
+  /** Legacy: fetch everything (calls Phase 1 + waits for Phase 2). */
+  async function fetchAll() {
+    await fetchFactionList();
+    return waitForData();
   }
 
   // ── Normalise sheet columns to a clean unit template ────────
@@ -467,6 +525,8 @@ const Units = (() => {
     get textIcons() { return textIcons; },
     setStateChangeCallback(cb) { onStateChange = cb; },
     fetchAll,
+    fetchFactionList,
+    waitForData,
     fetchFaction,
   };
 })();

@@ -20,12 +20,16 @@ const UI = (() => {
 
   // ── Smooth camera (WASD + zoom) ──────────────────────────────
   const heldKeys = new Set();
-  const CAM_ACCEL = 1.2;       // px/frame² acceleration
-  const CAM_MAX_SPEED = 18;    // px/frame top speed
-  const CAM_FRICTION = 0.82;   // deceleration multiplier when key released
+  const CAM_ACCEL = 2.5;       // px/frame² acceleration
+  const CAM_ACCEL_RAMP = 2.0;  // multiplier after holding 0.3s
+  const CAM_MAX_SPEED = 40;    // px/frame top speed
+  const CAM_FRICTION = 0.91;   // deceleration multiplier (coast after release)
+  const CAM_HOLD_RAMP_MS = 250; // ms before acceleration ramps up
   let camVX = 0, camVY = 0;
+  let camHoldStart = 0;        // timestamp when WASD first held
 
-  const ZOOM_LERP = 0.12;      // fraction to close per frame
+  const ZOOM_LERP = 0.35;      // fraction to close per frame (snappy)
+  let zoomStep = parseFloat(localStorage.getItem('zoomStep')) || 0.04; // wheel zoom step (0-1)
   let targetZoom = 1;
   let zoomAnchorX = 0, zoomAnchorY = 0;  // screen-space zoom focus point
   let animating = false;
@@ -40,16 +44,21 @@ const UI = (() => {
     let needsRender = false;
 
     // ── WASD velocity ──
-    if (heldKeys.has('w')) camVY = Math.min(camVY + CAM_ACCEL, CAM_MAX_SPEED);
-    if (heldKeys.has('s')) camVY = Math.max(camVY - CAM_ACCEL, -CAM_MAX_SPEED);
-    if (heldKeys.has('a')) camVX = Math.min(camVX + CAM_ACCEL, CAM_MAX_SPEED);
-    if (heldKeys.has('d')) camVX = Math.max(camVX - CAM_ACCEL, -CAM_MAX_SPEED);
+    const anyHeld = heldKeys.has('w') || heldKeys.has('a') || heldKeys.has('s') || heldKeys.has('d');
+    const ramp = anyHeld && camHoldStart > 0 && (performance.now() - camHoldStart > CAM_HOLD_RAMP_MS)
+      ? CAM_ACCEL_RAMP : 1;
+    const accel = CAM_ACCEL * ramp;
+
+    if (heldKeys.has('w')) camVY = Math.min(camVY + accel, CAM_MAX_SPEED);
+    if (heldKeys.has('s')) camVY = Math.max(camVY - accel, -CAM_MAX_SPEED);
+    if (heldKeys.has('a')) camVX = Math.min(camVX + accel, CAM_MAX_SPEED);
+    if (heldKeys.has('d')) camVX = Math.max(camVX - accel, -CAM_MAX_SPEED);
 
     // Friction when key not held
     if (!heldKeys.has('w') && !heldKeys.has('s')) camVY *= CAM_FRICTION;
     if (!heldKeys.has('a') && !heldKeys.has('d')) camVX *= CAM_FRICTION;
 
-    if (Math.abs(camVX) > 0.1 || Math.abs(camVY) > 0.1) {
+    if (Math.abs(camVX) > 0.05 || Math.abs(camVY) > 0.05) {
       Board.panX += camVX;
       Board.panY += camVY;
       needsRender = true;
@@ -82,7 +91,7 @@ const UI = (() => {
     }
 
     // Keep looping while there's motion
-    const stillMoving = Math.abs(camVX) > 0.1 || Math.abs(camVY) > 0.1 ||
+    const stillMoving = Math.abs(camVX) > 0.05 || Math.abs(camVY) > 0.05 ||
                         Math.abs(targetZoom - Board.zoomLevel) > 0.001;
     if (stillMoving) {
       requestAnimationFrame(animTick);
@@ -208,6 +217,7 @@ const UI = (() => {
       pathCost: null,           // number — total movement cost of previewed path
       pathPreviewColor: null,   // null = black (movement), string = custom (attack path)
       hoveredHex: null,         // {q,r} — currently hovered hex
+      terrainPreview: null,     // { q, r, surface } — ghost terrain at hovered hex
       waypoints: [],            // [{q,r}] — user-placed intermediate waypoints
       attackWaypoints: [],      // [{q,r}] — waypoints for Piercing attack path routing
       attackPathHighlights: null, // Map of hexes reachable by attack BFS (for waypoint placement)
@@ -1039,10 +1049,101 @@ const UI = (() => {
       });
     });
 
+    // ── AI toggle ──
+    if (typeof AI !== 'undefined') {
+      AI.setOnAct(() => { showPhase(); render(); });
+      const aiWrap = document.createElement('div');
+      aiWrap.className = 'debug-menu';
+      const aiBtn = document.createElement('button');
+      aiBtn.className = 'btn-debug-toggle';
+      aiBtn.textContent = 'vs AI: Off';
+      aiBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        if (AI.isEnabled()) {
+          AI.disable();
+          aiBtn.textContent = 'vs AI: Off';
+        } else {
+          AI.enable(2);
+          aiBtn.textContent = 'vs AI: P2';
+          AI.tick();
+        }
+      });
+      aiWrap.appendChild(aiBtn);
+      nav.appendChild(aiWrap);
+    }
+
     // ── Debug: condition applicator ──
     buildDebugConditionMenu(nav);
     buildDebugTerrainMenu(nav);
     buildDebugResourceMenu(nav);
+    buildDebugLayoutMenu(nav);
+
+    // ── Zoom speed control in nav ──
+    const zoomWrap = document.createElement('div');
+    zoomWrap.className = 'debug-menu';
+    zoomWrap.innerHTML = `<button class="btn-debug-toggle">Zoom: ${Math.round(zoomStep * 100)}%</button>` +
+      '<div class="debug-dropdown hidden" style="padding:8px;width:160px">' +
+      '<label style="color:#ccc;font-size:11px">Zoom step per scroll<br>' +
+      `<input type="range" min="3" max="25" value="${Math.round(zoomStep * 100)}" style="width:100%">` +
+      '</label></div>';
+    nav.appendChild(zoomWrap);
+    const zoomToggle = zoomWrap.querySelector('.btn-debug-toggle');
+    const zoomDropdown = zoomWrap.querySelector('.debug-dropdown');
+    const zoomSlider = zoomWrap.querySelector('input[type=range]');
+    zoomToggle.addEventListener('click', e => { e.stopPropagation(); zoomDropdown.classList.toggle('hidden'); });
+    document.addEventListener('click', () => zoomDropdown.classList.add('hidden'));
+    zoomDropdown.addEventListener('click', e => e.stopPropagation());
+    zoomSlider.addEventListener('input', () => {
+      zoomStep = parseInt(zoomSlider.value) / 100;
+      zoomToggle.textContent = `Zoom: ${zoomSlider.value}%`;
+      localStorage.setItem('zoomStep', zoomStep);
+    });
+
+    // Row + snap toggle buttons for card areas (dedicated overlay container)
+    const rowBtnContainer = document.createElement('div');
+    rowBtnContainer.id = 'row-toggle-container';
+    rowBtnContainer.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:50';
+    document.body.appendChild(rowBtnContainer);
+    for (const p of [1, 2]) {
+      // Row toggle
+      const btn = document.createElement('button');
+      btn.id = `row-toggle-p${p}`;
+      btn.className = 'btn-row-toggle';
+      btn.style.display = 'none';
+      btn.textContent = `${getRosterRows(p)} rows`;
+      btn.addEventListener('click', () => {
+        const cur = getRosterRows(p);
+        const next = cur >= 3 ? 2 : cur + 1;
+        btn.textContent = `${next} rows`;
+        setRosterRows(p, next);
+      });
+      rowBtnContainer.appendChild(btn);
+
+      // Snap toggle
+      const snapBtn = document.createElement('button');
+      snapBtn.id = `snap-toggle-p${p}`;
+      snapBtn.className = 'btn-row-toggle';
+      snapBtn.style.display = 'none';
+      snapBtn.textContent = cardSnapMode[p] ? 'Snap' : 'Free';
+      snapBtn.addEventListener('click', () => {
+        cardSnapMode[p] = !cardSnapMode[p];
+        snapBtn.textContent = cardSnapMode[p] ? 'Snap' : 'Free';
+        localStorage.setItem(`snapMode_${p}`, cardSnapMode[p]);
+        // When switching to snap, re-snap all cards to their grid slots
+        if (cardSnapMode[p]) {
+          const slots = rosterSlots[p];
+          for (let i = 0; i < slots.length; i++) {
+            const k = slots[i];
+            if (!k) continue;
+            const sp = slotPosition(p, i);
+            const pos = rosterCardPositions[k];
+            if (pos) { pos.bx = sp.bx; pos.by = sp.by; }
+          }
+          render();
+        }
+      });
+      rowBtnContainer.appendChild(snapBtn);
+    }
 
     // Register network action handler + show lobby
     if (typeof Net !== 'undefined') {
@@ -1050,11 +1151,31 @@ const UI = (() => {
       Net.initLobby();
     }
 
-    // Start fetching unit data, then apply sheet defaults and show faction select
-    Units.fetchAll().then(() => {
-      Game.reset();   // re-init state with spreadsheet rule defaults now available
+    // Show the board immediately
+    showPhase();
+    render();
+
+    // Phase 1: Fetch faction list — re-render to show faction buttons
+    Units.fetchFactionList().then(() => {
+      console.log('[init] Phase 1 done — factions:', Units.activeFactions.length, '— showing UI');
+      // Don't reset if player already picked a faction somehow
+      if (!Game.state.players[1].faction && !Game.state.players[2].faction) {
+        Game.reset();
+      }
       showPhase();
       render();
+      // Phase 2: rest loads in background; when done, apply spreadsheet rule defaults
+      Units.waitForData().then(() => {
+        console.log('[init] Phase 2 done — full data loaded');
+        // Apply sheet defaults to rules without resetting player selections
+        const sheetDefaults = Units.gameRuleDefaults || {};
+        Object.assign(Game.state.rules, sheetDefaults);
+        showPhase();
+        render();
+      });
+    }).catch(err => {
+      console.error('[init] Phase 1 .then() threw — falling back to full load:', err);
+      Units.fetchAll().then(() => { Game.reset(); showPhase(); render(); });
     });
 
     // Canvas events
@@ -1070,7 +1191,21 @@ const UI = (() => {
     // Pan tracking on document so dragging beyond canvas edge still works
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
-    window.addEventListener('resize', () => { Board.resize(); render(); });
+    window.addEventListener('resize', () => {
+      const oldBounds = getGridBoardBounds();
+      Board.resize();
+      const newBounds = getGridBoardBounds();
+      // Shift all stored card positions by how much the grid center moved
+      const dx = newBounds.minX - oldBounds.minX;
+      const dy = newBounds.minY - oldBounds.minY;
+      if (dx !== 0 || dy !== 0) {
+        for (const key in rosterCardPositions) {
+          rosterCardPositions[key].bx += dx;
+          rosterCardPositions[key].by += dy;
+        }
+      }
+      render();
+    });
 
     // Allow zoom when mouse is over roster cards
     document.getElementById('roster-area-p1').addEventListener('wheel', onWheel, { passive: false });
@@ -1124,14 +1259,139 @@ const UI = (() => {
 
   // ── Render loop ───────────────────────────────────────────────
 
+  /** Get the card zone bounds in board-space for a player. */
+  function getCardZoneBounds(player) {
+    const cardH = ROSTER_CARD_H * ROSTER_CARD_SCALE;
+    const cardW = ROSTER_CARD_W * ROSTER_CARD_SCALE;
+    const bounds = getGridBoardBounds();
+    const gridH = bounds.maxY - bounds.minY;
+    const rows = getRosterRows(player);
+    const zoneH = rows * cardH + (rows - 1) * ROSTER_CARD_GAP;
+    const zoneTopY = bounds.minY + (gridH - zoneH) / 2;
+    const margin = 16;
+    // Horizontal: cards stay on their side, extending outward up to ~4 columns worth
+    const maxCols = 6;
+    const extentX = maxCols * (cardW + ROSTER_CARD_GAP);
+    let left, right;
+    if (player === 1) {
+      right = bounds.minX - margin;
+      left = right - extentX;
+    } else {
+      left = bounds.maxX + margin;
+      right = left + extentX;
+    }
+    return { top: zoneTopY, bottom: zoneTopY + zoneH, left, right };
+  }
+
+  /** Draw faint top/bottom guide lines for each player's card area. */
+  function drawCardAreaGuides() {
+    const canvas = Board.canvas;
+    const c = canvas.getContext('2d');
+    const zoom = Board.zoomLevel;
+    const cardW = ROSTER_CARD_W * ROSTER_CARD_SCALE;
+    const cardH = ROSTER_CARD_H * ROSTER_CARD_SCALE;
+    const bounds = getGridBoardBounds();
+    const margin = 16;
+    const pad = 6;
+
+    for (const p of [1, 2]) {
+      const roster = Game.state.players[p].roster;
+      const rowBtn = document.getElementById(`row-toggle-p${p}`);
+      const snapBtn = document.getElementById(`snap-toggle-p${p}`);
+      if (!roster || roster.length === 0) {
+        if (rowBtn) rowBtn.style.display = 'none';
+        if (snapBtn) snapBtn.style.display = 'none';
+        continue;
+      }
+      if (rowBtn) rowBtn.style.display = '';
+      if (snapBtn) snapBtn.style.display = '';
+
+      const zone = getCardZoneBounds(p);
+      const rows = getRosterRows(p);
+      const maxCol = Math.floor((roster.length - 1) / rows);
+
+      const topY = (zone.top - pad) * zoom + Board.panY;
+      const botY = (zone.bottom + pad) * zoom + Board.panY;
+
+      // Horizontal extent for guide lines
+      let leftX, rightX;
+      if (p === 1) {
+        const farSlot = slotPosition(1, maxCol * rows);
+        rightX = (bounds.minX - margin / 2) * zoom + Board.panX;
+        leftX = (farSlot.bx - cardW / 2 - pad) * zoom + Board.panX;
+      } else {
+        const farSlot = slotPosition(2, maxCol * rows);
+        leftX = (bounds.maxX + margin / 2) * zoom + Board.panX;
+        rightX = (farSlot.bx + cardW / 2 + pad) * zoom + Board.panX;
+      }
+
+      // Draw faint horizontal lines (top + bottom only)
+      c.save();
+      c.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+      c.lineWidth = 1;
+      c.setLineDash([8, 6]);
+      c.beginPath();
+      c.moveTo(leftX, topY);
+      c.lineTo(rightX, topY);
+      c.moveTo(leftX, botY);
+      c.lineTo(rightX, botY);
+      c.stroke();
+      c.restore();
+
+      // Position buttons at fixed screen locations (bottom corners)
+      if (rowBtn) {
+        rowBtn.style.left = (p === 1 ? '12px' : '');
+        rowBtn.style.right = (p === 2 ? '12px' : '');
+        rowBtn.style.bottom = '40px';
+        rowBtn.style.top = '';
+      }
+      if (snapBtn) {
+        snapBtn.style.left = (p === 1 ? '70px' : '');
+        snapBtn.style.right = (p === 2 ? '70px' : '');
+        snapBtn.style.bottom = '40px';
+        snapBtn.style.top = '';
+      }
+    }
+  }
+
+  /** Toggle roster rows for a player and recompute card positions. */
+  function setRosterRows(player, rows) {
+    ROSTER_ROWS_BY_PLAYER[player] = rows;
+    localStorage.setItem(`rosterRows_${player}`, rows);
+    // Recompute all card positions for this player
+    const slots = rosterSlots[player];
+    for (let i = 0; i < slots.length; i++) {
+      const key = slots[i];
+      if (!key) continue;
+      const sp = slotPosition(player, i);
+      rosterCardPositions[key] = { bx: sp.bx, by: sp.by, rot: rosterCardPositions[key]?.rot || 0 };
+    }
+    showPhase();
+    render();
+  }
+
   function render() {
     Board.render({ ...Game.state, ...uiState });
+    drawCardAreaGuides();
     renderTokens();
+    syncRosterCards();
     updateLevelOverlayPosition();
     syncRosterCardActivation();
     updateStatusBar();
     renderGameLog();
     drainToastQueue();
+
+    // Update end-turn button: actionable "End Turn" vs passive "Select Unit" hint
+    const endBtn = document.getElementById('hud-end-turn');
+    if (endBtn && Game.state.phase === Game.PHASE.BATTLE) {
+      const hasUnit = !!Game.state.activationState;
+      endBtn.textContent = hasUnit ? 'End Turn' : 'Select Unit';
+      endBtn.classList.toggle('hud-hint', !hasUnit);
+      endBtn.disabled = !hasUnit;
+    }
+
+    // AI: trigger tick after render if it's AI's turn
+    if (typeof AI !== 'undefined' && AI.isAITurn()) AI.tick();
   }
 
   // ── HTML unit tokens ─────────────────────────────────────────
@@ -1210,41 +1470,53 @@ const UI = (() => {
         hpEl.style.fontSize = (tokenSize * 0.22) + 'px';
       }
 
-      // Condition indicators (grouped with stack count) + resource icons
+      // Scale condition & resource sizes proportional to token (like HP)
+      const iconSize = Math.round(tokenSize * 0.28);
+      const iconFont = Math.round(tokenSize * 0.18);
+      const stackSize = Math.round(tokenSize * 0.18);
+      const stackFont = Math.round(tokenSize * 0.13);
+      const resFont = Math.round(tokenSize * 0.18);
+
+      // Condition indicators (grouped with stack count)
       const condDiv = el.querySelector('.token-conditions');
       if (condDiv) {
-        let condHTML = groupConditions(unit.conditions)
+        condDiv.style.gap = Math.round(tokenSize * 0.04) + 'px';
+        condDiv.innerHTML = groupConditions(unit.conditions)
           .map(g => {
-            const badge = g.count > 1 ? `<span class="cond-stack">${g.count}</span>` : '';
-            return `<span class="cond-icon cond-${g.id}" title="${g.label || g.id}${g.count > 1 ? ' x' + g.count : ''}">${conditionIconHTML(g.id)}${badge}</span>`;
+            const badge = g.count > 1
+              ? `<span class="cond-stack" style="min-width:${stackSize}px;height:${stackSize}px;border-radius:${stackSize/2}px;font-size:${stackFont}px;line-height:${stackSize}px">${g.count}</span>`
+              : '';
+            return `<span class="cond-icon cond-${g.id}" style="width:${iconSize}px;height:${iconSize}px;font-size:${iconFont}px" title="${g.label || g.id}${g.count > 1 ? ' x' + g.count : ''}">${conditionIconHTML(g.id)}${badge}</span>`;
           }).join('');
-        // Append resources as condition-style badges
-        if (unit.resources) {
-          const icons = Units.textIcons;
-          for (const [type, count] of Object.entries(unit.resources)) {
-            if (count <= 0) continue;
-            const key = type + 'Icon';
-            const sym = (icons && icons[key])
-              ? `<img class="cond-img-icon" src="${icons[key]}" alt="${type}">`
-              : (RESOURCE_ICONS[type] || '\u2B20');
-            condHTML += `<span class="cond-icon cond-${type}" title="${type}: ${count}">${sym}${count > 1 ? `<span class="cond-stack">${count}</span>` : ''}</span>`;
-          }
-        }
-        condDiv.innerHTML = condHTML;
       }
 
       // Resource indicators
       const resDiv = el.querySelector('.token-resources');
-      if (resDiv && unit.resources) {
+      const isIntegrated = document.getElementById('unit-tokens').classList.contains('layout-integrated');
+      if (unit.resources) {
         const entries = Object.entries(unit.resources).filter(([, v]) => v > 0);
-        if (entries.length > 0) {
-          resDiv.innerHTML = entries.map(([type, count]) => {
-            const icon = RESOURCE_ICONS[type] || '\u2B20';
-            return `<span class="res-icon res-${type}" title="${type}: ${count}">${icon}${count}</span>`;
-          }).join('');
+        const resHTML = entries.map(([type, count]) => {
+          const icons = Units.textIcons;
+          const imgKey = type + 'Icon';
+          let icon;
+          if (icons && icons[imgKey]) {
+            icon = `<img class="res-img-icon" src="${icons[imgKey]}" alt="${type}" style="width:${resFont}px;height:${resFont}px">`;
+          } else {
+            icon = RESOURCE_ICONS[type] || '\u2B20';
+          }
+          const num = count > 1 ? count : '';
+          return `<span class="res-icon res-${type}" style="font-size:${resFont}px" title="${type}: ${count}">${icon}${num}</span>`;
+        }).join('');
+
+        if (isIntegrated && hpEl && entries.length > 0) {
+          // Integrated layout: resources merge into HP badge
+          hpEl.innerHTML = '\u2665' + unit.health + ' ' + resHTML;
+          if (resDiv) resDiv.innerHTML = '';
         } else {
-          resDiv.innerHTML = '';
+          if (resDiv) resDiv.innerHTML = entries.length > 0 ? resHTML : '';
         }
+      } else {
+        if (resDiv) resDiv.innerHTML = '';
       }
 
       // State classes
@@ -1602,6 +1874,21 @@ const UI = (() => {
       const cls = e.player === 1 ? 'log-p1' : e.player === 2 ? 'log-p2' : 'log-system';
       div.className = `log-entry ${cls}`;
       div.textContent = e.text;
+      // Clickable log entries with position data
+      if (e.pos) {
+        div.classList.add('log-clickable');
+        div.addEventListener('click', () => {
+          const hex = Board.getHex(e.pos.q, e.pos.r);
+          if (!hex) return;
+          const rect = Board.canvas.getBoundingClientRect();
+          Board.panX = rect.width / 2 - hex.x * Board.zoomLevel;
+          Board.panY = rect.height / 2 - hex.y * Board.zoomLevel;
+          uiState.highlights = new Map([[`${hex.q},${hex.r}`, 1]]);
+          uiState.highlightColor = 'rgba(255, 255, 255, 0.5)';
+          render();
+          setTimeout(() => { uiState.highlights = null; render(); }, 600);
+        });
+      }
       body.appendChild(div);
     }
     gameLogRenderedCount = entries.length;
@@ -2843,10 +3130,19 @@ const UI = (() => {
   const ROSTER_CARD_W = 240;       // CSS width (before scale)
   const ROSTER_CARD_GAP = 40;
   const ROSTER_CARD_H = 336;       // CSS height (before scale)
-  const ROSTER_ROWS = 2;       // two rows: row 0 (close to board) and row 1
+  let ROSTER_ROWS_BY_PLAYER = {
+    1: parseInt(localStorage.getItem('rosterRows_1')) || 2,
+    2: parseInt(localStorage.getItem('rosterRows_2')) || 2,
+  };
+  // Legacy references use this getter for the current context
+  function getRosterRows(player) { return ROSTER_ROWS_BY_PLAYER[player] || 2; }
 
   /** Board-space positions. Key = "player-unitName" → { bx, by, rot } */
   let rosterCardPositions = {};
+  const cardSnapMode = {
+    1: localStorage.getItem('snapMode_1') !== 'false',
+    2: localStorage.getItem('snapMode_2') !== 'false',
+  };
 
   /**
    * Slot arrays per player. Each slot is either a unit key string or null.
@@ -2879,8 +3175,9 @@ const UI = (() => {
     const cardW = ROSTER_CARD_W * ROSTER_CARD_SCALE;
     const cardH = ROSTER_CARD_H * ROSTER_CARD_SCALE;
 
-    const row = slotIndex % ROSTER_ROWS;       // 0 = close to board, 1 = far row
-    const col = Math.floor(slotIndex / ROSTER_ROWS); // grows outward
+    const rows = getRosterRows(player);
+    const row = slotIndex % rows;
+    const col = Math.floor(slotIndex / rows);
 
     // Anchor point: edge of board closest to this player
     // P1: left side, columns grow leftward (outward)
@@ -2891,7 +3188,12 @@ const UI = (() => {
     } else {
       bx = bounds.maxX + margin + col * (cardW + ROSTER_CARD_GAP) + cardW / 2;
     }
-    const by = bounds.minY + row * (cardH + ROSTER_CARD_GAP) + cardH / 2;
+
+    // Center card zone vertically within the grid
+    const gridH = bounds.maxY - bounds.minY;
+    const zoneH = rows * cardH + (rows - 1) * ROSTER_CARD_GAP;
+    const zoneTopY = bounds.minY + (gridH - zoneH) / 2;
+    const by = zoneTopY + row * (cardH + ROSTER_CARD_GAP) + cardH / 2;
 
     return { bx, by };
   }
@@ -2922,6 +3224,8 @@ const UI = (() => {
 
   /** Recompute card positions from the slot arrays. */
   function syncSlotPositions(player) {
+    // In free mode, don't overwrite user-placed positions
+    if (!cardSnapMode[player]) return;
     const slots = rosterSlots[player];
     for (let i = 0; i < slots.length; i++) {
       const key = slots[i];
@@ -3173,6 +3477,10 @@ const UI = (() => {
   let dragCard = null;
   let dragStartX = 0, dragStartY = 0;
   let dragMoved = false;
+  let dragGhost = null;          // ghost clone for snap mode
+  let dragOrigPos = null;        // { bx, by } saved at drag start
+  let dragSwapTarget = null;     // card element currently highlighted for swap
+  let dragSnapSlot = null;       // { slotIdx, key, empty } nearest slot during snap drag
   let hoveredCard = null;
   let hoveredTokenUnit = null;   // unit under mouse on board token
   const faceUpOverrides = new Set();  // card keys manually flipped face-up by F key
@@ -3193,14 +3501,56 @@ const UI = (() => {
     showPhase();
   }
 
+  /** Find the nearest grid slot to a board-space position.
+   *  Returns { slotIdx, key (if occupied), empty (bool) } or null if out of range. */
+  function findNearestSlot(player, bx, by, excludeKey) {
+    const cardW = ROSTER_CARD_W * ROSTER_CARD_SCALE;
+    const cardH = ROSTER_CARD_H * ROSTER_CARD_SCALE;
+    const roster = Game.state.players[player].roster;
+    if (!roster) return null;
+
+    const rows = getRosterRows(player);
+    // Check all possible slots (enough columns for the roster + 1 extra for empty placement)
+    const maxSlots = roster.length + rows;
+    let best = null, bestDist = Infinity;
+
+    for (let i = 0; i < maxSlots; i++) {
+      const sp = slotPosition(player, i);
+      if (Math.abs(bx - sp.bx) < cardW && Math.abs(by - sp.by) < cardH) {
+        const d = Math.abs(bx - sp.bx) + Math.abs(by - sp.by);
+        if (d < bestDist) {
+          bestDist = d;
+          const slots = rosterSlots[player];
+          const occupant = slots[i] || null;
+          if (occupant === excludeKey) continue;
+          best = { slotIdx: i, key: occupant, empty: !occupant };
+        }
+      }
+    }
+    return best;
+  }
+
   function onRosterCardMouseDown(e) {
     if (e.button !== 0) return;
     const card = e.currentTarget;
+    const key = card.dataset.cardKey;
+    const player = parseInt(card.dataset.player);
     dragCard = card;
     dragMoved = false;
     dragStartX = e.clientX;
     dragStartY = e.clientY;
-    card.style.zIndex = '45';
+    dragOrigPos = rosterCardPositions[key] ? { ...rosterCardPositions[key] } : null;
+    dragSwapTarget = null;
+
+    if (cardSnapMode[player]) {
+      // Snap mode: create ghost clone
+      dragGhost = card.cloneNode(true);
+      dragGhost.classList.add('drag-ghost');
+      dragGhost.style.zIndex = '999';
+      card.parentElement.appendChild(dragGhost);
+    } else {
+      card.style.zIndex = '45';
+    }
     e.preventDefault();
     e.stopPropagation();
   }
@@ -3212,25 +3562,99 @@ const UI = (() => {
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) dragMoved = true;
     if (!dragMoved) return;
 
-    // Convert screen delta to board-space delta
     const key = dragCard.dataset.cardKey;
+    const player = parseInt(dragCard.dataset.player);
     const pos = rosterCardPositions[key];
     if (!pos) return;
-    pos.bx += (e.clientX - dragStartX) / Board.zoomLevel;
-    pos.by += (e.clientY - dragStartY) / Board.zoomLevel;
-    dragStartX = e.clientX;
-    dragStartY = e.clientY;
 
-    const rot = pos.rot || 0;
-    const scr = rosterCardScreenPos(pos.bx, pos.by);
-    dragCard.style.left = scr.x + 'px';
-    dragCard.style.top = scr.y + 'px';
+    if (cardSnapMode[player] && dragGhost) {
+      // Snap mode: move ghost, original stays put
+      const ghostBx = dragOrigPos.bx + (e.clientX - dragStartX) / Board.zoomLevel;
+      const ghostBy = dragOrigPos.by + (e.clientY - dragStartY) / Board.zoomLevel;
+      const scr = rosterCardScreenPos(ghostBx, ghostBy);
+      dragGhost.style.left = scr.x + 'px';
+      dragGhost.style.top = scr.y + 'px';
+
+      // Find nearest slot (occupied or empty) under ghost
+      const nearSlot = findNearestSlot(player, ghostBx, ghostBy, key);
+      // Clear old highlight
+      if (dragSwapTarget) dragSwapTarget.classList.remove('drag-hover');
+      dragSwapTarget = null;
+      dragSnapSlot = nearSlot;
+      if (nearSlot && nearSlot.key) {
+        const area = document.getElementById(`roster-area-p${player}`);
+        const target = area.querySelector(`[data-card-key="${nearSlot.key}"]`);
+        if (target) { target.classList.add('drag-hover'); dragSwapTarget = target; }
+      }
+    } else {
+      // Free mode: move card directly, constrain to zone
+      pos.bx += (e.clientX - dragStartX) / Board.zoomLevel;
+      pos.by += (e.clientY - dragStartY) / Board.zoomLevel;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+
+      // Constrain center to zone bounds (vertical + horizontal)
+      const zone = getCardZoneBounds(player);
+      const halfH = ROSTER_CARD_H * ROSTER_CARD_SCALE / 2;
+      const halfW = ROSTER_CARD_W * ROSTER_CARD_SCALE / 2;
+      pos.by = Math.max(zone.top + halfH, Math.min(zone.bottom - halfH, pos.by));
+      pos.bx = Math.max(zone.left + halfW, Math.min(zone.right - halfW, pos.bx));
+
+      const scr = rosterCardScreenPos(pos.bx, pos.by);
+      dragCard.style.left = scr.x + 'px';
+      dragCard.style.top = scr.y + 'px';
+    }
   });
 
   document.addEventListener('mouseup', e => {
     if (!dragCard) return;
+    const key = dragCard.dataset.cardKey;
+    const player = parseInt(dragCard.dataset.player);
+
+    if (cardSnapMode[player] && dragGhost) {
+      // Snap mode: swap with occupied slot, or move to empty slot
+      if (dragMoved && dragSnapSlot) {
+        const slots = rosterSlots[player];
+        const srcIdx = slots.indexOf(key);
+
+        if (dragSnapSlot.key) {
+          // Occupied slot — swap positions
+          const targetKey = dragSnapSlot.key;
+          const posA = rosterCardPositions[key];
+          const posB = rosterCardPositions[targetKey];
+          if (posA && posB) {
+            const tmpBx = posA.bx, tmpBy = posA.by;
+            posA.bx = posB.bx; posA.by = posB.by;
+            posB.bx = tmpBx; posB.by = tmpBy;
+            const idxA = slots.indexOf(key);
+            const idxB = slots.indexOf(targetKey);
+            if (idxA >= 0 && idxB >= 0) { slots[idxA] = targetKey; slots[idxB] = key; }
+          }
+        } else if (dragSnapSlot.empty) {
+          // Empty slot — move card there
+          const destIdx = dragSnapSlot.slotIdx;
+          // Expand slots array if needed
+          while (slots.length <= destIdx) slots.push(null);
+          if (srcIdx >= 0) slots[srcIdx] = null;
+          slots[destIdx] = key;
+          // Update position to the new slot
+          const sp = slotPosition(player, destIdx);
+          const pos = rosterCardPositions[key];
+          if (pos) { pos.bx = sp.bx; pos.by = sp.by; }
+        }
+
+        if (dragSwapTarget) dragSwapTarget.classList.remove('drag-hover');
+      }
+      dragGhost.remove();
+      dragGhost = null;
+      dragSwapTarget = null;
+      dragSnapSlot = null;
+      render();
+    }
+
     dragCard.style.zIndex = '';
     dragCard = null;
+    dragOrigPos = null;
   });
 
   function positionCard(card, e) {
@@ -3779,8 +4203,47 @@ const UI = (() => {
 
     // WASD camera panning (smooth)
     if (key === 'w' || key === 'a' || key === 's' || key === 'd') {
+      if (heldKeys.size === 0) camHoldStart = performance.now();
       heldKeys.add(key);
       startAnimLoop();
+      e.preventDefault();
+      return;
+    }
+
+    // Space → end turn / end activation
+    if (key === ' ' && Game.state.phase === Game.PHASE.BATTLE && Game.state.activationState) {
+      const hasPending = Game.forceEndActivation();
+      netSend({ type: 'endActivation' });
+      if (hasPending && typeof Abilities !== 'undefined') {
+        if (Abilities.getPendingEndActTarget()) { enterEndActTargeting(); e.preventDefault(); return; }
+        if (Abilities.hasPendingEffects()) { processEndActEffects(); e.preventDefault(); return; }
+      }
+      resetUiState();
+      showPhase();
+      render();
+      e.preventDefault();
+      return;
+    }
+
+    // U → undo last action
+    if (key === 'u' && Game.state.phase === Game.PHASE.BATTLE) {
+      const ok = Game.undoLastAction();
+      if (ok) {
+        netSend({ type: 'undoLastAction' });
+        resetUiState();
+        showActivationHighlights();
+        showPhase();
+        render();
+      }
+      e.preventDefault();
+      return;
+    }
+
+    // 1-4 → activate ability by position
+    if (key >= '1' && key <= '4' && Game.state.phase === Game.PHASE.BATTLE && Game.state.activationState) {
+      const btns = document.querySelectorAll('#panel-battle .btn-ability');
+      const idx = parseInt(key) - 1;
+      if (btns[idx]) btns[idx].click();
       e.preventDefault();
       return;
     }
@@ -3852,6 +4315,7 @@ const UI = (() => {
 
   function onKeyUp(e) {
     heldKeys.delete(e.key.toLowerCase());
+    if (heldKeys.size === 0) camHoldStart = 0;
     if (e.key === 'Control') {
       hideUnitCard();
     }
@@ -3860,7 +4324,7 @@ const UI = (() => {
   function onWheel(e) {
     e.preventDefault();
     // Accumulate toward a target zoom instead of jumping
-    const factor = e.deltaY > 0 ? 0.93 : 1.07;
+    const factor = e.deltaY > 0 ? (1 - zoomStep) : (1 + zoomStep);
     targetZoom = Math.min(3, Math.max(0.3, targetZoom * factor));
     zoomAnchorX = e.clientX;
     zoomAnchorY = e.clientY;
@@ -3920,6 +4384,22 @@ const UI = (() => {
         render();
       }
       return;
+    }
+
+    // Terrain ghost preview on hover during terrain deploy
+    if (Game.state.phase === Game.PHASE.TERRAIN_DEPLOY && selectedSurface) {
+      const hex = Board.hexAtPixel(e.clientX, e.clientY);
+      const hexKey = hex ? `${hex.q},${hex.r}` : null;
+      const prevPreview = uiState.terrainPreview;
+      const prevKey = prevPreview ? `${prevPreview.q},${prevPreview.r}` : null;
+      if (hexKey !== prevKey) {
+        if (hex && uiState.highlights && uiState.highlights.has(hexKey)) {
+          uiState.terrainPreview = { q: hex.q, r: hex.r, surface: selectedSurface };
+        } else {
+          uiState.terrainPreview = null;
+        }
+        render();
+      }
     }
 
     // Path preview on hover during battle phase with a unit selected
@@ -4078,26 +4558,252 @@ const UI = (() => {
     const el = tokenEls.get(unit);
     if (!el || path.length === 0) { onComplete(); return; }
 
-    const zoom = Board.zoomLevel;
+    // Build screen-space waypoints
+    const pts = [];
+    for (const p of path) {
+      const hex = Board.getHex(p.q, p.r);
+      if (hex) pts.push(hex);
+    }
+    if (pts.length === 0) { onComplete(); return; }
+    // Single point — just snap there
+    if (pts.length === 1) {
+      const zoom = Board.zoomLevel;
+      el.style.left = (pts[0].x * zoom + Board.panX) + 'px';
+      el.style.top = (pts[0].y * zoom + Board.panY) + 'px';
+      onComplete();
+      return;
+    }
 
-    let step = 0;
-    function tick() {
-      if (step >= path.length) {
-        onComplete();
-        return;
-      }
-      const hex = Board.getHex(path[step].q, path[step].r);
-      if (!hex) { step++; tick(); return; }
+    const segCount = pts.length - 1;
+    const totalDur = msPerStep * segCount;
+    if (totalDur <= 0) {
+      const zoom = Board.zoomLevel;
+      const last = pts[pts.length - 1];
+      el.style.left = (last.x * zoom + Board.panX) + 'px';
+      el.style.top = (last.y * zoom + Board.panY) + 'px';
+      onComplete();
+      return;
+    }
+    const startTime = performance.now();
 
-      const sx = hex.x * zoom + Board.panX;
-      const sy = hex.y * zoom + Board.panY;
+    function ease(t) {
+      return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    }
+
+    function tick(now) {
+      const elapsed = now - startTime;
+      const totalProgress = Math.min(elapsed / totalDur, 1);
+
+      const rawSeg = totalProgress * segCount;
+      const segIdx = Math.min(Math.floor(rawSeg), segCount - 1);
+      const segT = ease(Math.min(rawSeg - segIdx, 1));
+
+      const zoom = Board.zoomLevel;
+      const fromIdx = Math.min(segIdx, pts.length - 1);
+      const toIdx = Math.min(segIdx + 1, pts.length - 1);
+      const from = pts[fromIdx];
+      const to = pts[toIdx];
+      if (!from || !to) { onComplete(); return; }
+      const sx = (from.x + (to.x - from.x) * segT) * zoom + Board.panX;
+      const sy = (from.y + (to.y - from.y) * segT) * zoom + Board.panY;
+
       el.style.left = sx + 'px';
       el.style.top = sy + 'px';
 
-      step++;
-      setTimeout(tick, msPerStep);
+      if (totalProgress < 1) {
+        requestAnimationFrame(tick);
+      } else {
+        // Snap to final position
+        const last = pts[pts.length - 1];
+        el.style.left = (last.x * zoom + Board.panX) + 'px';
+        el.style.top = (last.y * zoom + Board.panY) + 'px';
+        onComplete();
+      }
     }
-    tick();
+    requestAnimationFrame(tick);
+  }
+
+  // ── Combat animations ──────────────────────────────────────
+
+  /** Show floating damage/heal/miss text at a hex position. */
+  function showDamageFloat(hex, text, type) {
+    const container = tokenContainer();
+    if (!container) return;
+    const zoom = Board.zoomLevel;
+    const x = hex.x * zoom + Board.panX;
+    const y = hex.y * zoom + Board.panY;
+    const el = document.createElement('div');
+    el.className = 'damage-float' + (type ? ' ' + type : '');
+    el.textContent = text;
+    el.style.left = x + 'px';
+    el.style.top = y + 'px';
+    container.appendChild(el);
+    setTimeout(() => el.remove(), 900);
+  }
+
+  /** Flash a token white briefly on impact. */
+  function flashToken(el, duration) {
+    if (!el) return;
+    el.style.animation = `impactFlash ${duration}ms ease-out`;
+    setTimeout(() => { el.style.animation = ''; }, duration);
+  }
+
+  /** Animate unit death — fade out and shrink. */
+  function animateDeath(unit) {
+    const el = tokenEls.get(unit);
+    if (!el) return;
+    el.style.animation = 'deathFade 0.35s ease-in forwards';
+  }
+
+  /**
+   * Animate a melee attack — lunge toward target and snap back.
+   * @returns {Promise} resolves when animation completes
+   */
+  function animateMeleeLunge(attackerEl, targetHex) {
+    if (!attackerEl) return Promise.resolve();
+    const zoom = Board.zoomLevel;
+    const rect = attackerEl.getBoundingClientRect();
+    const atkX = rect.left + rect.width / 2;
+    const atkY = rect.top + rect.height / 2;
+    const canvas = Board.canvas;
+    const canvasRect = canvas.getBoundingClientRect();
+    const tgtX = targetHex.x * zoom + Board.panX + canvasRect.left;
+    const tgtY = targetHex.y * zoom + Board.panY + canvasRect.top;
+    const dx = (tgtX - atkX) * 0.3;
+    const dy = (tgtY - atkY) * 0.3;
+
+    return attackerEl.animate([
+      { transform: 'translate(-50%, -50%)', offset: 0 },
+      { transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`, offset: 0.35 },
+      { transform: 'translate(-50%, -50%)', offset: 1 },
+    ], { duration: 200, easing: 'ease-in-out' }).finished;
+  }
+
+  /**
+   * Animate a ranged projectile from attacker to target on overlay canvas.
+   * @returns {Promise} resolves when projectile reaches target
+   */
+  function animateProjectile(attackerHex, targetHex) {
+    const overlay = document.getElementById('overlayCanvas');
+    if (!overlay) return Promise.resolve();
+    const ctx = overlay.getContext('2d');
+    const zoom = Board.zoomLevel;
+    const dpr = window.devicePixelRatio || 1;
+
+    const x0 = attackerHex.x * zoom + Board.panX;
+    const y0 = attackerHex.y * zoom + Board.panY;
+    const x1 = targetHex.x * zoom + Board.panX;
+    const y1 = targetHex.y * zoom + Board.panY;
+
+    const dist = Math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2);
+    const duration = Math.min(400, Math.max(150, dist * 1.2));
+    const startTime = performance.now();
+
+    return new Promise(resolve => {
+      function tick(now) {
+        const t = Math.min((now - startTime) / duration, 1);
+        const px = x0 + (x1 - x0) * t;
+        const py = y0 + (y1 - y0) * t;
+
+        // Draw projectile (small bright dot with trail)
+        ctx.save();
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        // Trail
+        const t2 = Math.max(0, t - 0.15);
+        const trailX = x0 + (x1 - x0) * t2;
+        const trailY = y0 + (y1 - y0) * t2;
+        const grad = ctx.createLinearGradient(trailX, trailY, px, py);
+        grad.addColorStop(0, 'rgba(255, 200, 80, 0)');
+        grad.addColorStop(1, 'rgba(255, 200, 80, 0.8)');
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(trailX, trailY);
+        ctx.lineTo(px, py);
+        ctx.stroke();
+
+        // Dot
+        ctx.fillStyle = '#ffe080';
+        ctx.shadowColor = '#ff8800';
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.arc(px, py, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+
+        if (t < 1) {
+          requestAnimationFrame(tick);
+        } else {
+          resolve();
+        }
+      }
+      requestAnimationFrame(tick);
+    });
+  }
+
+  /**
+   * Run the full attack animation sequence.
+   * @param {Object} opts - { attacker, target, attackerHex, targetHex, damage, killed, dodged }
+   * @returns {Promise}
+   */
+  async function animateAttack(opts) {
+    const { attacker, target, attackerHex, targetHex, damage, killed, dodged } = opts;
+    const attackerEl = tokenEls.get(attacker);
+    const targetEl = tokenEls.get(target);
+    const isMelee = Board.hexDistance(attackerHex, targetHex) <= 1;
+
+    moveAnimating = true;
+
+    // Phase 1: Lunge or projectile
+    if (isMelee) {
+      await animateMeleeLunge(attackerEl, targetHex);
+    } else {
+      await animateProjectile(attackerHex, targetHex);
+    }
+
+    // Phase 2: Impact
+    flashToken(targetEl, 120);
+
+    // Phase 3: Damage float
+    if (dodged) {
+      showDamageFloat(targetHex, 'Miss!', 'miss');
+    } else if (damage > 0) {
+      showDamageFloat(targetHex, '-' + damage, killed ? 'kill' : '');
+    }
+
+    // Phase 4: Death
+    if (killed) {
+      animateDeath(target);
+      await new Promise(r => setTimeout(r, 300));
+    } else {
+      await new Promise(r => setTimeout(r, 80));
+    }
+
+    moveAnimating = false;
+    render();
+  }
+
+  /**
+   * Read lastAttackResult from game state and play attack animation, then call onDone.
+   */
+  function playAttackAnim(attacker, attackerHex, targetHex, onDone) {
+    const act = Game.state.activationState;
+    const result = act && act.lastAttackResult;
+    if (!result || !attackerHex || !targetHex) {
+      if (onDone) onDone();
+      return;
+    }
+    animateAttack({
+      attacker,
+      target: result.target,
+      attackerHex,
+      targetHex,
+      damage: result.damage,
+      killed: result.killed,
+      dodged: result.dodged,
+    }).then(onDone);
   }
 
   function onMouseUp(e) {
@@ -4341,10 +5047,13 @@ const UI = (() => {
     if (action === 'pick-faction') {
       const player = parseInt(btn.dataset.player);
       const faction = btn.dataset.faction;
-      Game.selectFaction(player, faction);
-      netSend({ type: 'selectFaction', player, faction });
-      showPhase();
-      render();
+      // Ensure all data is loaded before proceeding (abilities, catalog, terrain)
+      Units.waitForData().then(() => {
+        Game.selectFaction(player, faction);
+        netSend({ type: 'selectFaction', player, faction });
+        showPhase();
+        render();
+      });
     }
 
     else if (action === 'add-unit') {
@@ -4823,6 +5532,7 @@ const UI = (() => {
       netSend({ type: 'deployTerrain', player: p, q: hex.q, r: hex.r, surface: selectedSurface });
       selectedSurface = null;
       uiState.highlights = null;
+      uiState.terrainPreview = null;
       showPhase();
       render();
     }
@@ -5635,26 +6345,32 @@ const UI = (() => {
     if (targeting.delayed) {
       if (uiState.attackTargets && uiState.attackTargets.has(key)) {
         targeting.delayed = false;
+        const atkUnit = s.activationState.unit;
+        const atkHex = Board.getHex(atkUnit.q, atkUnit.r);
+        const tgtHex = Board.getHex(hex.q, hex.r);
         const ok = Game.attackUnit(hex.q, hex.r);
         if (ok) {
           netSend({ type: 'attackUnit', q: hex.q, r: hex.r });
-          if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
-            enterEffectTargeting();
-            return;
-          }
-          if (checkBurningRedirect()) return;
-          if (Game.state.pendingReplacement) { enterReplacementChoice(); return; }
-          const delayAct = s.activationState;
-          if (delayAct && delayAct.moved && delayAct.attacked && !s.rules.confirmEndTurn) {
-            tryEndActivation();
-            return;
-          }
-          if (!s.activationState) {
-            resetUiState();
-          } else {
-            showActivationHighlights();
-          }
-          showPhase();
+          playAttackAnim(atkUnit, atkHex, tgtHex, () => {
+            if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+              enterEffectTargeting();
+              return;
+            }
+            if (checkBurningRedirect()) return;
+            if (Game.state.pendingReplacement) { enterReplacementChoice(); return; }
+            const delayAct = Game.state.activationState;
+            if (delayAct && delayAct.moved && delayAct.attacked && !Game.state.rules.confirmEndTurn) {
+              tryEndActivation();
+              return;
+            }
+            if (!Game.state.activationState) {
+              resetUiState();
+            } else {
+              showActivationHighlights();
+            }
+            showPhase();
+            render();
+          });
           render();
           return;
         }
@@ -5736,43 +6452,50 @@ const UI = (() => {
             attackPath = [{ q: act.unit.q, r: act.unit.r }, ...path];
           }
         }
+        const atkUnit2 = act.unit;
+        const atkHex2 = Board.getHex(atkUnit2.q, atkUnit2.r);
+        const tgtHex2 = Board.getHex(hex.q, hex.r);
         const ok = Game.attackUnit(hex.q, hex.r, 0, null, attackPath);
         if (ok) {
           netSend({ type: 'attackUnit', q: hex.q, r: hex.r, attackPath: attackPath || undefined });
 
-          // Toss grab: after attack, enter landing targeting instead of normal post-attack flow
-          if (act && act.pendingTossLand) {
-            const dests = Abilities.getTossDestHexes(act.pendingTossLand.targetQ, act.pendingTossLand.targetR);
-            targeting.tossLand = { validHexes: dests, source: act.pendingTossLand.source };
-            uiState.highlights = new Map([...dests].map(k => [k, 1]));
-            uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
-            uiState.attackTargets = null;
+          playAttackAnim(atkUnit2, atkHex2, tgtHex2, () => {
+            const act2 = Game.state.activationState;
+
+            // Toss grab: after attack, enter landing targeting instead of normal post-attack flow
+            if (act2 && act2.pendingTossLand) {
+              const dests = Abilities.getTossDestHexes(act2.pendingTossLand.targetQ, act2.pendingTossLand.targetR);
+              targeting.tossLand = { validHexes: dests, source: act2.pendingTossLand.source };
+              uiState.highlights = new Map([...dests].map(k => [k, 1]));
+              uiState.highlightColor = 'rgba(0, 255, 100, 0.4)';
+              uiState.attackTargets = null;
+              showPhase();
+              render();
+              return;
+            }
+
+            // Check for queued interactive effects (push/pull/move from abilities)
+            if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
+              enterEffectTargeting();
+              return;
+            }
+            if (checkBurningRedirect()) return;
+            if (Game.state.pendingReplacement) { enterReplacementChoice(); return; }
+
+            // Auto-end activation if both actions consumed
+            if (act2 && act2.moved && act2.attacked && !Game.state.rules.confirmEndTurn) {
+              tryEndActivation();
+              return;
+            }
+
+            if (!Game.state.activationState) {
+              resetUiState();
+            } else {
+              showActivationHighlights();
+            }
             showPhase();
             render();
-            return;
-          }
-
-          // Check for queued interactive effects (push/pull/move from abilities)
-          if (typeof Abilities !== 'undefined' && Abilities.hasPendingEffects()) {
-            enterEffectTargeting();
-            return;
-          }
-          if (checkBurningRedirect()) return;
-          if (Game.state.pendingReplacement) { enterReplacementChoice(); return; }
-
-          // Auto-end activation if both actions consumed (handles Guiding Gale etc.)
-          const postAtkAct = s.activationState;
-          if (postAtkAct && postAtkAct.moved && postAtkAct.attacked && !s.rules.confirmEndTurn) {
-            tryEndActivation();
-            return;
-          }
-
-          if (!s.activationState) {
-            resetUiState();
-          } else {
-            showActivationHighlights();
-          }
-          showPhase();
+          });
           render();
           return;
         }
@@ -6139,6 +6862,62 @@ const UI = (() => {
     return true;
   }
 
+  // ── Debug: token layout switcher ─────────────────────────────
+
+  const TOKEN_LAYOUTS = [
+    { id: 'layout-default',    label: 'Default (top)' },
+    { id: 'layout-split-y',   label: 'Split Y (cond top, res bottom)' },
+    { id: 'layout-split-x',   label: 'Split X (cond left, res right)' },
+    { id: 'layout-diagonal',  label: 'Diagonal (cond top-left, res bottom-right)' },
+    { id: 'layout-integrated', label: 'Integrated (res in HP badge)' },
+  ];
+
+  function setTokenLayout(layout) {
+    const container = document.getElementById('unit-tokens');
+    TOKEN_LAYOUTS.forEach(l => container.classList.remove(l.id));
+    if (layout && layout !== 'layout-default') {
+      container.classList.add(layout);
+    }
+    localStorage.setItem('tokenLayout', layout || 'layout-default');
+    render();
+  }
+
+  function buildDebugLayoutMenu(nav) {
+    const saved = localStorage.getItem('tokenLayout') || 'layout-split-x';
+    // Apply saved layout on init
+    if (saved && saved !== 'layout-default') {
+      document.getElementById('unit-tokens').classList.add(saved);
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'debug-menu';
+    wrap.innerHTML = '<button class="btn-debug-toggle">Layout</button>' +
+      '<div class="debug-dropdown hidden">' +
+      TOKEN_LAYOUTS.map(l =>
+        `<button class="btn-debug-cond${l.id === saved ? ' active' : ''}" data-layout="${l.id}">${l.label}</button>`
+      ).join('') +
+      '</div>';
+    nav.appendChild(wrap);
+
+    const toggle = wrap.querySelector('.btn-debug-toggle');
+    const dropdown = wrap.querySelector('.debug-dropdown');
+    toggle.addEventListener('click', e => {
+      e.stopPropagation();
+      dropdown.classList.toggle('hidden');
+    });
+    document.addEventListener('click', () => dropdown.classList.add('hidden'));
+    dropdown.addEventListener('click', e => e.stopPropagation());
+
+    dropdown.querySelectorAll('.btn-debug-cond').forEach(btn => {
+      btn.addEventListener('click', () => {
+        dropdown.querySelectorAll('.btn-debug-cond').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        setTokenLayout(btn.dataset.layout);
+        dropdown.classList.add('hidden');
+      });
+    });
+  }
+
   // ── Network action handler ───────────────────────────────────
 
   function handleNetAction(data) {
@@ -6486,17 +7265,23 @@ const UI = (() => {
         render();
         break;
       case 'attackUnit': {
+        const netAtkUnit = Game.state.activationState ? Game.state.activationState.unit : null;
+        const netAtkHex = netAtkUnit ? Board.getHex(netAtkUnit.q, netAtkUnit.r) : null;
+        const netTgtHex = Board.getHex(data.q, data.r);
         Game.attackUnit(data.q, data.r, data.bonusDamage || 0, data.tossData || null, data.attackPath || null);
-        const netAtkAct = Game.state.activationState;
-        if (!netAtkAct) {
-          resetUiState();
-        } else if (netAtkAct._endActStarted) {
-          if (typeof Abilities !== 'undefined') { Abilities.clearPendingEndAct(); Abilities.clearEffectQueue(); }
-          Game.completeEndActivation();
-          resetUiState();
-        } else {
-          showActivationHighlights();
-        }
+        playAttackAnim(netAtkUnit, netAtkHex, netTgtHex, () => {
+          const netAtkAct = Game.state.activationState;
+          if (!netAtkAct) {
+            resetUiState();
+          } else if (netAtkAct._endActStarted) {
+            if (typeof Abilities !== 'undefined') { Abilities.clearPendingEndAct(); Abilities.clearEffectQueue(); }
+            Game.completeEndActivation();
+            resetUiState();
+          } else {
+            showActivationHighlights();
+          }
+          render();
+        });
         break;
       }
       case 'skipAction':
